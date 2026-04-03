@@ -528,85 +528,24 @@ scroll_right
  rep $20
 :no_bank_wrap
 
-* Step 3: Blit playfield from $50 to back buffer $55
- lda #$2000
- sta $F0
- sta $F3
- sep $20
- lda #$50
- sta $F2               ; src bank
- lda #$55
- sta $F5               ; dst bank
- rep $20
-
- ldx #183
-:blit1_line
- ldy #0
-:blit1_word
- lda [$F0],y
- sta [$F3],y
- iny
- iny
- cpy #110
- bcc :blit1_word
-
- lda $F0
- clc
- adc #$A0
- sta $F0
- lda $F3
- clc
- adc #$A0
- sta $F3
- dex
- bne :blit1_line
+* Step 3: Fast unrolled blit $50 -> $55 (back buffer)
+ jsr fast_blit_50_55
 
  sec
  xce                   ; back to emulation mode
 
 * Step 4: Draw sprite onto back buffer $55
  lda #$55
- sta draw_bank         ; point DUMP01 at $55
+ sta draw_bank
  lda #$00
  sta draw_bank+1
  jsr DUMP01
 
-* Step 5: Blit back buffer $55 to screen $E1
+* Step 5: Stack-blit $55 -> $E1 (screen) for flicker-free update
  clc
  xce                   ; native mode
  rep $30
-
- lda #$2000
- sta $F0
- sta $F3
- sep $20
- lda #$55
- sta $F2               ; src bank
- lda #$E1
- sta $F5               ; dst bank
- rep $20
-
- ldx #183
-:blit2_line
- ldy #0
-:blit2_word
- lda [$F0],y
- sta [$F3],y
- iny
- iny
- cpy #110
- bcc :blit2_word
-
- lda $F0
- clc
- adc #$A0
- sta $F0
- lda $F3
- clc
- adc #$A0
- sta $F3
- dex
- bne :blit2_line
+ jsr stack_blit_55_e1
 
  sec
  xce                   ; back to emulation mode
@@ -618,6 +557,90 @@ scroll_right
  sta draw_bank+1
  rts
 
+*----------------------------------------------------------
+* fast_blit_50_55 - Unrolled blit from bank $50 to bank $55
+* 110 bytes (55 words) wide, 183 lines.
+* Entry: native mode, REP $30 (16-bit A/X/Y).
+*----------------------------------------------------------
+fast_blit_50_55
+ rep $30               ; assert 16-bit A/X/Y for assembler MX tracking
+ ldx #0                ; line offset from $xx2000
+ ldy #183              ; line counter
+
+:line
+]idx = 108
+ LUP 55
+ LDAL $502000+]idx,x
+ STAL $552000+]idx,x
+]idx = ]idx-2
+ --^
+
+ txa
+ clc
+ adc #$00A0
+ tax
+ dey
+ beq :done
+ jmp :line
+:done rts
+
+*----------------------------------------------------------
+* stack_blit_55_e1 - Stack-based blit from $55 to screen $E1
+* Maps stack to bank $01, enables SHR shadow ($01->$E1),
+* then uses PHA to write each word. 110 bytes wide, 183 lines.
+* Entry: native mode, REP $30. Trashes A/X/Y/S (S restored).
+*----------------------------------------------------------
+stack_blit_55_e1
+ rep $30               ; assert 16-bit A/X/Y for assembler MX tracking
+ tsc
+ sta :save_s           ; save stack pointer
+
+ sei                   ; no interrupts while stack is remapped
+ sep $20
+ sta $C005             ; WrCardRAM: writes to bank $00 -> bank $01
+ lda $C035
+ and #$F7
+ sta $C035             ; clear bit 3: enable SHR shadow ($01->$E1)
+ rep $20
+
+ ldx #0                ; source line offset
+ ldy #183              ; line counter
+
+:line txa
+ clc
+ adc #$206D            ; S = $2000 + line_offset + 109
+ tcs
+
+]idx = 108
+ LUP 55
+ LDAL $552000+]idx,x
+ pha
+]idx = ]idx-2
+ --^
+
+ txa
+ clc
+ adc #$00A0
+ tax
+ dey
+ beq :done
+ jmp :line
+:done
+ sep $20
+ sta $C004             ; WrMainRAM: restore normal writes
+ lda $C035
+ ora #$08
+ sta $C035             ; set bit 3: disable SHR shadow
+ rep $20
+
+ lda :save_s
+ tcs                   ; restore stack pointer
+ cli                   ; re-enable interrupts
+ rts
+
+:save_s ds 2
+
+ mx %11                ; advance_frame runs in emulation mode (8-bit)
 *----------------------------------------------------------
 * advance_frame - count VBLs and cycle animation frame
 * Sequence: IMAGE01 -> IMAGE02 -> IMAGE03 -> IMAGE02 -> repeat

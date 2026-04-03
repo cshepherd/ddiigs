@@ -68,6 +68,7 @@ The program runs on the Apple IIgs in 320-mode Super Hi-Res. On startup it:
 | `$52/2000` | MISSION13.SHR |
 | `$53/2000` | MISSION14.SHR |
 | `$54/2000` | MISSION15.SHR |
+| `$55/2000` | Back buffer for scroll compositing |
 | `$E1/2000` | SHR screen memory (displayed) |
 
 ### Sprite format
@@ -80,6 +81,7 @@ Sprites are stored as packed 4-bit pixel data with `$AA` as the transparent colo
 - Variable labels (`]LOOP`, `]MLOOP`) are reassigned as encountered — do not use `BEQ`/`BNE` to branch forward to a `]` label that will be redefined later; use local labels (`:label`) for branch targets instead
 - `BEQ`/`BNE` have a +/-128 byte range limit; for distant targets use the inverted branch + `JMP` pattern (e.g., `BNE :near` / `JMP far`)
 - The main loop runs in emulation mode; `DUMP01`, `erase`, and `copy_*` routines switch to native mode internally and restore emulation on exit
+- **Critical MX tracking rule**: Merlin32 tracks MX state linearly through the source, not following control flow. Routines called in native 16-bit mode must have `REP $30` at their entry to sync the assembler's tracking. Routines following native-mode code that run in emulation mode need `MX %11` before their label. Without this, immediate operand sizes (`LDA #`, `LDX #`, `ADC #`) will be assembled for the wrong width, causing instruction misalignment at runtime.
 - ProDOS 8 calls require emulation mode; toolbox calls require native 16-bit mode
 - `REP`/`SEP` have no effect in emulation mode — use paired 8-bit loads/stores for 16-bit values when in the main loop
 - ZP `$F0-$F5` are used as indirect long pointers by copy routines (src at `$F0-$F2`, dst at `$F3-$F5`)
