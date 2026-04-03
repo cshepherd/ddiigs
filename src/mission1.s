@@ -154,6 +154,12 @@ nokey bit $c000
  bpl nokey
  lda $c010
  and #$7f
+ cmp #'r'
+ bne not_scroll
+ jsr wait_for_vbl
+ jsr scroll_right    ; composites onto back buffer, no erase needed
+ bra nokey
+not_scroll
  pha                 ; save keypress
  jsr wait_for_vbl
  jsr erase           ; erase at OLD position with OLD frame dims
@@ -174,15 +180,10 @@ not_down cmp #'4'
  jsr advance_frame   ; animate on horizontal movement
  bra keyend
 not_left cmp #'6'
- bne not_right
+ bne keyend
  inc IMAGE01_XPOS
  stz IMAGE01_MIRROR
  jsr advance_frame   ; animate on horizontal movement
- bra keyend
-not_right cmp #'r'
- bne keyend
- jsr scroll_right    ; shift, fill, blit, and redraw sprite
- bra nokey           ; skip DUMP01, scroll_right already drew
 keyend jsr DUMP01       ; draw at NEW position with NEW frame
  bra nokey
 
@@ -527,27 +528,27 @@ scroll_right
  rep $20
 :no_bank_wrap
 
-* Step 3: Blit 110-byte wide playfield from $50 to $E1
+* Step 3: Blit playfield from $50 to back buffer $55
  lda #$2000
  sta $F0
  sta $F3
  sep $20
  lda #$50
  sta $F2               ; src bank
- lda #$E1
+ lda #$55
  sta $F5               ; dst bank
  rep $20
 
  ldx #183
-:blit_line
+:blit1_line
  ldy #0
-:blit_word
+:blit1_word
  lda [$F0],y
  sta [$F3],y
  iny
  iny
  cpy #110
- bcc :blit_word
+ bcc :blit1_word
 
  lda $F0
  clc
@@ -558,13 +559,63 @@ scroll_right
  adc #$A0
  sta $F3
  dex
- bne :blit_line
+ bne :blit1_line
 
  sec
  xce                   ; back to emulation mode
 
-* Step 4: Redraw sprite at current position
+* Step 4: Draw sprite onto back buffer $55
+ lda #$55
+ sta draw_bank         ; point DUMP01 at $55
+ lda #$00
+ sta draw_bank+1
  jsr DUMP01
+
+* Step 5: Blit back buffer $55 to screen $E1
+ clc
+ xce                   ; native mode
+ rep $30
+
+ lda #$2000
+ sta $F0
+ sta $F3
+ sep $20
+ lda #$55
+ sta $F2               ; src bank
+ lda #$E1
+ sta $F5               ; dst bank
+ rep $20
+
+ ldx #183
+:blit2_line
+ ldy #0
+:blit2_word
+ lda [$F0],y
+ sta [$F3],y
+ iny
+ iny
+ cpy #110
+ bcc :blit2_word
+
+ lda $F0
+ clc
+ adc #$A0
+ sta $F0
+ lda $F3
+ clc
+ adc #$A0
+ sta $F3
+ dex
+ bne :blit2_line
+
+ sec
+ xce                   ; back to emulation mode
+
+* Restore draw_bank for normal (non-scroll) DUMP01 calls
+ lda #$E1
+ sta draw_bank
+ lda #$00
+ sta draw_bank+1
  rts
 
 *----------------------------------------------------------
@@ -708,7 +759,7 @@ DUMP01 PHB
  ORA #%01000000
  STAL $E0C029
  REP $20
- LDA #$E1
+ LDA draw_bank
  STA 2
  lda IMAGE01_YPOS  ; do our own multiplication by $a0 because address won't always be hardcoded
  asl
@@ -943,6 +994,7 @@ IMAGE01_YPOS HEX 6400
 IMAGE01_MIRROR HEX 0000
 x_scroll_idx HEX 0000
 scroll_src_bank dfb $51    ; current source bank for scroll fill
+draw_bank da $00E1         ; bank for DUMP01 destination (default $E1 = screen)
 scroll_src_off HEX 0000   ; byte offset within source bank scanline
 
 *-------------------------------
