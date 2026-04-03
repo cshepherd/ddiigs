@@ -485,34 +485,25 @@ scroll_right
  dex
  bne :shift_line
 
-* Step 2: Fill right edge from bank $51
-* Copy x_scroll_idx bytes from $51/line[0] to $50/line[111-x_scroll_idx]
- lda #110
- sec
- sbc x_scroll_idx
+* Step 2: Fill byte 109 (rightmost visible) from scroll source
+ lda scroll_src_off
  clc
  adc #$2000
- sta $F3               ; dst = $50/(2000 + 111 - x_scroll_idx)
- lda #$2000
- sta $F0               ; src = $51/2000
+ sta $F0               ; src = scroll_src_bank/(2000 + scroll_src_off)
+ lda #$206D            ; dst = $50/(2000 + 109)
+ sta $F3
  sep $20
- lda #$51
+ lda scroll_src_bank
  sta $F2               ; src bank
  lda #$50
  sta $F5               ; dst bank
- rep $20
 
+ rep $20
  ldx #183
 :fill_line
  sep $20
- ldy #0
-:fill_byte
- lda [$F0],y
- sta [$F3],y
- iny
- cpy x_scroll_idx      ; 16-bit compare, x_scroll_idx is 2 bytes
- bcc :fill_byte
-
+ lda [$F0]             ; read 1 byte from source
+ sta [$F3]             ; write to byte 109 in $50
  rep $20
  lda $F0
  clc
@@ -524,6 +515,17 @@ scroll_right
  sta $F3
  dex
  bne :fill_line
+
+* Advance scroll source for next scroll
+ inc scroll_src_off
+ lda scroll_src_off
+ cmp #110
+ bcc :no_bank_wrap
+ stz scroll_src_off    ; reset offset
+ sep $20
+ inc scroll_src_bank   ; advance to next bank
+ rep $20
+:no_bank_wrap
 
 * Step 3: Blit 110-byte wide playfield from $50 to $E1
  lda #$2000
@@ -940,6 +942,8 @@ IMAGE01_XPOS HEX 0100
 IMAGE01_YPOS HEX 6400
 IMAGE01_MIRROR HEX 0000
 x_scroll_idx HEX 0000
+scroll_src_bank dfb $51    ; current source bank for scroll fill
+scroll_src_off HEX 0000   ; byte offset within source bank scanline
 
 *-------------------------------
 * $0B bytes (b4 pack), from X - $01 to $0B, Y - $10 to $3A.
