@@ -43,8 +43,9 @@ The program runs on the Apple IIgs in 320-mode Super Hi-Res. On startup it:
 - Waits for keypress, then erases sprite at old position, processes input, draws sprite at new position
 - `8/2/4/6` — Move sprite up/down/left/right
 - `r` — Scroll playfield right by 1 byte (2 pixels)
+- `j` — Jump: 3-frame blocking animation (JUMP1/2/3), advances in facing direction
 - Moving left sets `IMAGE01_MIRROR` and flips the sprite horizontally (nibble-swap per byte, reverse byte order per line)
-- Moving horizontally cycles through 3 animation frames (IMAGE01/02/03) every 5 VBLs
+- Moving horizontally cycles through 3 walk frames (IMAGE01/02/03) every 5 VBLs
 
 ### Key routines
 
@@ -53,8 +54,11 @@ The program runs on the Apple IIgs in 320-mode Super Hi-Res. On startup it:
 - `load_to_bank` — Same pattern, loads a file into a single bank
 - `erase` — Restores sprite rectangle from shadow copy (`$50`) to screen (`$E1`)
 - `DUMP01` — Plots current animation frame with `$AA` transparency masking (normal or mirrored path)
-- `scroll_right` — Shifts playfield left in `$50`, fills right edge from `$51`, blits to `$E1`, redraws sprite
-- `advance_frame` — Cycles animation step and updates `FRAME_X`/`FRAME_Y`/`FRAME_ADDR` from lookup tables
+- `scroll_right` — Shifts playfield left in `$50`, fills right edge from current scroll source bank, blits $50→$55→$E1 via triple buffer, redraws sprite
+- `fast_blit_50_55` — Unrolled LDAL/STAL blit, 110 bytes wide, 183 lines (~2x faster than looped)
+- `stack_blit_55_e1` — Stack-based blit using WrCardRAM ($C005) + SHR shadow ($C035 bit 3) for ~2.5x speedup. SEI required while stack is remapped.
+- `advance_frame` — Cycles walk animation step and updates `FRAME_X`/`FRAME_Y`/`FRAME_ADDR` from lookup tables
+- `do_jump` — Blocking 3-frame jump animation (JUMP1/2/3) with per-frame duration table. Moves 1 XPOS per VBL in facing direction. Restores to IMAGE01 standing frame on completion.
 
 ### Memory map
 
@@ -75,6 +79,8 @@ The program runs on the Apple IIgs in 320-mode Super Hi-Res. On startup it:
 
 Sprites are stored as packed 4-bit pixel data with `$AA` as the transparent color. Masking handles three cases: fully transparent byte (`$AA`), half-transparent high nibble (`$A0`), and half-transparent low nibble (`$0A`).
 
+Walk sprites: IMAGE01 (11 bytes), IMAGE02 (9 bytes), IMAGE03 (12 bytes). Jump sprites: JUMP1 (11 bytes), JUMP2 (17 bytes), JUMP3 (14 bytes). All are 40 lines tall except JUMP2 (42) and JUMP3 (32).
+
 ## Assembly conventions
 
 - Merlin32 syntax: `]` prefix for variable labels, `:` prefix for local labels
@@ -85,6 +91,15 @@ Sprites are stored as packed 4-bit pixel data with `$AA` as the transparent colo
 - ProDOS 8 calls require emulation mode; toolbox calls require native 16-bit mode
 - `REP`/`SEP` have no effect in emulation mode — use paired 8-bit loads/stores for 16-bit values when in the main loop
 - ZP `$F0-$F5` are used as indirect long pointers by copy routines (src at `$F0-$F2`, dst at `$F3-$F5`)
+
+## Common pitfalls (lessons learned)
+
+- **Erase before move, not after**: The erase/move/draw order matters. Erase must happen at the *old* position before updating XPOS/YPOS, otherwise the old sprite footprint isn't fully covered and leaves a trail. This was the root cause of vertical movement trails early in development.
+- **Erase width must cover the widest frame**: When transitioning between sprites of different widths (e.g., jump frames), the erase rectangle must use the *widest* possible sprite width, not the current frame's width. Otherwise narrower frames leave remnants of wider ones. In `do_jump`, FRAME_X is temporarily set to `$11` (JUMP2's width) during erase.
+- **Final frame transition needs an explicit draw cycle**: Blocking animations (like `do_jump`) must do a final erase+draw after restoring the post-animation frame, otherwise the last animation frame stays on screen.
+- **Subroutine register clobber**: `erase` and `DUMP01` both use X as a line counter internally. Any caller loop using X must save/restore it across these calls (via a memory variable, not the stack if performance matters).
+- **Stack blit technique** (TN.IIGS.070): WrCardRAM ($C005) redirects *all* bank $00 writes to bank $01, not just stack operations. Use SEI to prevent interrupts from corrupting screen memory via the remapped stack. Reads are unaffected (controlled separately by $C002/$C003). Long addressing (LDAL/STAL) bypasses the bank switches entirely.
+- **LUP + unrolled loops and branch range**: Unrolled LUP blocks easily exceed the +/-128 byte BNE/BEQ range. Use the inverted branch + JMP pattern (`BEQ :done` / `JMP :loop` / `:done`).
 
 ## ProDOS volume
 
