@@ -2,6 +2,8 @@
 
   ORG $2000
 
+  jsr toolbox_init
+
   lda #$C1
   sta $E0C029
 
@@ -186,11 +188,48 @@
   jsr writing_on
   jsr quarter_sec
 
+  lda #80
+  pha
+  lda #184
+  pha
+  ldx #$3a04         ; MoveTo
+  jsl $E10000
+
+  pea #$0006
+  ldx #$A004
+  jsl $E10000        ; SetForeColor
+
+  pea #$0000
+  ldx #$A204
+  jsl $E10000        ; SetBackColor
+
+  pea ^s_pressany
+  pea s_pressany
+  ldx #$A604
+  jsl $E10000        ; DrawCString
+
+  sep $30
+
+  lda $c010
+:wait_key  bit $c000
+  bpl :wait_key
+
+  rep $30
+  lda #$0000
+  ldx #$0000
+:cls  stal $012000,x
+  inx
+  inx
+  cpx #$7d00
+  bne :cls
+
   sec
   xce
   sep $30
 
   rts
+
+s_pressany ASC 'Press any key to start',00
 
 writing_on
   mx %00
@@ -303,6 +342,96 @@ revenge_on
   bne ]lp1
   rep $30
   rts
+
+*----------------------------------------------------------
+* toolbox_init - Start IIgs Toolbox tools
+* (So we can have DrawCString)
+* TL, MT, MM, then allocate DP for QD and start QD.
+*----------------------------------------------------------
+errorspot
+  hex 00000000
+  hex 00000000
+
+toolbox_init
+ clc
+ xce                   ; native mode
+ rep $30               ; 16-bit A, X/Y
+
+* _TLStartup
+ ldx #$0201
+ jsl $E10000
+ bcs errorspot
+
+* _MTStartup
+ ldx #$0203
+ jsl $E10000
+ bcs errorspot+2
+
+* _GetNewID
+ pha
+ pea $1000
+ ldx #$2003
+ jsl $E10000
+ pla
+ sta myID
+
+* Allocate ourselves
+ pha                   ; result space (handle high)
+ pha                   ; result space (handle low)
+ pea $0000             ; size high word
+ pea $2000             ; size low word (8KB)
+ lda myID
+ pha                   ; userID
+ pea $C003             ; attributes (locked, bank 0, not page-aligned)
+ pea $0000
+ pea $2000             ; preferred address ($8000-$FFFF, but ignored if page-aligned)
+ ldx #$0902            ; _NewHandle
+ jsl $E10000
+ bcs errorspot+3
+ pla                   ; handle low word
+ pla                   ; handle high word
+
+* Allocate 3 pages of direct page for QuickDraw II
+ pha                   ; result space (handle high)
+ pha                   ; result space (handle low)
+ pea $0000             ; size high word
+ pea $0300             ; size low word (3 pages)
+ lda myID
+ pha                   ; userID
+ pea $C003             ; attributes (locked, bank 0, not page-aligned)
+ pea $0000
+ pea $8000             ; preferred address ($8000-$FFFF, but ignored if page-aligned)
+ ldx #$0902            ; _NewHandle
+ jsl $E10000
+ bcs errorspot+4
+ pla                   ; handle low word
+ sta $00
+ pla                   ; handle high word
+ sta $02
+ lda [$00]             ; dereference handle to get DP address
+ sta qdDP
+
+* _QDStartup
+* NOTE we are hardwiring this buffer address
+* but we did request it and receive it already
+ pea $8000             ; dpAddress (still in A from above)
+ pea $0000             ; master SCB (320 mode)
+ pea $00A0             ; max width (160 bytes)
+ lda myID
+ pha                   ; userID
+ ldx #$0204            ; _QDStartup
+ jsl $E10000
+ bcs errorspot2
+
+ sec
+ xce                   ; back to emulation mode
+ rts
+
+myID ds 2
+qdDP ds 2
+
+errorspot2
+  hex 00000000
 
 *----------------------------------------------------------
 * half_sec - Delay for 30 VBLs (~0.5 seconds at 60Hz)
