@@ -16,13 +16,20 @@
   dex
   bne ]cls
 
-; set palettes
-  ldx #32
+; set palettes: palette 0 is main
+  ldx #30
 ]pal_loop  lda PALETTE,x
   stal $e19e00,x
   dex
   dex
   bpl ]pal_loop
+
+; palette 1 is all black
+  lda #$00
+]pal_loop2 stal $e19e20,x
+  dex
+  dex
+  bpl ]pal_loop2
 
   lda #$E1
   sta draw_bank
@@ -100,7 +107,7 @@
 * TITLE6 centered: 66,61
   lda #61
   sta IMAGE01_YPOS
-  lda #66
+  lda #68
   sta IMAGE01_XPOS
   lda #TITLE6
   sta FRAME_ADDR
@@ -149,6 +156,28 @@
   lda REVENGE_X
   sta FRAME_X
   jsr plot
+  jsr quarter_sec
+
+; flash double and revenge a couple times
+  jsr double_off
+  jsr revenge_off
+  jsr writing_off
+  jsr quarter_sec
+
+  jsr double_on
+  jsr revenge_on
+  jsr writing_on
+  jsr quarter_sec
+
+  jsr double_off
+  jsr revenge_off
+  jsr writing_off
+  jsr quarter_sec
+
+  jsr double_on
+  jsr revenge_on
+  jsr writing_on
+  jsr quarter_sec
 
   sec
   xce
@@ -156,10 +185,132 @@
 
   rts
 
+writing_on
+  mx %00
+  lda #60
+  sta IMAGE01_YPOS
+  lda #29
+  sta IMAGE01_XPOS
+  lda #TITLE7
+  sta FRAME_ADDR
+  lda TITLE7_Y
+  sta FRAME_Y
+  lda TITLE7_X
+  sta FRAME_X
+  jsr plot
+  rts
+
+writing_off
+  mx %00
+  lda #61
+  sta IMAGE01_YPOS
+  lda #68
+  sta IMAGE01_XPOS
+  lda #TITLE6
+  sta FRAME_ADDR
+  lda TITLE6_Y
+  sta FRAME_Y
+  lda TITLE6_X
+  sta FRAME_X
+  jsr plot
+
+* Zero out bytes 0-67 and 57-159 for 78 scanlines (61-138)
+* to erase blue characters outside TITLE6's footprint
+  rep $30
+  lda #$4620            ; screen addr of scanline 61 ($2000+61*$A0)
+  sta $F0
+  sep $20
+  lda #$E1
+  sta $F2              ; bank $E1
+  rep $20
+
+  ldx #78              ; 78 scanlines
+:zap_line
+* Zero bytes 0 through 67
+  lda #$0000
+  ldy #0
+:zap_left
+  sta [$F0],y
+  iny
+  iny
+  cpy #68              ; 68 bytes (0-67), 34 words
+  bcc :zap_left
+
+* Zero bytes 96 through 159
+  ldy #96
+  lda #$0000
+:zap_right
+  sta [$F0],y
+  iny
+  iny
+  cpy #160             ; up to byte 159
+  bcc :zap_right
+
+* Next scanline
+  lda $F0
+  clc
+  adc #$A0
+  sta $F0
+  dex
+  bne :zap_line
+  rts
+
+double_off
+  sep $30
+  ldx #47
+  lda #01
+]lp1  stal $e19d00,x
+  dex
+  bpl ]lp1
+  rep $30
+  rts
+
+double_on
+  sep $30
+  ldx #47
+  lda #00
+]lp1  stal $e19d00,x
+  dex
+  bpl ]lp1
+  rep $30
+  rts
+
+revenge_off
+  sep $30
+  ldx #140
+  lda #01
+]lp1  stal $e19d00,x
+  inx
+  cpx #200
+  bne ]lp1
+  rep $30
+  rts
+
+revenge_on
+  sep $30
+  ldx #140
+  lda #00
+]lp1  stal $e19d00,x
+  inx
+  cpx #200
+  bne ]lp1
+  rep $30
+  rts
+
 *----------------------------------------------------------
 * half_sec - Delay for 30 VBLs (~0.5 seconds at 60Hz)
 * Assumes native mode with 16-bit X/Y.
 *----------------------------------------------------------
+quarter_sec
+  rep $30               ; assert 16-bit for assembler MX tracking
+  ldx #15
+:loop phx
+  jsr wait_for_vbl
+  plx
+  dex
+  bne :loop
+  rts
+
 half_sec
   rep $30               ; assert 16-bit for assembler MX tracking
   ldx #30
