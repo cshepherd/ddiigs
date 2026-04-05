@@ -5,13 +5,20 @@
   lda #$C1
   sta $E0C029
 
-; clear screen data and zero all SCBs
+; enable SHR shadowing (bank $01 -> $E1) for fast writes
   clc
   xce
   rep #$30
+  sep $20
+  ldal $C035
+  and #$F7             ; clear bit 3
+  stal $C035
+  rep $20
+
+; clear screen data and zero all SCBs
   ldx #$7e00
   lda #$0000
-]cls  stal $e12000,x
+]cls  stal $012000,x
   dex
   dex
   bne ]cls
@@ -19,19 +26,19 @@
 ; set palettes: palette 0 is main
   ldx #30
 ]pal_loop  lda PALETTE,x
-  stal $e19e00,x
+  stal $019e00,x
   dex
   dex
   bpl ]pal_loop
 
 ; palette 1 is all black
   lda #$00
-]pal_loop2 stal $e19e20,x
+]pal_loop2 stal $019e20,x
   dex
   dex
   bpl ]pal_loop2
 
-  lda #$E1
+  lda #$01
   sta draw_bank
 
 * TITLE1 at 80,100
@@ -220,8 +227,8 @@ writing_off
   lda #$4620            ; screen addr of scanline 61 ($2000+61*$A0)
   sta $F0
   sep $20
-  lda #$E1
-  sta $F2              ; bank $E1
+  lda #$01
+  sta $F2              ; bank $01 (shadowed to $E1)
   rep $20
 
   ldx #78              ; 78 scanlines
@@ -259,7 +266,7 @@ double_off
   sep $30
   ldx #47
   lda #01
-]lp1  stal $e19d00,x
+]lp1  stal $019d00,x
   dex
   bpl ]lp1
   rep $30
@@ -269,7 +276,7 @@ double_on
   sep $30
   ldx #47
   lda #00
-]lp1  stal $e19d00,x
+]lp1  stal $019d00,x
   dex
   bpl ]lp1
   rep $30
@@ -279,7 +286,7 @@ revenge_off
   sep $30
   ldx #140
   lda #01
-]lp1  stal $e19d00,x
+]lp1  stal $019d00,x
   inx
   cpx #200
   bne ]lp1
@@ -290,7 +297,7 @@ revenge_on
   sep $30
   ldx #140
   lda #00
-]lp1  stal $e19d00,x
+]lp1  stal $019d00,x
   inx
   cpx #200
   bne ]lp1

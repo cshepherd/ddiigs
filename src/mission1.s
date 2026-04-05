@@ -14,7 +14,17 @@
 * Initialize IIgs Toolbox
  jsr toolbox_init
 
-* Load background from MISSION11.SHR -> $E1/2000 and $50/2000
+* Enable SHR shadowing (bank $01 -> $E1) before loading
+ clc
+ xce
+ sep $20
+ ldal $C035
+ and #$F7             ; clear bit 3
+ stal $C035
+ sec
+ xce                   ; back to emulation for ProDOS calls
+
+* Load background from MISSION11.SHR -> $01/2000 (shadowed to $E1) and $50/2000
  jsr load_background
 
 * Load MISSION12.SHR -> $51/2000
@@ -336,7 +346,7 @@ load_background
 :count dfb 0
 
 *----------------------------------------------------------
-* copy_chunk - Copy 4KB from ]RDBUF to $E1/dest and $50/dest
+* copy_chunk - Copy 4KB from ]RDBUF to $01/dest and $50/dest
 * Uses ZP $F0-$F5 for indirect long pointers.
 *----------------------------------------------------------
 copy_chunk
@@ -345,11 +355,11 @@ copy_chunk
  rep $30               ; 16-bit A and index
 
  lda dest
- sta $F0               ; $E1 destination low/high
+ sta $F0               ; $01 destination low/high
  sta $F3               ; $50 destination low/high
  sep $20
- lda #$E1
- sta $F2               ; $E1 bank byte
+ lda #$01
+ sta $F2               ; $01 bank byte (shadowed to $E1)
  lda #$50
  sta $F5               ; $50 bank byte
 
@@ -561,7 +571,7 @@ scroll_right
  xce                   ; back to emulation mode
 
 * Restore draw_bank for normal (non-scroll) DUMP01 calls
- lda #$E1
+ lda #$01
  sta draw_bank
  lda #$00
  sta draw_bank+1
@@ -595,9 +605,10 @@ fast_blit_50_55
 :done rts
 
 *----------------------------------------------------------
-* stack_blit_55_e1 - Stack-based blit from $55 to screen $E1
-* Maps stack to bank $01, enables SHR shadow ($01->$E1),
-* then uses PHA to write each word. 110 bytes wide, 183 lines.
+* stack_blit_55_e1 - Stack-based blit from $55 to screen via bank $01
+* SHR shadow is already enabled ($01->$E1). Maps stack writes to
+* bank $01 via WrCardRAM, then uses PHA to write each word.
+* 110 bytes wide, 183 lines.
 * Entry: native mode, REP $30. Trashes A/X/Y/S (S restored).
 *----------------------------------------------------------
 stack_blit_55_e1
@@ -608,9 +619,6 @@ stack_blit_55_e1
  sei                   ; no interrupts while stack is remapped
  sep $20
  sta $C005             ; WrCardRAM: writes to bank $00 -> bank $01
- lda $C035
- and #$F7
- sta $C035             ; clear bit 3: enable SHR shadow ($01->$E1)
  rep $20
 
  ldx #0                ; source line offset
@@ -638,9 +646,6 @@ stack_blit_55_e1
 :done
  sep $20
  sta $C004             ; WrMainRAM: restore normal writes
- lda $C035
- ora #$08
- sta $C035             ; set bit 3: disable SHR shadow
  rep $20
 
  lda :save_s
@@ -1025,8 +1030,8 @@ erase    PHB
  ORA #%01000000
  STAL $E0C029
  REP $20
-* Set up destination pointer (screen at $E1/2000) in DP 0-2
- LDA #$E1
+* Set up destination pointer (screen at $01/2000, shadowed to $E1) in DP 0-2
+ LDA #$01
  STA 2
  lda IMAGE01_YPOS
  asl
@@ -1349,7 +1354,7 @@ IMAGE01_YPOS HEX 6400
 IMAGE01_MIRROR HEX 0000
 x_scroll_idx HEX 0000
 scroll_src_bank dfb $51    ; current source bank for scroll fill
-draw_bank da $00E1         ; bank for DUMP01 destination (default $E1 = screen)
+draw_bank da $0001         ; bank for DUMP01 destination (default $01, shadowed to $E1)
 scroll_src_off HEX 0000   ; byte offset within source bank scanline
 
 IMAGE01_X HEX 0B00
