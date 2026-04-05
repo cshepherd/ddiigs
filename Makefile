@@ -11,7 +11,12 @@ out/mission1: src/mission1.s
 	cd src && merlin32 mission1.s
 	mv src/mission1 out/mission1
 
-$(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.shr assets/mission13.shr assets/mission14.shr assets/mission15.shr assets/billy1.shr out/mission1
+out/title: src/title.s
+	mkdir -p out
+	cd src && merlin32 title.s
+	mv src/title out/title
+
+$(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.shr assets/mission13.shr assets/mission14.shr assets/mission15.shr assets/billy1.shr out/mission1 out/title
 	mkdir -p out
 	rm -f $(IMGFILE)
 	cadius CREATEVOLUME $(IMGFILE) $(VOLNAME) 800KB --quiet
@@ -42,6 +47,9 @@ $(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.sh
 	cp out/mission1 out/MISSION1\#FF2000
 	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/MISSION1\#FF2000 --quiet
 	rm out/MISSION1\#FF2000
+	cp out/title out/TITLE\#FF0000
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/TITLE\#FF0000 --quiet
+	rm out/TITLE\#FF0000
 	cadius CATALOG $(IMGFILE)
 
 clean:
