@@ -900,6 +900,12 @@ do_punch1
  sta FRAME_X
  jsr DUMP01
 
+* Check for hit on second frame (PUNCH12)
+ lda :step
+ beq :no_hit
+ jsr check_punch_hit
+:no_hit
+
  dec :dur
  bne :vbl_loop
 
@@ -974,6 +980,12 @@ do_punch2
  sta FRAME_X
  jsr DUMP01
 
+* Check for hit on second frame (PUNCH22)
+ lda :step
+ beq :no_hit
+ jsr check_punch_hit
+:no_hit
+
  dec :dur
  bne :vbl_loop
 
@@ -1012,6 +1024,64 @@ PUNCH2_X_TBL   dfb $0A,$10
 PUNCH2_Y_TBL   dfb $28,$28
 PUNCH2_DUR_TBL dfb 6,6
 PUNCH2_ADDR_TBL DA PUNCH21,PUNCH22
+
+*----------------------------------------------------------
+* check_punch_hit - Check if Billy's punch connects with William.
+* Vertical: Billy's bottom (YPOS + FRAME_Y - 1) within 5 of
+*           William's sprite (Y=$64, height=$28).
+* Horizontal: Billy's punch sprite overlaps or comes within
+*             2 bytes of William's sprite (X=$60, width=$09).
+* On hit: increment low nibble of border color at $E0C034.
+*----------------------------------------------------------
+]WILLIAM_X = $60
+]WILLIAM_Y = $64
+]WILLIAM_W = $09
+]WILLIAM_H = $28
+
+check_punch_hit
+* Vertical check: billy_bottom within 5 of William's range
+* billy_bottom = YPOS + FRAME_Y - 1
+ lda IMAGE01_YPOS
+ clc
+ adc FRAME_Y
+ sec
+ sbc #1              ; A = billy_bottom
+* Check: billy_bottom >= WILLIAM_Y + WILLIAM_H - 1 - 5
+ cmp #]WILLIAM_Y+]WILLIAM_H-1-5
+ bcc :no_hit         ; billy_bottom too far above william_bottom
+* Check: billy_bottom <= WILLIAM_Y + WILLIAM_H - 1 + 5
+ cmp #]WILLIAM_Y+]WILLIAM_H-1+5+1
+ bcs :no_hit         ; billy_bottom too far below william_bottom
+
+* Horizontal check: rectangles overlap or within 2 bytes
+* Check: billy_right + 2 >= william_left
+ lda IMAGE01_XPOS
+ clc
+ adc FRAME_X         ; A = billy_right (XPOS + width)
+ clc
+ adc #2              ; A = billy_right + 2
+ cmp #]WILLIAM_X
+ bcc :no_hit         ; billy_right + 2 < william_left
+
+* Check: william_right + 2 >= billy_left
+ lda #]WILLIAM_X+]WILLIAM_W+2
+ cmp IMAGE01_XPOS
+ bcc :no_hit         ; william_right + 2 < billy_left
+
+* Hit! Increment low nibble of border color
+ ldal $E0C034
+ clc
+ adc #1
+ and #$0F
+ sta :tmp
+ ldal $E0C034
+ and #$F0
+ ora :tmp
+ stal $E0C034
+ rts
+
+:no_hit rts
+:tmp dfb 0
 
 *----------------------------------------------------------
 * advance_frame - count VBLs and cycle animation frame
