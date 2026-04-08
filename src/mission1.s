@@ -225,6 +225,8 @@ erase_all
  sta FRAME_X
 :no_anim
  jsr erase
+* Check if erased area overlaps other sprites
+ jsr mark_overlapping
 * Clear bit 1 (needs_erase), set bit 0 (needs_draw) so sprite is redrawn
  ldy #30
  lda (info_ptr),y
@@ -1425,6 +1427,135 @@ anim_punch2
 * check_punch_hit - Check if the punching sprite (whose
 * state is in globals) hit any other sprite in the table.
 * Iterates sprite_table, skips self, checks bounding box.
+*----------------------------------------------------------
+* mark_overlapping - After erasing a sprite, check if the
+* erased rectangle overlaps any other sprite's on-screen
+* position (prev). If so, mark that sprite for redraw.
+* Erased rect is in IMAGE01_XPOS/YPOS/FRAME_X/FRAME_Y.
+* Saves/restores spr_ptr and info_ptr.
+*----------------------------------------------------------
+mark_overlapping
+ lda spr_ptr
+ pha
+ lda spr_ptr+1
+ pha
+ lda info_ptr
+ pha
+ lda info_ptr+1
+ pha
+* Save erased sprite's info_ptr to skip self
+ lda info_ptr
+ sta :self_lo
+ lda info_ptr+1
+ sta :self_hi
+* Precompute erased rect edges
+ lda IMAGE01_XPOS
+ clc
+ adc FRAME_X
+ sta :erase_right      ; erase right = xpos + width
+ lda IMAGE01_YPOS
+ clc
+ adc FRAME_Y
+ sta :erase_bottom     ; erase bottom = ypos + height
+
+ lda #<sprite_table
+ sta spr_ptr
+ lda #>sprite_table
+ sta spr_ptr+1
+
+:loop
+ ldy #0
+ lda (spr_ptr),y
+ sta info_ptr
+ iny
+ lda (spr_ptr),y
+ sta info_ptr+1
+ ora info_ptr
+ bne :not_null
+ jmp :mo_done
+:not_null
+* Skip self
+ lda info_ptr
+ cmp :self_lo
+ bne :not_self
+ lda info_ptr+1
+ cmp :self_hi
+ beq :mo_advance
+:not_self
+* Read other sprite's prev position (what's on screen)
+ ldy #32
+ lda (info_ptr),y     ; prev_ypos
+ sta :oth_y
+ ldy #34
+ lda (info_ptr),y     ; prev_xpos
+ sta :oth_x
+ ldy #36
+ lda (info_ptr),y     ; prev_frame_x
+ sta :oth_w
+ ldy #38
+ lda (info_ptr),y     ; prev_frame_y
+ sta :oth_h
+
+* Horizontal overlap: erase_left < oth_right AND erase_right > oth_left
+ lda :oth_x
+ clc
+ adc :oth_w            ; oth_right
+ cmp IMAGE01_XPOS
+ bcc :mo_advance       ; oth_right <= erase_left, no overlap
+ beq :mo_advance
+ lda :erase_right
+ cmp :oth_x
+ bcc :mo_advance       ; erase_right <= oth_left, no overlap
+ beq :mo_advance
+
+* Vertical overlap: erase_top < oth_bottom AND erase_bottom > oth_top
+ lda :oth_y
+ clc
+ adc :oth_h            ; oth_bottom
+ cmp IMAGE01_YPOS
+ bcc :mo_advance       ; oth_bottom <= erase_top, no overlap
+ beq :mo_advance
+ lda :erase_bottom
+ cmp :oth_y
+ bcc :mo_advance       ; erase_bottom <= oth_top, no overlap
+ beq :mo_advance
+
+* Overlap detected — mark for redraw (set bit 0)
+ ldy #30
+ lda (info_ptr),y
+ ora #$01
+ sta (info_ptr),y
+
+:mo_advance
+ lda spr_ptr
+ clc
+ adc #2
+ sta spr_ptr
+ bcc :jloop
+ inc spr_ptr+1
+:jloop jmp :loop
+
+:mo_done
+ pla
+ sta info_ptr+1
+ pla
+ sta info_ptr
+ pla
+ sta spr_ptr+1
+ pla
+ sta spr_ptr
+ rts
+
+:self_lo dfb 0
+:self_hi dfb 0
+:erase_right dfb 0
+:erase_bottom dfb 0
+:oth_x dfb 0
+:oth_y dfb 0
+:oth_w dfb 0
+:oth_h dfb 0
+
+*----------------------------------------------------------
 * On hit: increment low nibble of border color at $E0C034.
 * Saves/restores spr_ptr and info_ptr.
 *----------------------------------------------------------
