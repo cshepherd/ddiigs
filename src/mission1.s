@@ -155,10 +155,28 @@ over1
 *==========================================================
 game_loop
  jsr wait_for_vbl
+;* Disable shadowing during erase/draw
+; clc
+; xce
+; sep $20
+; ldal $C035
+; ora #$08             ; set bit 3: disable SHR shadow
+; stal $C035
+; sec
+; xce
  jsr erase_all
  jsr process_input
  jsr update_anims
  jsr draw_all
+;* Re-enable shadowing and blit $01 -> $E1 via shadow
+; clc
+; xce
+; sep $20
+; ldal $C035
+; and #$F7             ; clear bit 3: enable SHR shadow
+; stal $C035
+; sec
+; xce
  bra game_loop
 
 *----------------------------------------------------------
@@ -172,6 +190,24 @@ erase_all
  sta spr_ptr+1
 :loop jsr load_sprite
  bcs :done
+* Erase if bit 1 set (needs_erase)
+ ldy #30
+ lda (info_ptr),y
+ and #$02
+ beq :skip_erase
+* Load previous position/size for erase
+ ldy #32
+ lda (info_ptr),y     ; prev_ypos
+ sta IMAGE01_YPOS
+ ldy #34
+ lda (info_ptr),y     ; prev_xpos
+ sta IMAGE01_XPOS
+ ldy #36
+ lda (info_ptr),y     ; prev_frame_x
+ sta FRAME_X
+ ldy #38
+ lda (info_ptr),y     ; prev_frame_y
+ sta FRAME_Y
 * If animation active, use max_width for erase
  ldy #24
  lda (info_ptr),y     ; anim_ptr low
@@ -189,6 +225,13 @@ erase_all
  sta FRAME_X
 :no_anim
  jsr erase
+* Clear bit 1 (needs_erase), set bit 0 (needs_draw) so sprite is redrawn
+ ldy #30
+ lda (info_ptr),y
+ and #$FD             ; clear bit 1
+ ora #$01             ; set bit 0
+ sta (info_ptr),y
+:skip_erase
  lda spr_ptr
  clc
  adc #2
@@ -208,7 +251,18 @@ draw_all
  sta spr_ptr+1
 :loop jsr load_sprite
  bcs :done
+* Draw if bit 0 set (needs_draw)
+ ldy #30
+ lda (info_ptr),y
+ and #$01
+ beq :skip_draw
  jsr draw_sprite
+* Clear bit 0 (needs_draw)
+ ldy #30
+ lda (info_ptr),y
+ and #$FE
+ sta (info_ptr),y
+:skip_draw
  lda spr_ptr
  clc
  adc #2
@@ -272,6 +326,24 @@ load_sprite
 * info_ptr must already be set (by load_sprite).
 *----------------------------------------------------------
 save_sprite
+* Copy current block values to prev before overwriting
+ ldy #0
+ lda (info_ptr),y     ; current ypos
+ ldy #32
+ sta (info_ptr),y     ; -> prev_ypos
+ ldy #2
+ lda (info_ptr),y     ; current xpos
+ ldy #34
+ sta (info_ptr),y     ; -> prev_xpos
+ ldy #10
+ lda (info_ptr),y     ; current frame_x
+ ldy #36
+ sta (info_ptr),y     ; -> prev_frame_x
+ ldy #12
+ lda (info_ptr),y     ; current frame_y
+ ldy #38
+ sta (info_ptr),y     ; -> prev_frame_y
+* Now write new values
  ldy #0
  lda IMAGE01_YPOS
  sta (info_ptr),y     ; +0 ypos
@@ -293,6 +365,10 @@ save_sprite
  iny
  lda FRAME_ADDR+1
  sta (info_ptr),y     ; +15 frame_addr high
+* Mark sprite as dirty (bit0=needs_draw, bit1=needs_erase)
+ ldy #30
+ lda #$03
+ sta (info_ptr),y
  rts
 
 spr_ptr = $E0         ; ZP pointer into sprite_table
@@ -717,6 +793,9 @@ update_anims
  ldy #2
  lda IMAGE01_XPOS
  sta (info_ptr),y     ; save xpos back
+ ldy #30
+ lda #$03
+ sta (info_ptr),y     ; mark dirty (bit0=draw, bit1=erase)
 * Decrement timer
 :no_advance
  ldy #28
@@ -1831,7 +1910,7 @@ path15 dfb 21
 sprite_table
   dw billy_sprite
   dw william_sprite
-  hex 0000 ; end of table marker (terminator)
+  dw william2_sprite
   hex 0000
   hex 0000
   hex 0000
@@ -1869,6 +1948,11 @@ billy_sprite
   hex 0000 ; +24 anim_ptr low/high ($0000 = no animation)
   hex 0000 ; +26 anim_frame
   hex 0000 ; +28 anim_timer
+  hex 0100 ; +30 dirty (bit0=needs_draw, bit1=needs_erase)
+  hex 6400 ; +32 prev_ypos (init same as ypos)
+  hex 0100 ; +34 prev_xpos (init same as xpos)
+  hex 0900 ; +36 prev_frame_x (init same as frame_x)
+  hex 2800 ; +38 prev_frame_y (init same as frame_y)
 
 *-------------------------------
 * Globals (used by erase/draw_sprite)
@@ -2435,8 +2519,8 @@ PUNCH22LEN EQU *-PUNCH22
 **
 
 william_sprite
-  hex 6400 ; +0  ypos
-  hex 4000 ; +2  xpos
+  hex 5F00 ; +0  ypos
+  hex 5800 ; +2  xpos
   hex 0100 ; +4  mirror (0 or 1)
   hex 0000 ; +6  anim_step (unused)
   hex 0500 ; +8  anim_count (unused)
@@ -2450,6 +2534,33 @@ william_sprite
   hex 0000 ; +24 anim_ptr
   hex 0000 ; +26 anim_frame
   hex 0000 ; +28 anim_timer
+  hex 0100 ; +30 dirty (bit0=needs_draw, bit1=needs_erase)
+  hex 5F00 ; +32 prev_ypos
+  hex 5800 ; +34 prev_xpos
+  hex 0900 ; +36 prev_frame_x
+  hex 2800 ; +38 prev_frame_y
+
+william2_sprite
+  hex 8400 ; +0  ypos
+  hex 5800 ; +2  xpos
+  hex 0100 ; +4  mirror (0 or 1)
+  hex 0000 ; +6  anim_step (unused)
+  hex 0500 ; +8  anim_count (unused)
+  hex 0900 ; +10 frame width (init to WILLIAM1)
+  hex 2800 ; +12 frame height (init to WILLIAM1)
+  da WILLIAM1 ; +14 frame data address
+  hex EE00 ; +16 mask
+  hex E000 ; +18 maskhi
+  hex 0E00 ; +20 masklo
+  hex 0000 ; +22 controller (00 = none)
+  hex 0000 ; +24 anim_ptr
+  hex 0000 ; +26 anim_frame
+  hex 0000 ; +28 anim_timer
+  hex 0100 ; +30 dirty (bit0=needs_draw, bit1=needs_erase)
+  hex 8400 ; +32 prev_ypos
+  hex 5800 ; +34 prev_xpos
+  hex 0900 ; +36 prev_frame_x
+  hex 2800 ; +38 prev_frame_y
 
 WILLIAM1_Y HEX 2800
 WILLIAM1_X HEX 0900
