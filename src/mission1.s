@@ -155,29 +155,44 @@ over1
 *==========================================================
 game_loop
  jsr wait_for_vbl
-;* Disable shadowing during erase/draw
-; clc
-; xce
-; sep $20
-; ldal $C035
-; ora #$08             ; set bit 3: disable SHR shadow
-; stal $C035
-; sec
-; xce
  jsr erase_all
  jsr process_input
+; jsr update_npcs
  jsr update_anims
  jsr draw_all
-;* Re-enable shadowing and blit $01 -> $E1 via shadow
-; clc
-; xce
-; sep $20
-; ldal $C035
-; and #$F7             ; clear bit 3: enable SHR shadow
-; stal $C035
-; sec
-; xce
  bra game_loop
+
+*----------------------------------------------------------
+* update_npcs - Iterate sprite_table, call npc_seek_player
+* for each NPC (controller = $00, not the terminator).
+*----------------------------------------------------------
+update_npcs
+ lda #<sprite_table
+ sta spr_ptr
+ lda #>sprite_table
+ sta spr_ptr+1
+:loop
+ ldy #0
+ lda (spr_ptr),y
+ sta info_ptr
+ iny
+ lda (spr_ptr),y
+ sta info_ptr+1
+ ora info_ptr
+ beq :done            ; null terminator
+ ldy #22
+ lda (info_ptr),y     ; controller
+ bne :skip            ; non-zero = player or other, skip
+ jsr npc_seek_player
+:skip
+ lda spr_ptr
+ clc
+ adc #2
+ sta spr_ptr
+ bcc :loop
+ inc spr_ptr+1
+ bra :loop
+:done rts
 
 *----------------------------------------------------------
 * erase_all - Iterate sprite_table, load each sprite,
@@ -1427,6 +1442,241 @@ anim_punch2
 * check_punch_hit - Check if the punching sprite (whose
 * state is in globals) hit any other sprite in the table.
 * Iterates sprite_table, skips self, checks bounding box.
+*----------------------------------------------------------
+* npc_seek_player - Move an NPC sprite one step toward the
+* keyboard-controlled player using Bresenham-style stepping.
+*
+* Call with info_ptr pointing to the NPC's sprite block.
+* Finds the player by scanning sprite_table for controller=$01.
+* Computes dx = player_x - npc_x, dy = player_y - npc_y,
+* then steps along the longer axis each call, accumulating
+* error on the shorter axis (standard Bresenham line).
+*
+* Each call moves the NPC by 0 or 1 in each axis.
+* Call once per frame (or every N frames) for smooth movement.
+* Calls save_sprite to commit the new position.
+*
+* Uses ZP $E6-$E9 as scratch (sort_src/sort_dst).
+*----------------------------------------------------------
+npc_seek_player
+* Save NPC's info_ptr
+ lda info_ptr
+ sta :npc_lo
+ lda info_ptr+1
+ sta :npc_hi
+* Read NPC position
+ ldy #0
+ lda (info_ptr),y     ; npc ypos
+ sta :npc_y
+ ldy #2
+ lda (info_ptr),y     ; npc xpos
+ sta :npc_x
+
+* Find player sprite (controller=$01)
+ lda spr_ptr
+ pha
+ lda spr_ptr+1
+ pha
+ lda #<sprite_table
+ sta spr_ptr
+ lda #>sprite_table
+ sta spr_ptr+1
+:find
+ ldy #0
+ lda (spr_ptr),y
+ sta info_ptr
+ iny
+ lda (spr_ptr),y
+ sta info_ptr+1
+ ora info_ptr
+ bne :not_end
+ jmp :no_player       ; end of table, no player found
+:not_end
+ ldy #22
+ lda (info_ptr),y     ; controller
+ cmp #$01
+ beq :found
+ lda spr_ptr
+ clc
+ adc #2
+ sta spr_ptr
+ bcc :find
+ inc spr_ptr+1
+ bra :find
+
+:found
+* Read player position
+ ldy #0
+ lda (info_ptr),y     ; player ypos
+ sta :plr_y
+ ldy #2
+ lda (info_ptr),y     ; player xpos
+ sta :plr_x
+
+* Restore spr_ptr
+ pla
+ sta spr_ptr+1
+ pla
+ sta spr_ptr
+* Restore NPC info_ptr
+ lda :npc_lo
+ sta info_ptr
+ lda :npc_hi
+ sta info_ptr+1
+
+* Compute dx = abs(player_x - npc_x), sx = sign
+ lda :plr_x
+ sec
+ sbc :npc_x
+ bcs :dx_pos
+* dx negative
+ eor #$FF
+ clc
+ adc #1              ; abs(dx)
+ sta :dx
+ lda #$FF
+ sta :sx              ; sx = -1
+ bra :do_dy
+:dx_pos
+ sta :dx
+ lda #$01
+ sta :sx              ; sx = +1
+:do_dy
+* Compute dy = abs(player_y - npc_y), sy = sign
+ lda :plr_y
+ sec
+ sbc :npc_y
+ bcs :dy_pos
+* dy negative
+ eor #$FF
+ clc
+ adc #1
+ sta :dy
+ lda #$FF
+ sta :sy              ; sy = -1
+ bra :bresenham
+:dy_pos
+ sta :dy
+ lda #$01
+ sta :sy              ; sy = +1
+
+:bresenham
+* If dx==0 and dy==0, already at player — do nothing
+ lda :dx
+ ora :dy
+ bne :do_step
+ jmp :seek_done
+:do_step
+
+* Bresenham: step along major axis, accumulate error on minor
+* if dx >= dy: major=X, error accumulates dy
+* else:        major=Y, error accumulates dx
+ lda :dx
+ cmp :dy
+ bcs :major_x
+
+* Major axis = Y
+ lda :npc_y
+ clc
+ adc :sy
+ sta :npc_y           ; always step Y
+* Accumulate error
+ lda :err
+ clc
+ adc :dx
+ sta :err
+* Check if error >= dy (step X too)
+ cmp :dy
+ bcc :step_done
+* Error overflow — step X, subtract dy
+ lda :npc_x
+ clc
+ adc :sx
+ sta :npc_x
+ lda :err
+ sec
+ sbc :dy
+ sta :err
+ bra :step_done
+
+:major_x
+* Major axis = X
+ lda :npc_x
+ clc
+ adc :sx
+ sta :npc_x           ; always step X
+* Accumulate error
+ lda :err
+ clc
+ adc :dy
+ sta :err
+* Check if error >= dx (step Y too)
+ cmp :dx
+ bcc :step_done
+* Error overflow — step Y, subtract dx
+ lda :npc_y
+ clc
+ adc :sy
+ sta :npc_y
+ lda :err
+ sec
+ sbc :dx
+ sta :err
+
+:step_done
+* Write new position to NPC sprite block
+ ldy #0
+ lda :npc_y
+ sta (info_ptr),y     ; +0 ypos
+ sta IMAGE01_YPOS
+ ldy #2
+ lda :npc_x
+ sta (info_ptr),y     ; +2 xpos
+ sta IMAGE01_XPOS
+* Load remaining globals for save_sprite
+ ldy #4
+ lda (info_ptr),y
+ sta IMAGE01_MIRROR
+ ldy #10
+ lda (info_ptr),y
+ sta FRAME_X
+ ldy #12
+ lda (info_ptr),y
+ sta FRAME_Y
+ ldy #14
+ lda (info_ptr),y
+ sta FRAME_ADDR
+ iny
+ lda (info_ptr),y
+ sta FRAME_ADDR+1
+ jsr save_sprite
+:seek_done
+ rts
+
+:no_player
+* No player found — restore and return
+ pla
+ sta spr_ptr+1
+ pla
+ sta spr_ptr
+ lda :npc_lo
+ sta info_ptr
+ lda :npc_hi
+ sta info_ptr+1
+ rts
+
+:npc_lo dfb 0
+:npc_hi dfb 0
+:npc_x dfb 0
+:npc_y dfb 0
+:plr_x dfb 0
+:plr_y dfb 0
+:dx dfb 0
+:dy dfb 0
+:sx dfb 0             ; +1 or -1 ($01 or $FF)
+:sy dfb 0
+:err dfb 0            ; Bresenham error accumulator (persists between calls)
+
 *----------------------------------------------------------
 * mark_overlapping - After erasing a sprite, check if the
 * erased rectangle overlaps any other sprite's on-screen
