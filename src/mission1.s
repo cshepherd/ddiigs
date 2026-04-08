@@ -423,6 +423,13 @@ process_input
 * Does not use the animation system — just sets the globals.
 *----------------------------------------------------------
 advance_walk
+* Only change animation frame every 2nd call
+ lda walk_toggle
+ eor #$01
+ sta walk_toggle
+ beq :do_advance       ; toggle hit 0, advance frame
+ rts                   ; odd call, skip frame change
+:do_advance
  inc walk_step
  lda walk_step
  cmp #4
@@ -455,6 +462,7 @@ advance_walk
  rts
 
 walk_step dfb 0
+walk_toggle dfb 0
 walk_x_tbl dfb $09,$08,$0B,$08
 walk_y_tbl dfb $28,$28,$28,$28
 walk_addr_tbl da IMAGE01,IMAGE02,IMAGE03,IMAGE02
