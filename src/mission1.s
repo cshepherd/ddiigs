@@ -855,14 +855,18 @@ update_anims
  sta (info_ptr),y     ; clear anim_ptr high
  ldy #26
  sta (info_ptr),y     ; clear anim_frame
-* Restore IMAGE01 as idle frame (using sprite's own mask)
- lda #<IMAGE01
+* Restore idle frame from sprite block
+ ldy #42
+ lda (info_ptr),y     ; idle_addr low
  sta FRAME_ADDR
- lda #>IMAGE01
+ iny
+ lda (info_ptr),y     ; idle_addr high
  sta FRAME_ADDR+1
- lda IMAGE01_X
+ ldy #44
+ lda (info_ptr),y     ; idle_x
  sta FRAME_X
- lda IMAGE01_Y
+ ldy #46
+ lda (info_ptr),y     ; idle_y
  sta FRAME_Y
  jsr save_sprite
  bra :next
@@ -1449,6 +1453,20 @@ anim_punch2
  dfb $10,$28,6       ; PUNCH22
  da PUNCH22
 
+anim_bpunched
+ dfb 1               ; num_frames
+ dfb $0B             ; max_width
+ dfb $00             ; flags: none (one-shot)
+ dfb $0B,$28,5       ; BPUNCHED: 11 wide, 40 tall, 5 VBLs
+ da BPUNCHED
+
+anim_wpunched
+ dfb 1               ; num_frames
+ dfb $09             ; max_width
+ dfb $00             ; flags: none (one-shot)
+ dfb $09,$28,5       ; WPUNCHED: 9 wide, 40 tall, 5 VBLs
+ da WPUNCHED
+
 *----------------------------------------------------------
 * check_punch_hit - Check if the punching sprite (whose
 * state is in globals) hit any other sprite in the table.
@@ -1871,7 +1889,8 @@ check_punch_hit
  bne :not_self
  lda info_ptr+1
  cmp :self_hi
- beq :advance
+ bne :not_self
+ jmp :advance
 :not_self
 
 * Read target's ypos, xpos, frame_x, frame_y
@@ -1903,25 +1922,29 @@ check_punch_hit
  sec
  sbc :punch_bottom
  cmp #6              ; > 5 away?
- bcs :advance        ; too far above
+ bcc :not_far_above
+ jmp :advance        ; too far above
+:not_far_above
  bra :h_check
 :check_below
 * punch_bottom >= tgt_bottom
  lda :punch_bottom
  sec
  sbc :tgt_bottom
- cmp #6              ; > 5 away?
- bcs :advance        ; too far below
+ cmp #11             ; > 10 away?
+ bcc :h_check
+ jmp :advance        ; too far below
 
 :h_check
 * Horizontal check: overlap or within 2 bytes
-* punch_right + 2 >= tgt_x
+* punch_right - 2 >= tgt_x
  lda :punch_right
- clc
- adc #2
+ sec
+ sbc #2
  cmp :tgt_x
- bcc :advance        ; punch too far left
-
+ bcs :h_check2
+ jmp :advance        ; punch too far left
+:h_check2
 * tgt_right + 2 >= punch_x
  lda :tgt_x
  clc
@@ -1929,7 +1952,9 @@ check_punch_hit
  clc
  adc #2              ; tgt_right + 2
  cmp IMAGE01_XPOS
- bcc :advance        ; target too far left
+ bcs :hit
+ jmp :advance        ; target too far left
+:hit
 
 * Hit! Increment low nibble of border color
  ldal $E0C034
@@ -1941,6 +1966,73 @@ check_punch_hit
  and #$F0
  ora :tmp
  stal $E0C034
+* Start punched animation on target sprite
+* info_ptr currently points to target's sprite block
+ ldy #40
+ lda (info_ptr),y     ; punched_anim low
+ sta anim_ptr
+ iny
+ lda (info_ptr),y     ; punched_anim high
+ sta anim_ptr+1
+ ora anim_ptr
+ bne :do_punched
+ jmp :advance         ; no punched anim defined, skip
+:do_punched
+* Save puncher's globals before overwriting with target's
+ lda IMAGE01_YPOS
+ pha
+ lda IMAGE01_XPOS
+ pha
+ lda IMAGE01_MIRROR
+ pha
+ lda FRAME_X
+ pha
+ lda FRAME_Y
+ pha
+ lda FRAME_ADDR
+ pha
+ lda FRAME_ADDR+1
+ pha
+* Load target sprite globals for start_anim
+ ldy #0
+ lda (info_ptr),y
+ sta IMAGE01_YPOS
+ ldy #2
+ lda (info_ptr),y
+ sta IMAGE01_XPOS
+ ldy #4
+ lda (info_ptr),y
+ sta IMAGE01_MIRROR
+ ldy #10
+ lda (info_ptr),y
+ sta FRAME_X
+ ldy #12
+ lda (info_ptr),y
+ sta FRAME_Y
+ ldy #14
+ lda (info_ptr),y
+ sta FRAME_ADDR
+ iny
+ lda (info_ptr),y
+ sta FRAME_ADDR+1
+ lda anim_ptr
+ ldx anim_ptr+1
+ jsr start_anim
+* Restore puncher's globals
+ pla
+ sta FRAME_ADDR+1
+ pla
+ sta FRAME_ADDR
+ pla
+ sta FRAME_Y
+ pla
+ sta FRAME_X
+ pla
+ sta IMAGE01_MIRROR
+ pla
+ sta IMAGE01_XPOS
+ pla
+ sta IMAGE01_YPOS
 
 :advance
  lda spr_ptr
@@ -2351,6 +2443,10 @@ billy_sprite
   hex 0100 ; +34 prev_xpos (init same as xpos)
   hex 0900 ; +36 prev_frame_x (init same as frame_x)
   hex 2800 ; +38 prev_frame_y (init same as frame_y)
+  da anim_bpunched ; +40 punched_anim pointer
+  da IMAGE01       ; +42 idle_addr
+  hex 0900         ; +44 idle_x
+  hex 2800         ; +46 idle_y
 
 *-------------------------------
 * Globals (used by erase/draw_sprite)
@@ -2982,6 +3078,10 @@ william_sprite
   hex 5800 ; +34 prev_xpos
   hex 0900 ; +36 prev_frame_x
   hex 2800 ; +38 prev_frame_y
+  da anim_wpunched ; +40 punched_anim pointer
+  da WILLIAM1      ; +42 idle_addr
+  hex 0900         ; +44 idle_x
+  hex 2800         ; +46 idle_y
 
 william2_sprite
   hex 8400 ; +0  ypos
@@ -3004,6 +3104,10 @@ william2_sprite
   hex 5800 ; +34 prev_xpos
   hex 0900 ; +36 prev_frame_x
   hex 2800 ; +38 prev_frame_y
+  da anim_wpunched ; +40 punched_anim pointer
+  da WILLIAM1      ; +42 idle_addr
+  hex 0900         ; +44 idle_x
+  hex 2800         ; +46 idle_y
 
 WILLIAM1_Y HEX 2800
 WILLIAM1_X HEX 0900
