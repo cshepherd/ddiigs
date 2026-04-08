@@ -201,6 +201,8 @@ def main():
     parser.add_argument('output', help='Output file (- for stdout)')
     parser.add_argument('--verify', action='store_true',
                         help='Round-trip verify after packing')
+    parser.add_argument('--length', type=int, default=None,
+                        help='Number of bytes to read from input file')
 
     args = parser.parse_args()
 
@@ -210,6 +212,13 @@ def main():
     else:
         with open(args.input, 'rb') as f:
             data = f.read()
+
+    if args.length is not None:
+        if args.length > len(data):
+            print(f'ERROR: --length {args.length} exceeds file size {len(data)}',
+                  file=sys.stderr)
+            sys.exit(1)
+        data = data[:args.length]
 
     if args.mode == 'pack':
         result = pack_bytes(data)

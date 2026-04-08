@@ -41,6 +41,21 @@ $(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.sh
 	cp assets/mission15.shr out/MISSION15.SHR\#C10000
 	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/MISSION15.SHR\#C10000 --quiet
 	rm out/MISSION15.SHR\#C10000
+	python3 tools/packbytes.py pack --length 32000 assets/mission11.shr out/MISSION11.PAK\#C00000
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/MISSION11.PAK\#C00000 --quiet
+	rm out/MISSION11.PAK\#C00000
+	python3 tools/packbytes.py pack --length 32000 assets/mission12.shr out/MISSION12.PAK\#C00000
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/MISSION12.PAK\#C00000 --quiet
+	rm out/MISSION12.PAK\#C00000
+	python3 tools/packbytes.py pack --length 32000 assets/mission13.shr out/MISSION13.PAK\#C00000
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/MISSION13.PAK\#C00000 --quiet
+	rm out/MISSION13.PAK\#C00000
+	python3 tools/packbytes.py pack --length 32000 assets/mission14.shr out/MISSION14.PAK\#C00000
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/MISSION14.PAK\#C00000 --quiet
+	rm out/MISSION14.PAK\#C00000
+	python3 tools/packbytes.py pack --length 32000 assets/mission15.shr out/MISSION15.PAK\#C00000
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/MISSION15.PAK\#C00000 --quiet
+	rm out/MISSION15.PAK\#C00000
 	cp assets/billy1.shr out/BILLY1.SHR\#C10000
 	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/BILLY1.SHR\#C10000 --quiet
 	rm out/BILLY1.SHR\#C10000
