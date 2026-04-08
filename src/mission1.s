@@ -434,6 +434,17 @@ advance_walk
  sta FRAME_X
  lda walk_y_tbl,x
  sta FRAME_Y
+* Extra XPOS step on middle frames (IMAGE02, steps 1 and 3)
+ txa
+ and #$01             ; odd steps = IMAGE02 frames
+ beq :no_extra
+ lda IMAGE01_MIRROR
+ bne :extra_left
+ inc IMAGE01_XPOS
+ bra :no_extra
+:extra_left
+ dec IMAGE01_XPOS
+:no_extra
  txa
  asl
  tax
@@ -1335,47 +1346,122 @@ anim_punch2
  da PUNCH22
 
 *----------------------------------------------------------
-* check_punch_hit - Check if Billy's punch connects with William.
-* Vertical: Billy's bottom (YPOS + FRAME_Y - 1) within 5 of
-*           William's sprite (Y=$64, height=$28).
-* Horizontal: Billy's punch sprite overlaps or comes within
-*             2 bytes of William's sprite (X=$60, width=$09).
+* check_punch_hit - Check if the punching sprite (whose
+* state is in globals) hit any other sprite in the table.
+* Iterates sprite_table, skips self, checks bounding box.
 * On hit: increment low nibble of border color at $E0C034.
+* Saves/restores spr_ptr and info_ptr.
 *----------------------------------------------------------
-]WILLIAM_X = $60
-]WILLIAM_Y = $64
-]WILLIAM_W = $09
-]WILLIAM_H = $28
-
 check_punch_hit
-* Vertical check: billy_bottom within 5 of William's range
-* billy_bottom = YPOS + FRAME_Y - 1
+* Save caller's spr_ptr and info_ptr
+ lda spr_ptr
+ pha
+ lda spr_ptr+1
+ pha
+ lda info_ptr
+ pha
+ lda info_ptr+1
+ pha
+* Save puncher's info_ptr to identify self
+ lda info_ptr
+ sta :self_lo
+ lda info_ptr+1
+ sta :self_hi
+* Precompute puncher's bottom and right edge
  lda IMAGE01_YPOS
  clc
  adc FRAME_Y
  sec
- sbc #1              ; A = billy_bottom
-* Check: billy_bottom >= WILLIAM_Y + WILLIAM_H - 1 - 5
- cmp #]WILLIAM_Y+]WILLIAM_H-1-5
- bcc :no_hit         ; billy_bottom too far above william_bottom
-* Check: billy_bottom <= WILLIAM_Y + WILLIAM_H - 1 + 5
- cmp #]WILLIAM_Y+]WILLIAM_H-1+5+1
- bcs :no_hit         ; billy_bottom too far below william_bottom
-
-* Horizontal check: rectangles overlap or within 2 bytes
-* Check: billy_right + 2 >= william_left
+ sbc #1
+ sta :punch_bottom    ; puncher bottom = ypos + height - 1
  lda IMAGE01_XPOS
  clc
- adc FRAME_X         ; A = billy_right (XPOS + width)
- clc
- adc #2              ; A = billy_right + 2
- cmp #]WILLIAM_X
- bcc :no_hit         ; billy_right + 2 < william_left
+ adc FRAME_X
+ sta :punch_right     ; puncher right = xpos + width
 
-* Check: william_right + 2 >= billy_left
- lda #]WILLIAM_X+]WILLIAM_W+2
+* Iterate sprite_table
+ lda #<sprite_table
+ sta spr_ptr
+ lda #>sprite_table
+ sta spr_ptr+1
+
+:loop
+ ldy #0
+ lda (spr_ptr),y
+ sta info_ptr
+ iny
+ lda (spr_ptr),y
+ sta info_ptr+1
+ ora info_ptr
+ bne :not_null
+ jmp :done            ; null terminator
+:not_null
+
+* Skip self
+ lda info_ptr
+ cmp :self_lo
+ bne :not_self
+ lda info_ptr+1
+ cmp :self_hi
+ beq :advance
+:not_self
+
+* Read target's ypos, xpos, frame_x, frame_y
+ ldy #0
+ lda (info_ptr),y     ; target ypos
+ sta :tgt_y
+ ldy #2
+ lda (info_ptr),y     ; target xpos
+ sta :tgt_x
+ ldy #10
+ lda (info_ptr),y     ; target frame_x
+ sta :tgt_w
+ ldy #12
+ lda (info_ptr),y     ; target frame_y
+ sta :tgt_h
+
+* Vertical check: puncher bottom within 5 of target bottom
+ lda :tgt_y
+ clc
+ adc :tgt_h
+ sec
+ sbc #1              ; target bottom
+ sta :tgt_bottom
+ lda :punch_bottom
+ cmp :tgt_bottom
+ bcs :check_below
+* punch_bottom < tgt_bottom — check distance
+ lda :tgt_bottom
+ sec
+ sbc :punch_bottom
+ cmp #6              ; > 5 away?
+ bcs :advance        ; too far above
+ bra :h_check
+:check_below
+* punch_bottom >= tgt_bottom
+ lda :punch_bottom
+ sec
+ sbc :tgt_bottom
+ cmp #6              ; > 5 away?
+ bcs :advance        ; too far below
+
+:h_check
+* Horizontal check: overlap or within 2 bytes
+* punch_right + 2 >= tgt_x
+ lda :punch_right
+ clc
+ adc #2
+ cmp :tgt_x
+ bcc :advance        ; punch too far left
+
+* tgt_right + 2 >= punch_x
+ lda :tgt_x
+ clc
+ adc :tgt_w
+ clc
+ adc #2              ; tgt_right + 2
  cmp IMAGE01_XPOS
- bcc :no_hit         ; william_right + 2 < billy_left
+ bcc :advance        ; target too far left
 
 * Hit! Increment low nibble of border color
  ldal $E0C034
@@ -1387,9 +1473,37 @@ check_punch_hit
  and #$F0
  ora :tmp
  stal $E0C034
+
+:advance
+ lda spr_ptr
+ clc
+ adc #2
+ sta spr_ptr
+ bcc :jloop
+ inc spr_ptr+1
+:jloop jmp :loop
+
+:done
+* Restore caller's info_ptr and spr_ptr
+ pla
+ sta info_ptr+1
+ pla
+ sta info_ptr
+ pla
+ sta spr_ptr+1
+ pla
+ sta spr_ptr
  rts
 
-:no_hit rts
+:self_lo dfb 0
+:self_hi dfb 0
+:punch_bottom dfb 0
+:punch_right dfb 0
+:tgt_y dfb 0
+:tgt_x dfb 0
+:tgt_w dfb 0
+:tgt_h dfb 0
+:tgt_bottom dfb 0
 :tmp dfb 0
 
 * (advance_frame removed — animation now data-driven via update_anims)
