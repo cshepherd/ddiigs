@@ -441,17 +441,6 @@ advance_walk
  sta FRAME_X
  lda walk_y_tbl,x
  sta FRAME_Y
-* Extra XPOS step on middle frames (IMAGE02, steps 1 and 3)
- txa
- and #$01             ; odd steps = IMAGE02 frames
- beq :no_extra
- lda IMAGE01_MIRROR
- bne :extra_left
- inc IMAGE01_XPOS
- bra :no_extra
-:extra_left
- dec IMAGE01_XPOS
-:no_extra
  txa
  asl
  tax
