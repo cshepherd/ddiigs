@@ -20,44 +20,47 @@
  sec
  xce                   ; back to emulation for ProDOS calls
 
-* Load background from MISSION11.SHR -> $01/2000 (shadowed to $E1) and $50/2000
- jsr load_background
+* Load MISSION11.PAK -> $4F, unpack to $50, copy $50 -> $01
+ lda #$50
+ sta unpack_bank
+ jsr load_and_unpack
+ jsr copy_50_to_01
 
-* Load MISSION12.SHR -> $51/2000
+* Load MISSION12.PAK -> $4F, unpack to $51
  lda #<path12
  sta p_open+1
  lda #>path12
  sta p_open+2
  lda #$51
- sta load_bank
- jsr load_to_bank
+ sta unpack_bank
+ jsr load_and_unpack
 
-* Load MISSION13.SHR -> $52/2000
+* Load MISSION13.PAK -> $4F, unpack to $52
  lda #<path13
  sta p_open+1
  lda #>path13
  sta p_open+2
  lda #$52
- sta load_bank
- jsr load_to_bank
+ sta unpack_bank
+ jsr load_and_unpack
 
-* Load MISSION14.SHR -> $53/2000
+* Load MISSION14.PAK -> $4F, unpack to $53
  lda #<path14
  sta p_open+1
  lda #>path14
  sta p_open+2
  lda #$53
- sta load_bank
- jsr load_to_bank
+ sta unpack_bank
+ jsr load_and_unpack
 
-* Load MISSION15.SHR -> $54/2000
+* Load MISSION15.PAK -> $4F, unpack to $54
  lda #<path15
  sta p_open+1
  lda #>path15
  sta p_open+2
  lda #$54
- sta load_bank
- jsr load_to_bank
+ sta unpack_bank
+ jsr load_and_unpack
 
 * Enable SHR mode
  lda #$c1
@@ -1020,90 +1023,7 @@ errorspot2
   hex 00000000
 
 *----------------------------------------------------------
-* load_background - Open MISSION11.SHR via ProDOS 8,
-* read 32KB in 4KB chunks into ]RDBUF, and copy each
-* chunk to SHR screen ($E1/2000) and shadow ($50/2000).
-* Returns with carry clear on success, set on error.
-*----------------------------------------------------------
-load_background
- jsr $BF00
- dfb $C8              ; OPEN
- da p_open
- bcs :err
- lda o_refnum
- sta r_refnum
- sta c_refnum
-
- lda #$00
- sta dest
- lda #$20
- sta dest+1            ; destination starts at $2000
- lda #8
- sta :count            ; 8 chunks x 4KB = 32KB
-
-:readlp
- jsr $BF00
- dfb $CA              ; READ
- da p_read
- bcs :close
-
- jsr copy_chunk
-
-* Advance destination by $1000
- lda dest+1
- clc
- adc #$10
- sta dest+1
-
- dec :count
- bne :readlp
-
-:close
- php                   ; save carry (error status)
- jsr $BF00
- dfb $CC              ; CLOSE
- da p_close
- plp                   ; restore original carry
-:err rts
-
-:count dfb 0
-
-*----------------------------------------------------------
-* copy_chunk - Copy 4KB from ]RDBUF to $01/dest and $50/dest
-* Uses ZP $F0-$F5 for indirect long pointers.
-*----------------------------------------------------------
-copy_chunk
- clc
- xce                   ; switch to native mode
- rep $30               ; 16-bit A and index
-
- lda dest
- sta $F0               ; $01 destination low/high
- sta $F3               ; $50 destination low/high
- sep $20
- lda #$01
- sta $F2               ; $01 bank byte (shadowed to $E1)
- lda #$50
- sta $F5               ; $50 bank byte
-
- rep $30
- ldy #$0000
- ldx #$0800            ; $1000/2 = $0800 word copies
-
-:loop lda ]RDBUF,y
- sta [$F0],y
- sta [$F3],y
- iny
- iny
- dex
- bne :loop
-
- sec
- xce                   ; back to emulation mode
- rts
-
-*----------------------------------------------------------
-* load_to_bank - Load a SHR file into a single bank.
+* load_to_bank - Load a file into a single bank.
 * Set p_open pathname pointer and load_bank before calling.
 * Reuses the same ProDOS parameter blocks as load_background.
 *----------------------------------------------------------
@@ -1115,6 +1035,15 @@ load_to_bank
  lda o_refnum
  sta r_refnum
  sta c_refnum
+ sta eof_refnum
+* Get file size (for UnPackBytes source length)
+ jsr $BF00
+ dfb $D1              ; GET_EOF
+ da p_get_eof
+ lda eof_size
+ sta file_size
+ lda eof_size+1
+ sta file_size+1
 
  lda #$00
  sta dest
@@ -1173,6 +1102,88 @@ copy_to_bank
 
 :loop lda ]RDBUF,y
  sta [$F0],y
+ iny
+ iny
+ dex
+ bne :loop
+
+ sec
+ xce                   ; back to emulation mode
+ rts
+
+*----------------------------------------------------------
+* load_and_unpack - Load a .PAK file to bank $4F via ProDOS,
+* then use UnPackBytes to decompress to unpack_bank/$2000.
+* p_open pathname pointer must be set before calling.
+* unpack_bank must be set to the target bank.
+*----------------------------------------------------------
+load_and_unpack
+* Load PAK file to bank $4F
+ lda #$4F
+ sta load_bank
+ jsr load_to_bank
+
+ clc
+ xce                   ; native mode
+ rep $30
+
+ lda #$ffff
+ sta unpack_size
+ lda #$2000
+ sta unpack_addr
+
+ pha                    ; space for result
+
+ pea $004F             ; src bank (high word)
+ pea $2000             ; src addr (low word)
+
+ lda file_size
+ pha
+
+ lda unpack_bank
+ and #$00FF
+ sta unpack_addr+2
+ pea #0000
+ pea #unpack_addr
+
+ pea #0000
+ pea #unpack_size
+
+ ldx #$2703            ; _UnPackBytes
+ jsl $E10000
+ pla                    ; discard result (should be 0 = success)
+ sec
+ xce                   ; back to emulation mode
+ rts
+
+unpack_bank dfb 0      ; target bank for unpacking
+unpack_size hex ffff     ; size of unpacked data (set by UnPackBytes)
+unpack_addr hex 0020E100 ; unpacking destination address (bank/2000)
+
+*----------------------------------------------------------
+* copy_50_to_01 - Copy 32KB from $50/2000 to $01/2000
+* (for initial screen display via shadowing).
+*----------------------------------------------------------
+copy_50_to_01
+ clc
+ xce                   ; native mode
+ rep $30
+
+ lda #$2000
+ sta $F0               ; src addr
+ sta $F3               ; dst addr
+ sep $20
+ lda #$50
+ sta $F2               ; src bank
+ lda #$01
+ sta $F5               ; dst bank
+ rep $30
+
+ ldy #$0000
+ ldx #$4000
+
+:loop lda [$F0],y
+ sta [$F3],y
  iny
  iny
  dex
@@ -2272,20 +2283,26 @@ r_refnum dfb 0        ; ref_num
 p_close dfb 1          ; param count
 c_refnum dfb 0        ; ref_num
 
+p_get_eof dfb 2        ; param count
+eof_refnum dfb 0       ; ref_num
+eof_size ds 3          ; 3-byte EOF (file size)
+
+file_size ds 3        ; 24-bit file size (for UnPackBytes)
+
 pathname dfb 21
- asc '/DDIIGS/MISSION11.SHR'
+ asc '/DDIIGS/MISSION11.PAK'
 
 path12 dfb 21
- asc '/DDIIGS/MISSION12.SHR'
+ asc '/DDIIGS/MISSION12.PAK'
 
 path13 dfb 21
- asc '/DDIIGS/MISSION13.SHR'
+ asc '/DDIIGS/MISSION13.PAK'
 
 path14 dfb 21
- asc '/DDIIGS/MISSION14.SHR'
+ asc '/DDIIGS/MISSION14.PAK'
 
 path15 dfb 21
- asc '/DDIIGS/MISSION15.SHR'
+ asc '/DDIIGS/MISSION15.PAK'
 
 * master sprite table
 sprite_table
