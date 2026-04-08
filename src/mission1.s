@@ -147,103 +147,480 @@ string4 ASC 'Score: 00000',00
 string5 ASC 'DD2 Tech Demo [cCc] 2026 -- Press 8,4,6,2',00
 
 over1
-* Plot WILLIAM1 mirrored at $80,$64
- lda #$EE
- sta MASK
- lda #$E0
- sta MASKHI
- lda #$0E
- sta MASKLO
- lda #$64
- sta IMAGE01_YPOS
- lda #$60
- sta IMAGE01_XPOS
- lda #$01
- sta IMAGE01_MIRROR
- lda WILLIAM1_X
- sta FRAME_X
- lda WILLIAM1_Y
- sta FRAME_Y
- lda #<WILLIAM1
- sta FRAME_ADDR
- lda #>WILLIAM1
- sta FRAME_ADDR+1
- jsr DUMP01
+* Initial draw of all sprites
+ jsr draw_all
 
-* Restore Billy's mask and position for main loop
- lda #$66
- sta MASK
- lda #$60
- sta MASKHI
- lda #$06
- sta MASKLO
- lda #$64
- sta IMAGE01_YPOS
- lda #$01
- sta IMAGE01_XPOS
- stz IMAGE01_MIRROR
- lda FRAME_X_TBL
+*==========================================================
+* Main game loop
+*==========================================================
+game_loop
+ jsr wait_for_vbl
+ jsr erase_all
+ jsr process_input
+ jsr update_anims
+ jsr draw_all
+ bra game_loop
+
+*----------------------------------------------------------
+* erase_all - Iterate sprite_table, load each sprite,
+* use max_width from animation descriptor if active, erase.
+*----------------------------------------------------------
+erase_all
+ lda #<sprite_table
+ sta spr_ptr
+ lda #>sprite_table
+ sta spr_ptr+1
+:loop jsr load_sprite
+ bcs :done
+* If animation active, use max_width for erase
+ ldy #24
+ lda (info_ptr),y     ; anim_ptr low
+ iny
+ ora (info_ptr),y     ; anim_ptr high
+ beq :no_anim
+ ldy #24
+ lda (info_ptr),y
+ sta anim_ptr
+ ldy #25
+ lda (info_ptr),y
+ sta anim_ptr+1
+ ldy #1
+ lda (anim_ptr),y     ; max_width from descriptor
  sta FRAME_X
- lda FRAME_Y_TBL
- sta FRAME_Y
- lda FRAME_ADDR_TBL
- sta FRAME_ADDR
- lda FRAME_ADDR_TBL+1
- sta FRAME_ADDR+1
+:no_anim
+ jsr erase
+ lda spr_ptr
+ clc
+ adc #2
+ sta spr_ptr
+ bcc :loop
+ inc spr_ptr+1
+ bra :loop
+:done rts
+
+*----------------------------------------------------------
+* draw_all - Iterate sprite_table, load each sprite, draw.
+*----------------------------------------------------------
+draw_all
+ lda #<sprite_table
+ sta spr_ptr
+ lda #>sprite_table
+ sta spr_ptr+1
+:loop jsr load_sprite
+ bcs :done
  jsr DUMP01
-nokey bit $c000
- bpl nokey
+ lda spr_ptr
+ clc
+ adc #2
+ sta spr_ptr
+ bcc :loop
+ inc spr_ptr+1
+ bra :loop
+:done rts
+
+*----------------------------------------------------------
+* load_sprite - Load sprite info from the table entry at
+* spr_ptr into globals. Sets info_ptr. Carry set = end.
+*----------------------------------------------------------
+load_sprite
+ ldy #0
+ lda (spr_ptr),y
+ sta info_ptr
+ iny
+ lda (spr_ptr),y
+ sta info_ptr+1
+ ora info_ptr
+ beq :null
+
+ ldy #0
+ lda (info_ptr),y     ; +0 ypos
+ sta IMAGE01_YPOS
+ ldy #2
+ lda (info_ptr),y     ; +2 xpos
+ sta IMAGE01_XPOS
+ ldy #4
+ lda (info_ptr),y     ; +4 mirror
+ sta IMAGE01_MIRROR
+ ldy #10
+ lda (info_ptr),y     ; +10 frame_x
+ sta FRAME_X
+ ldy #12
+ lda (info_ptr),y     ; +12 frame_y
+ sta FRAME_Y
+ ldy #14
+ lda (info_ptr),y     ; +14 frame_addr low
+ sta FRAME_ADDR
+ iny
+ lda (info_ptr),y     ; +15 frame_addr high
+ sta FRAME_ADDR+1
+ ldy #16
+ lda (info_ptr),y     ; +16 mask
+ sta MASK
+ ldy #18
+ lda (info_ptr),y     ; +18 maskhi
+ sta MASKHI
+ ldy #20
+ lda (info_ptr),y     ; +20 masklo
+ sta MASKLO
+ clc
+ rts
+:null sec
+ rts
+
+*----------------------------------------------------------
+* save_sprite - Save globals back to sprite info block.
+* info_ptr must already be set (by load_sprite).
+*----------------------------------------------------------
+save_sprite
+ ldy #0
+ lda IMAGE01_YPOS
+ sta (info_ptr),y     ; +0 ypos
+ ldy #2
+ lda IMAGE01_XPOS
+ sta (info_ptr),y     ; +2 xpos
+ ldy #4
+ lda IMAGE01_MIRROR
+ sta (info_ptr),y     ; +4 mirror
+ ldy #10
+ lda FRAME_X
+ sta (info_ptr),y     ; +10 frame_x
+ ldy #12
+ lda FRAME_Y
+ sta (info_ptr),y     ; +12 frame_y
+ ldy #14
+ lda FRAME_ADDR
+ sta (info_ptr),y     ; +14 frame_addr low
+ iny
+ lda FRAME_ADDR+1
+ sta (info_ptr),y     ; +15 frame_addr high
+ rts
+
+spr_ptr = $E0         ; ZP pointer into sprite_table
+info_ptr = $E2        ; ZP pointer to current sprite info block
+anim_ptr = $E4        ; ZP pointer to animation descriptor
+
+*----------------------------------------------------------
+* process_input - Read keyboard, update Billy's state.
+* If an action animation is playing, ignore all input.
+*----------------------------------------------------------
+process_input
+* Load Billy's state
+ lda #<sprite_table
+ sta spr_ptr
+ lda #>sprite_table
+ sta spr_ptr+1
+ jsr load_sprite
+* Check if action animation is active (block input)
+ ldy #24
+ lda (info_ptr),y     ; anim_ptr low
+ sta anim_ptr
+ iny
+ lda (info_ptr),y     ; anim_ptr high
+ sta anim_ptr+1
+ ora anim_ptr
+ beq :accept_input    ; no animation, accept input
+* Animation active — is it walk? (walk = ok to interrupt)
+ lda anim_ptr
+ cmp #<anim_walk
+ bne :blocked
+ lda anim_ptr+1
+ cmp #>anim_walk
+ beq :accept_input    ; walk animation, allow input
+:blocked rts           ; action animation, block all input
+
+:accept_input
+ bit $c000
+ bmi :has_key
+* No key pressed — if walking, stop walk and restore idle
+ lda anim_ptr
+ cmp #<anim_walk
+ bne :no_key
+ lda anim_ptr+1
+ cmp #>anim_walk
+ bne :no_key
+* Stop walk, restore IMAGE01
+ ldy #24
+ lda #0
+ sta (info_ptr),y     ; clear anim_ptr low
+ iny
+ sta (info_ptr),y     ; clear anim_ptr high
+ lda #<IMAGE01
+ sta FRAME_ADDR
+ lda #>IMAGE01
+ sta FRAME_ADDR+1
+ lda IMAGE01_X
+ sta FRAME_X
+ lda IMAGE01_Y
+ sta FRAME_Y
+ jsr save_sprite
+:no_key rts
+
+:has_key
  lda $c010
  and #$7f
  cmp #'r'
- bne not_scroll
- jsr wait_for_vbl
- jsr scroll_right    ; composites onto back buffer, no erase needed
- bra nokey
-not_scroll
- pha                 ; save keypress
- jsr wait_for_vbl
- jsr erase           ; erase at OLD position with OLD frame dims
- pla                 ; restore keypress
+ bne :not_scroll
+ jsr save_sprite
+ jsr scroll_right
+ jsr load_sprite
+ rts
+:not_scroll
  cmp #'8'
- bne not_up
+ bne :not_up
  dec IMAGE01_YPOS
- bra keyend
-not_up cmp #'2'
- bne not_down
+ jsr save_sprite
+ rts
+:not_up cmp #'2'
+ bne :not_down
  inc IMAGE01_YPOS
- bra keyend
-not_down cmp #'4'
- bne not_left
+ jsr save_sprite
+ rts
+:not_down cmp #'4'
+ bne :not_left
  dec IMAGE01_XPOS
  lda #$01
  sta IMAGE01_MIRROR
- jsr advance_frame   ; animate on horizontal movement
- bra keyend
-not_left cmp #'6'
- bne not_jump
+ jsr start_walk
+ jsr save_sprite
+ rts
+:not_left cmp #'6'
+ bne :not_jump
  inc IMAGE01_XPOS
  stz IMAGE01_MIRROR
- jsr advance_frame   ; animate on horizontal movement
- bra keyend
-not_jump cmp #'j'
- bne not_kick
- jsr do_jump         ; blocking jump animation
- bra nokey           ; do_jump handles all drawing
-not_kick cmp #'k'
- bne not_punch1
- jsr do_kick         ; blocking kick animation
- bra nokey
-not_punch1 cmp #'p'
- bne not_punch2
- jsr do_punch1       ; blocking punch1 animation
- bra nokey
-not_punch2 cmp #'P'
- bne keyend
- jsr do_punch2       ; blocking punch2 animation
- bra nokey
-keyend jsr DUMP01       ; draw at NEW position with NEW frame
- bra nokey
+ jsr start_walk
+ jsr save_sprite
+ rts
+:not_jump cmp #'j'
+ bne :not_kick
+ lda #<anim_jump
+ ldx #>anim_jump
+ jsr start_anim
+ rts
+:not_kick cmp #'k'
+ bne :not_punch1
+ lda #<anim_kick
+ ldx #>anim_kick
+ jsr start_anim
+ rts
+:not_punch1 cmp #'p'
+ bne :not_punch2
+ lda #<anim_punch1
+ ldx #>anim_punch1
+ jsr start_anim
+ rts
+:not_punch2 cmp #'P'
+ bne :no_key2
+ lda #<anim_punch2
+ ldx #>anim_punch2
+ jsr start_anim
+:no_key2 rts
+
+*----------------------------------------------------------
+* start_walk - Start walk animation if not already walking.
+*----------------------------------------------------------
+start_walk
+ lda anim_ptr
+ cmp #<anim_walk
+ bne :start
+ lda anim_ptr+1
+ cmp #>anim_walk
+ beq :already         ; already walking, don't restart
+:start
+ lda #<anim_walk
+ ldx #>anim_walk
+ jsr start_anim
+:already rts
+
+*----------------------------------------------------------
+* start_anim - Start animation. A=desc low, X=desc high.
+* Sets anim_ptr, frame=0, loads first frame, sets timer.
+* info_ptr must be set to current sprite block.
+*----------------------------------------------------------
+start_anim
+ sta anim_ptr
+ stx anim_ptr+1
+ ldy #24
+ sta (info_ptr),y     ; store anim_ptr low
+ iny
+ txa
+ sta (info_ptr),y     ; store anim_ptr high
+ ldy #26
+ lda #0
+ sta (info_ptr),y     ; anim_frame = 0
+* Load first frame from descriptor
+ ldy #3               ; offset to first frame in descriptor
+ lda (anim_ptr),y     ; frame_x
+ sta FRAME_X
+ iny
+ lda (anim_ptr),y     ; frame_y
+ sta FRAME_Y
+ iny
+ lda (anim_ptr),y     ; duration
+ ldy #28
+ sta (info_ptr),y     ; anim_timer
+ ldy #6               ; frame_addr low in descriptor
+ lda (anim_ptr),y
+ sta FRAME_ADDR
+ iny
+ lda (anim_ptr),y     ; frame_addr high
+ sta FRAME_ADDR+1
+ jsr save_sprite
+ rts
+
+*----------------------------------------------------------
+* update_anims - Iterate sprite_table, advance animation
+* timers, update frames.
+*----------------------------------------------------------
+update_anims
+ lda #<sprite_table
+ sta spr_ptr
+ lda #>sprite_table
+ sta spr_ptr+1
+:loop jsr load_sprite
+ bcc :active
+ jmp :done
+:active
+* Check if animation is active
+ ldy #24
+ lda (info_ptr),y
+ sta anim_ptr
+ iny
+ lda (info_ptr),y
+ sta anim_ptr+1
+ ora anim_ptr
+ bne :has_anim
+ jmp :next            ; no animation, skip
+:has_anim
+* Check flags bit 0: advance position per VBL
+ ldy #2
+ lda (anim_ptr),y     ; flags
+ and #$01
+ beq :no_advance
+ lda IMAGE01_MIRROR
+ bne :adv_left
+ inc IMAGE01_XPOS
+ bra :adv_done
+:adv_left
+ dec IMAGE01_XPOS
+:adv_done
+ ldy #2
+ lda IMAGE01_XPOS
+ sta (info_ptr),y     ; save xpos back
+* Decrement timer
+:no_advance
+ ldy #28
+ lda (info_ptr),y     ; anim_timer
+ sec
+ sbc #1
+ sta (info_ptr),y
+ beq :timer_exp
+ jmp :next            ; timer not zero, continue
+:timer_exp
+* Timer expired — advance to next frame
+ ldy #26
+ lda (info_ptr),y     ; anim_frame
+ clc
+ adc #1
+ sta (info_ptr),y     ; anim_frame++
+* Compare with num_frames
+ ldy #0
+ cmp (anim_ptr),y     ; num_frames
+ bcc :load_frame      ; frame < num_frames, load it
+* Animation complete — check for loop
+ ldy #2
+ lda (anim_ptr),y     ; flags
+ and #$02             ; bit 1 = loop
+ beq :anim_done       ; not looping, terminate
+* Loop: reset to frame 0
+ ldy #26
+ lda #0
+ sta (info_ptr),y     ; anim_frame = 0
+ bra :load_frame
+:anim_done
+* Terminate animation, restore idle frame
+ ldy #24
+ lda #0
+ sta (info_ptr),y     ; clear anim_ptr low
+ iny
+ sta (info_ptr),y     ; clear anim_ptr high
+ ldy #26
+ sta (info_ptr),y     ; clear anim_frame
+* Restore IMAGE01 as idle frame (using sprite's own mask)
+ lda #<IMAGE01
+ sta FRAME_ADDR
+ lda #>IMAGE01
+ sta FRAME_ADDR+1
+ lda IMAGE01_X
+ sta FRAME_X
+ lda IMAGE01_Y
+ sta FRAME_Y
+ jsr save_sprite
+ bra :next
+
+:load_frame
+* Load frame data from descriptor
+* Frame offset = 3 + anim_frame * 5
+ ldy #26
+ lda (info_ptr),y     ; anim_frame
+ sta :frm
+ asl                  ; *2
+ asl                  ; *4
+ clc
+ adc :frm             ; *5
+ clc
+ adc #3               ; +3 (header size)
+ tay
+ lda (anim_ptr),y     ; frame_x
+ sta FRAME_X
+ iny
+ lda (anim_ptr),y     ; frame_y
+ sta FRAME_Y
+ iny
+ lda (anim_ptr),y     ; duration
+ pha
+ iny
+ lda (anim_ptr),y     ; frame_addr low
+ sta FRAME_ADDR
+ iny
+ lda (anim_ptr),y     ; frame_addr high
+ sta FRAME_ADDR+1
+ pla
+ ldy #28
+ sta (info_ptr),y     ; anim_timer = duration
+* Check for punch hit (if this is frame 1 of punch1 or punch2)
+ ldy #26
+ lda (info_ptr),y     ; anim_frame
+ cmp #1
+ bne :no_punch_hit
+ lda anim_ptr
+ cmp #<anim_punch1
+ beq :do_hit
+ cmp #<anim_punch2
+ bne :no_punch_hit
+ lda anim_ptr+1
+ cmp #>anim_punch2
+ bne :no_punch_hit
+ bra :do_hit2
+:do_hit
+ lda anim_ptr+1
+ cmp #>anim_punch1
+ bne :no_punch_hit
+:do_hit2
+ jsr check_punch_hit
+:no_punch_hit
+ jsr save_sprite
+
+:next
+ lda spr_ptr
+ clc
+ adc #2
+ sta spr_ptr
+ bcc :jloop
+ inc spr_ptr+1
+:jloop jmp :loop
+:done rts
+
+:frm dfb 0
 
 *----------------------------------------------------------
 * toolbox_init - Start IIgs Toolbox tools
@@ -695,335 +1072,64 @@ stack_blit_55_e1
 :save_s ds 2
 
  mx %11                ; following routines run in emulation mode (8-bit)
-*----------------------------------------------------------
-* do_jump - Play 3-frame jump animation (blocking).
-* Frame 1 (JUMP1): 3 VBLs, frame 2 (JUMP2): 6 VBLs,
-* frame 3 (JUMP3): 3 VBLs. Advances XPOS by 1 byte per VBL
-* in the current facing direction. No input accepted.
-*----------------------------------------------------------
-do_jump
- ldx #0               ; jump step index (0, 1, 2)
-
-:next_frame
- lda JUMP_X_TBL,x
- sta FRAME_X
- lda JUMP_Y_TBL,x
- sta FRAME_Y
- txa
- pha                   ; save step index
- asl                   ; *2 for 16-bit addr table
- tax
- lda JUMP_ADDR_TBL,x
- sta FRAME_ADDR
- lda JUMP_ADDR_TBL+1,x
- sta FRAME_ADDR+1
- pla
- tax                   ; restore step index
- lda JUMP_DUR_TBL,x   ; duration for this frame
- sta :dur
- stx :step             ; save step index (erase/DUMP01 clobber X)
-
-:vbl_loop
- jsr wait_for_vbl
-* Erase with widest jump frame width to avoid trails
- lda FRAME_X
- pha                   ; save current frame width
- lda #$0F             ; JUMP2_X = widest jump sprite (15 bytes)
- sta FRAME_X
- jsr erase
- pla
- sta FRAME_X           ; restore actual frame width for draw
-* Advance position in facing direction
- lda IMAGE01_MIRROR
- bne :go_left
- inc IMAGE01_XPOS
- bra :draw
-:go_left
- dec IMAGE01_XPOS
-:draw
- jsr DUMP01
-
- dec :dur
- bne :vbl_loop
-
-* Next jump frame
- ldx :step             ; restore step index
- inx
- cpx #3
- bcc :next_frame
-
-* Restore to IMAGE01 standing frame after jump
- stz ANIM_STEP         ; reset walk animation to frame 0
- lda #5
- sta ANIM_COUNT        ; reset VBL countdown
- lda FRAME_X_TBL
- sta FRAME_X
- lda FRAME_Y_TBL
- sta FRAME_Y
- lda FRAME_ADDR_TBL
- sta FRAME_ADDR
- lda FRAME_ADDR_TBL+1
- sta FRAME_ADDR+1
-* Erase JUMP3 footprint (wide) and draw IMAGE01
- jsr wait_for_vbl
- lda FRAME_X
- pha
- lda #$0F             ; widest jump sprite
- sta FRAME_X
- jsr erase
- pla
- sta FRAME_X
- jsr DUMP01
- rts
-
-:dur dfb 0
-:step dfb 0
-
-*-------------------------------
-* Jump animation tables
-*-------------------------------
-JUMP_X_TBL   dfb $0A,$0F,$0D         ; JUMP1_X, JUMP2_X, JUMP3_X
-JUMP_Y_TBL   dfb $28,$2A,$20         ; JUMP1_Y, JUMP2_Y, JUMP3_Y
-JUMP_DUR_TBL dfb 3,12,3              ; VBLs per frame
-JUMP_ADDR_TBL DA JUMP1,JUMP2,JUMP3
 
 *----------------------------------------------------------
-* do_kick - Play 2-frame kick animation (blocking).
-* KICK1 for 2 VBLs, KICK2 for 2 VBLs, then restore IMAGE01.
-* Sprite stays in place (no movement).
+* Animation Descriptors
+* Format: num_frames, max_width, flags, then per frame:
+*         frame_x, frame_y, duration, frame_addr (2 bytes)
+* Flags: bit 0 = advance position per VBL, bit 1 = loop
 *----------------------------------------------------------
-do_kick
- ldx #0               ; kick step index (0, 1)
 
-:next_frame
- lda KICK_X_TBL,x
- sta FRAME_X
- lda KICK_Y_TBL,x
- sta FRAME_Y
- stx :step
- txa
- asl
- tax
- lda KICK_ADDR_TBL,x
- sta FRAME_ADDR
- lda KICK_ADDR_TBL+1,x
- sta FRAME_ADDR+1
- ldx :step
- lda KICK_DUR_TBL,x
- sta :dur
+anim_walk
+ dfb 4               ; num_frames
+ dfb $0B             ; max_width (IMAGE03 is widest walk frame)
+ dfb $02             ; flags: loop
+ dfb $09,$28,5       ; IMAGE01: 9 wide, 40 tall, 5 VBLs
+ da IMAGE01
+ dfb $08,$28,5       ; IMAGE02
+ da IMAGE02
+ dfb $0B,$28,5       ; IMAGE03
+ da IMAGE03
+ dfb $08,$28,5       ; IMAGE02
+ da IMAGE02
 
-:vbl_loop
- jsr wait_for_vbl
- lda FRAME_X
- pha
- lda #$14             ; KICK2_X = widest kick sprite (20 bytes)
- sta FRAME_X
- jsr erase
- pla
- sta FRAME_X
- jsr DUMP01
+anim_jump
+ dfb 3               ; num_frames
+ dfb $0F             ; max_width (JUMP2 is widest)
+ dfb $01             ; flags: advance position
+ dfb $0A,$28,3       ; JUMP1
+ da JUMP1
+ dfb $0F,$2A,12      ; JUMP2
+ da JUMP2
+ dfb $0D,$20,3       ; JUMP3
+ da JUMP3
 
- dec :dur
- bne :vbl_loop
+anim_kick
+ dfb 2               ; num_frames
+ dfb $14             ; max_width (KICK2 is widest)
+ dfb $00             ; flags: none
+ dfb $09,$28,12      ; KICK1
+ da KICK1
+ dfb $14,$28,12      ; KICK2
+ da KICK2
 
- ldx :step
- inx
- cpx #2
- bcc :next_frame
+anim_punch1
+ dfb 2               ; num_frames
+ dfb $10             ; max_width (PUNCH12 is widest)
+ dfb $00             ; flags: none
+ dfb $0B,$28,6       ; PUNCH11
+ da PUNCH11
+ dfb $10,$28,6       ; PUNCH12
+ da PUNCH12
 
-* Restore to IMAGE01 standing frame
- stz ANIM_STEP
- lda #5
- sta ANIM_COUNT
- lda FRAME_X_TBL
- sta FRAME_X
- lda FRAME_Y_TBL
- sta FRAME_Y
- lda FRAME_ADDR_TBL
- sta FRAME_ADDR
- lda FRAME_ADDR_TBL+1
- sta FRAME_ADDR+1
- jsr wait_for_vbl
- lda FRAME_X
- pha
- lda #$14             ; widest kick sprite
- sta FRAME_X
- jsr erase
- pla
- sta FRAME_X
- jsr DUMP01
- rts
-
-:dur dfb 0
-:step dfb 0
-
-*-------------------------------
-* Kick animation tables
-*-------------------------------
-KICK_X_TBL   dfb $09,$14             ; KICK1_X, KICK2_X
-KICK_Y_TBL   dfb $28,$28             ; KICK1_Y, KICK2_Y
-KICK_DUR_TBL dfb 12,12                 ; VBLs per frame
-KICK_ADDR_TBL DA KICK1,KICK2
-
-*----------------------------------------------------------
-* do_punch1 - Play 2-frame punch animation (blocking).
-* PUNCH11 for 6 VBLs, PUNCH12 for 6 VBLs, then IMAGE01.
-*----------------------------------------------------------
-do_punch1
- ldx #0
-
-:next_frame
- lda PUNCH1_X_TBL,x
- sta FRAME_X
- lda PUNCH1_Y_TBL,x
- sta FRAME_Y
- stx :step
- txa
- asl
- tax
- lda PUNCH1_ADDR_TBL,x
- sta FRAME_ADDR
- lda PUNCH1_ADDR_TBL+1,x
- sta FRAME_ADDR+1
- ldx :step
- lda PUNCH1_DUR_TBL,x
- sta :dur
-
-:vbl_loop
- jsr wait_for_vbl
- lda FRAME_X
- pha
- lda #$10             ; widest punch sprite (PUNCH22 = $10)
- sta FRAME_X
- jsr erase
- pla
- sta FRAME_X
- jsr DUMP01
-
-* Check for hit on second frame (PUNCH12)
- lda :step
- beq :no_hit
- jsr check_punch_hit
-:no_hit
-
- dec :dur
- bne :vbl_loop
-
- ldx :step
- inx
- cpx #2
- bcc :next_frame
-
-* Restore to IMAGE01 standing frame
- stz ANIM_STEP
- lda #5
- sta ANIM_COUNT
- lda FRAME_X_TBL
- sta FRAME_X
- lda FRAME_Y_TBL
- sta FRAME_Y
- lda FRAME_ADDR_TBL
- sta FRAME_ADDR
- lda FRAME_ADDR_TBL+1
- sta FRAME_ADDR+1
- jsr wait_for_vbl
- lda FRAME_X
- pha
- lda #$12
- sta FRAME_X
- jsr erase
- pla
- sta FRAME_X
- jsr DUMP01
- rts
-
-:dur dfb 0
-:step dfb 0
-
-PUNCH1_X_TBL   dfb $0B,$10
-PUNCH1_Y_TBL   dfb $28,$28
-PUNCH1_DUR_TBL dfb 6,6
-PUNCH1_ADDR_TBL DA PUNCH11,PUNCH12
-
-*----------------------------------------------------------
-* do_punch2 - Play 2-frame punch animation (blocking).
-* PUNCH21 for 6 VBLs, PUNCH22 for 6 VBLs, then IMAGE01.
-*----------------------------------------------------------
-do_punch2
- ldx #0
-
-:next_frame
- lda PUNCH2_X_TBL,x
- sta FRAME_X
- lda PUNCH2_Y_TBL,x
- sta FRAME_Y
- stx :step
- txa
- asl
- tax
- lda PUNCH2_ADDR_TBL,x
- sta FRAME_ADDR
- lda PUNCH2_ADDR_TBL+1,x
- sta FRAME_ADDR+1
- ldx :step
- lda PUNCH2_DUR_TBL,x
- sta :dur
-
-:vbl_loop
- jsr wait_for_vbl
- lda FRAME_X
- pha
- lda #$10             ; widest punch sprite (PUNCH22 = $10)
- sta FRAME_X
- jsr erase
- pla
- sta FRAME_X
- jsr DUMP01
-
-* Check for hit on second frame (PUNCH22)
- lda :step
- beq :no_hit
- jsr check_punch_hit
-:no_hit
-
- dec :dur
- bne :vbl_loop
-
- ldx :step
- inx
- cpx #2
- bcc :next_frame
-
-* Restore to IMAGE01 standing frame
- stz ANIM_STEP
- lda #5
- sta ANIM_COUNT
- lda FRAME_X_TBL
- sta FRAME_X
- lda FRAME_Y_TBL
- sta FRAME_Y
- lda FRAME_ADDR_TBL
- sta FRAME_ADDR
- lda FRAME_ADDR_TBL+1
- sta FRAME_ADDR+1
- jsr wait_for_vbl
- lda FRAME_X
- pha
- lda #$12
- sta FRAME_X
- jsr erase
- pla
- sta FRAME_X
- jsr DUMP01
- rts
-
-:dur dfb 0
-:step dfb 0
-
-PUNCH2_X_TBL   dfb $0A,$10
-PUNCH2_Y_TBL   dfb $28,$28
-PUNCH2_DUR_TBL dfb 6,6
-PUNCH2_ADDR_TBL DA PUNCH21,PUNCH22
+anim_punch2
+ dfb 2               ; num_frames
+ dfb $10             ; max_width (PUNCH22 is widest)
+ dfb $00             ; flags: none
+ dfb $0A,$28,6       ; PUNCH21
+ da PUNCH21
+ dfb $10,$28,6       ; PUNCH22
+ da PUNCH22
 
 *----------------------------------------------------------
 * check_punch_hit - Check if Billy's punch connects with William.
@@ -1083,33 +1189,7 @@ check_punch_hit
 :no_hit rts
 :tmp dfb 0
 
-*----------------------------------------------------------
-* advance_frame - count VBLs and cycle animation frame
-* Sequence: IMAGE01 -> IMAGE02 -> IMAGE03 -> IMAGE02 -> repeat
-*----------------------------------------------------------
-advance_frame
- dec ANIM_COUNT
- bne :done
- lda #5
- sta ANIM_COUNT      ; reset counter
- inc ANIM_STEP
- lda ANIM_STEP
- cmp #4
- bne :nowrap
- stz ANIM_STEP
-:nowrap ldx ANIM_STEP
- lda FRAME_X_TBL,x
- sta FRAME_X
- lda FRAME_Y_TBL,x
- sta FRAME_Y
- txa
- asl                 ; *2 for 16-bit table index
- tax
- lda FRAME_ADDR_TBL,x
- sta FRAME_ADDR
- lda FRAME_ADDR_TBL+1,x
- sta FRAME_ADDR+1
-:done rts
+* (advance_frame removed — animation now data-driven via update_anims)
 
 *----------------------------------------------------------
 * erase - Restore the background behind the sprite
@@ -1433,26 +1513,45 @@ path14 dfb 21
 path15 dfb 21
  asc '/DDIIGS/MISSION15.SHR'
 
+* master sprite table
+sprite_table
+  dw billy_sprite
+  dw william_sprite
+  hex 0000 ; end of table marker (terminator)
+  hex 0000
+  hex 0000
+  hex 0000
+  hex 0000
+  hex 0000
+  hex 0000 ; room for more sprites
+
 **
 ** BILLY sprites
 **
 
-*-------------------------------
-* Animation state
-*-------------------------------
-ANIM_STEP HEX 0000        ; current step in sequence (0-3)
-ANIM_COUNT HEX 0500       ; VBL countdown (starts at 5)
-FRAME_X  HEX 0900         ; current frame width (init to IMAGE01)
-FRAME_Y  HEX 2800         ; current frame height (init to IMAGE01)
-FRAME_ADDR DA IMAGE01     ; current frame data address (init to IMAGE01)
+billy_sprite
+  hex 6400 ; +0  ypos
+  hex 0100 ; +2  xpos
+  hex 0000 ; +4  mirror (0 or 1)
+  hex 0000 ; +6  anim_step (unused in new system)
+  hex 0500 ; +8  anim_count (unused in new system)
+  hex 0900 ; +10 frame width (init to IMAGE01)
+  hex 2800 ; +12 frame height (init to IMAGE01)
+  da IMAGE01 ; +14 frame data address (init to IMAGE01)
+  hex 6600 ; +16 mask (color 6)
+  hex 6000 ; +18 maskhi
+  hex 0600 ; +20 masklo
+  hex 0100 ; +22 controller (01 = keyboard)
+  hex 0000 ; +24 anim_ptr low/high ($0000 = no animation)
+  hex 0000 ; +26 anim_frame
+  hex 0000 ; +28 anim_timer
 
 *-------------------------------
-* Animation lookup tables
-* Sequence: IMAGE01, IMAGE02, IMAGE03, IMAGE02
+* Globals (used by erase/DUMP01)
 *-------------------------------
-FRAME_X_TBL HEX 09080B08
-FRAME_Y_TBL HEX 28282828
-FRAME_ADDR_TBL DA IMAGE01,IMAGE02,IMAGE03,IMAGE02
+FRAME_X  HEX 0900         ; current frame width
+FRAME_Y  HEX 2800         ; current frame height
+FRAME_ADDR DA IMAGE01     ; current frame data address
 
 *-------------------------------
 * Sprite state
@@ -2010,6 +2109,23 @@ PUNCH22LEN EQU *-PUNCH22
 **
 ** WILLIAM sprites (note William's mask color is E not 6)
 **
+
+william_sprite
+  hex 6400 ; +0  ypos
+  hex a000 ; +2  xpos
+  hex 0100 ; +4  mirror (0 or 1)
+  hex 0000 ; +6  anim_step (unused)
+  hex 0500 ; +8  anim_count (unused)
+  hex 0900 ; +10 frame width (init to WILLIAM1)
+  hex 2800 ; +12 frame height (init to WILLIAM1)
+  da WILLIAM1 ; +14 frame data address
+  hex EE00 ; +16 mask
+  hex E000 ; +18 maskhi
+  hex 0E00 ; +20 masklo
+  hex 0000 ; +22 controller (00 = none)
+  hex 0000 ; +24 anim_ptr
+  hex 0000 ; +26 anim_frame
+  hex 0000 ; +28 anim_timer
 
 WILLIAM1_Y HEX 2800
 WILLIAM1_X HEX 0900
