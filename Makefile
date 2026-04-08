@@ -16,7 +16,7 @@ out/title: src/title.s
 	cd src && merlin32 title.s
 	mv src/title out/title
 
-$(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.shr assets/mission13.shr assets/mission14.shr assets/mission15.shr assets/billy1.shr out/mission1 out/title
+$(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.shr assets/mission13.shr assets/mission14.shr assets/mission15.shr out/mission1 out/title
 	mkdir -p out
 	rm -f $(IMGFILE)
 	cadius CREATEVOLUME $(IMGFILE) $(VOLNAME) 800KB --quiet
@@ -29,6 +29,7 @@ $(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.sh
 	python3 tools/packbytes.py pack assets/mission11.shr out/MISSION11.PAK\#C00000
 	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/MISSION11.PAK\#C00000 --quiet
 	rm out/MISSION11.PAK\#C00000
+	# Use --length 32000 on subsequent bg art because we don't need the palettes and SCBs
 	python3 tools/packbytes.py pack --length 32000 assets/mission12.shr out/MISSION12.PAK\#C00000
 	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/MISSION12.PAK\#C00000 --quiet
 	rm out/MISSION12.PAK\#C00000

@@ -1127,8 +1127,8 @@ load_and_unpack
  xce                   ; native mode
  rep $30
 
- lda #$ffff
- sta unpack_size
+ lda #$ffff             ; NOTE _UnPackBytes will alter this data
+ sta unpack_size        ; so rewrite it before each call
  lda #$2000
  sta unpack_addr
 
@@ -1151,7 +1151,7 @@ load_and_unpack
 
  ldx #$2703            ; _UnPackBytes
  jsl $E10000
- pla                    ; discard result (should be 0 = success)
+ pla                    ; discard result (live dangerously)
  sec
  xce                   ; back to emulation mode
  rts
