@@ -208,7 +208,7 @@ draw_all
  sta spr_ptr+1
 :loop jsr load_sprite
  bcs :done
- jsr DUMP01
+ jsr draw_sprite
  lda spr_ptr
  clc
  adc #2
@@ -304,12 +304,26 @@ anim_ptr = $E4        ; ZP pointer to animation descriptor
 * If an action animation is playing, ignore all input.
 *----------------------------------------------------------
 process_input
-* Load Billy's state
+* Find the keyboard-controlled sprite (controller = $01)
  lda #<sprite_table
  sta spr_ptr
  lda #>sprite_table
  sta spr_ptr+1
+:find_player
  jsr load_sprite
+ bcs :no_key           ; end of table, no player found
+ ldy #22
+ lda (info_ptr),y      ; controller
+ cmp #$01
+ beq :found_player
+ lda spr_ptr
+ clc
+ adc #2
+ sta spr_ptr
+ bcc :find_player
+ inc spr_ptr+1
+ bra :find_player
+:found_player
 * Check if action animation is active (block input)
  ldy #24
  lda (info_ptr),y     ; anim_ptr low
@@ -331,28 +345,6 @@ process_input
 :accept_input
  bit $c000
  bmi :has_key
-* No key pressed — if walking, stop walk and restore idle
- lda anim_ptr
- cmp #<anim_walk
- bne :no_key
- lda anim_ptr+1
- cmp #>anim_walk
- bne :no_key
-* Stop walk, restore IMAGE01
- ldy #24
- lda #0
- sta (info_ptr),y     ; clear anim_ptr low
- iny
- sta (info_ptr),y     ; clear anim_ptr high
- lda #<IMAGE01
- sta FRAME_ADDR
- lda #>IMAGE01
- sta FRAME_ADDR+1
- lda IMAGE01_X
- sta FRAME_X
- lda IMAGE01_Y
- sta FRAME_Y
- jsr save_sprite
 :no_key rts
 
 :has_key
@@ -369,25 +361,35 @@ process_input
  bne :not_up
  dec IMAGE01_YPOS
  jsr save_sprite
+ jsr resort_sprite_table
  rts
 :not_up cmp #'2'
  bne :not_down
  inc IMAGE01_YPOS
  jsr save_sprite
+ jsr resort_sprite_table
  rts
 :not_down cmp #'4'
  bne :not_left
+ lda IMAGE01_XPOS
+ cmp #2
+ bcc :skip_left        ; already at minimum (1)
  dec IMAGE01_XPOS
+:skip_left
  lda #$01
  sta IMAGE01_MIRROR
- jsr start_walk
+ jsr advance_walk
  jsr save_sprite
  rts
 :not_left cmp #'6'
  bne :not_jump
+ lda IMAGE01_XPOS
+ cmp #100
+ bcs :skip_right       ; already at maximum (100)
  inc IMAGE01_XPOS
+:skip_right
  stz IMAGE01_MIRROR
- jsr start_walk
+ jsr advance_walk
  jsr save_sprite
  rts
 :not_jump cmp #'j'
@@ -416,20 +418,221 @@ process_input
 :no_key2 rts
 
 *----------------------------------------------------------
-* start_walk - Start walk animation if not already walking.
+* advance_walk - Advance one walk frame. Cycles through
+* IMAGE01 -> IMAGE02 -> IMAGE03 -> IMAGE02 -> repeat.
+* Does not use the animation system — just sets the globals.
 *----------------------------------------------------------
-start_walk
- lda anim_ptr
- cmp #<anim_walk
- bne :start
- lda anim_ptr+1
- cmp #>anim_walk
- beq :already         ; already walking, don't restart
-:start
- lda #<anim_walk
- ldx #>anim_walk
- jsr start_anim
-:already rts
+advance_walk
+ inc walk_step
+ lda walk_step
+ cmp #4
+ bcc :ok
+ stz walk_step
+ lda #0
+:ok tax
+ lda walk_x_tbl,x
+ sta FRAME_X
+ lda walk_y_tbl,x
+ sta FRAME_Y
+ txa
+ asl
+ tax
+ lda walk_addr_tbl,x
+ sta FRAME_ADDR
+ lda walk_addr_tbl+1,x
+ sta FRAME_ADDR+1
+ rts
+
+walk_step dfb 0
+walk_x_tbl dfb $09,$08,$0B,$08
+walk_y_tbl dfb $28,$28,$28,$28
+walk_addr_tbl da IMAGE01,IMAGE02,IMAGE03,IMAGE02
+
+*----------------------------------------------------------
+* resort_sprite_table - Rebuild sprite_table sorted by ypos.
+* info_ptr must point to the sprite that just moved.
+* Iterates sprite_table, skips self, insertion-sorts self
+* into sprite_table_copy by ypos (lowest first), then
+* copies sprite_table_copy back to sprite_table.
+*----------------------------------------------------------
+sort_src = $E6        ; ZP: read pointer into sprite_table
+sort_dst = $E8        ; ZP: write pointer into sprite_table_copy
+
+resort_sprite_table
+* Save our sprite's pointer (info_ptr low/high)
+ lda info_ptr
+ sta :our_ptr
+ lda info_ptr+1
+ sta :our_ptr+1
+* Get our ypos
+ ldy #0
+ lda (info_ptr),y
+ sta :our_y
+
+* Init src = sprite_table, dst = sprite_table_copy
+ lda #<sprite_table
+ sta sort_src
+ lda #>sprite_table
+ sta sort_src+1
+ lda #<sprite_table_copy
+ sta sort_dst
+ lda #>sprite_table_copy
+ sta sort_dst+1
+ lda #0
+ sta :inserted         ; flag: have we inserted ourselves yet?
+
+:loop
+* Read next entry from sprite_table
+ ldy #0
+ lda (sort_src),y
+ sta :cur_lo
+ iny
+ lda (sort_src),y
+ sta :cur_hi
+* Check for null terminator
+ ora :cur_lo
+ beq :end_of_table
+
+* Skip our own entry
+ lda :cur_lo
+ cmp :our_ptr
+ bne :not_self
+ lda :cur_hi
+ cmp :our_ptr+1
+ beq :skip_self
+:not_self
+
+* Get this sprite's ypos
+ lda :cur_lo
+ sta info_ptr
+ lda :cur_hi
+ sta info_ptr+1
+ ldy #0
+ lda (info_ptr),y     ; other sprite's ypos
+
+* If other ypos > our ypos AND we haven't been inserted yet,
+* insert ourselves first
+ cmp :our_y
+ bcc :copy_other       ; other < ours, copy other first
+ beq :copy_other       ; other == ours, copy other first
+* Other > ours — insert ourselves if not already done
+ lda :inserted
+ bne :copy_other       ; already inserted
+* Insert our pointer
+ ldy #0
+ lda :our_ptr
+ sta (sort_dst),y
+ iny
+ lda :our_ptr+1
+ sta (sort_dst),y
+ lda #1
+ sta :inserted
+* Advance dst
+ lda sort_dst
+ clc
+ adc #2
+ sta sort_dst
+ bcc :copy_other
+ inc sort_dst+1
+
+:copy_other
+* Copy current entry to dst
+ ldy #0
+ lda :cur_lo
+ sta (sort_dst),y
+ iny
+ lda :cur_hi
+ sta (sort_dst),y
+* Advance dst
+ lda sort_dst
+ clc
+ adc #2
+ sta sort_dst
+ bcc :skip_self
+ inc sort_dst+1
+
+:skip_self
+* Advance src
+ lda sort_src
+ clc
+ adc #2
+ sta sort_src
+ bcc :loop
+ inc sort_src+1
+ bra :loop
+
+:end_of_table
+* If we haven't inserted ourselves yet, do it now
+ lda :inserted
+ bne :write_term
+ ldy #0
+ lda :our_ptr
+ sta (sort_dst),y
+ iny
+ lda :our_ptr+1
+ sta (sort_dst),y
+ lda sort_dst
+ clc
+ adc #2
+ sta sort_dst
+ bcc :write_term
+ inc sort_dst+1
+:write_term
+* Write null terminator
+ ldy #0
+ lda #0
+ sta (sort_dst),y
+ iny
+ sta (sort_dst),y
+
+* Copy sprite_table_copy back to sprite_table
+ lda #<sprite_table_copy
+ sta sort_src
+ lda #>sprite_table_copy
+ sta sort_src+1
+ lda #<sprite_table
+ sta sort_dst
+ lda #>sprite_table
+ sta sort_dst+1
+:copy_back
+ ldy #0
+ lda (sort_src),y
+ sta (sort_dst),y
+ iny
+ lda (sort_src),y
+ sta (sort_dst),y
+* Check if we just copied the null terminator
+ ora (sort_dst),y
+ dey
+ ora (sort_dst),y
+ beq :resort_done
+* Advance both
+ lda sort_src
+ clc
+ adc #2
+ sta sort_src
+ bcc :cb2
+ inc sort_src+1
+:cb2 lda sort_dst
+ clc
+ adc #2
+ sta sort_dst
+ bcc :copy_back
+ inc sort_dst+1
+ bra :copy_back
+:resort_done
+* Restore info_ptr to our sprite
+ lda :our_ptr
+ sta info_ptr
+ lda :our_ptr+1
+ sta info_ptr+1
+ rts
+
+:our_ptr ds 2
+:our_y dfb 0
+:cur_lo dfb 0
+:cur_hi dfb 0
+:inserted dfb 0
 
 *----------------------------------------------------------
 * start_anim - Start animation. A=desc low, X=desc high.
@@ -975,7 +1178,7 @@ scroll_right
  sta draw_bank
  lda #$00
  sta draw_bank+1
- jsr DUMP01
+ jsr draw_sprite
 
 * Step 5: Stack-blit $55 -> $E1 (screen) for flicker-free update
  clc
@@ -986,7 +1189,7 @@ scroll_right
  sec
  xce                   ; back to emulation mode
 
-* Restore draw_bank for normal (non-scroll) DUMP01 calls
+* Restore draw_bank for normal (non-scroll) draw_sprite calls
  lda #$01
  sta draw_bank
  lda #$00
@@ -1083,7 +1286,7 @@ stack_blit_55_e1
 anim_walk
  dfb 4               ; num_frames
  dfb $0B             ; max_width (IMAGE03 is widest walk frame)
- dfb $02             ; flags: loop
+ dfb $00             ; flags: none (key handler moves position)
  dfb $09,$28,5       ; IMAGE01: 9 wide, 40 tall, 5 VBLs
  da IMAGE01
  dfb $08,$28,5       ; IMAGE02
@@ -1279,10 +1482,10 @@ erase    PHB
  RTS
 
 *----------------------------------------------------------
-* DUMP01 - Plot the current frame to screen
+* draw_sprite - Plot the current frame to screen
 * Uses FRAME_X, FRAME_Y, FRAME_ADDR for the active frame.
 *----------------------------------------------------------
-DUMP01 PHB
+draw_sprite PHB
  PHP
  CLC
  XCE
@@ -1525,6 +1728,16 @@ sprite_table
   hex 0000
   hex 0000 ; room for more sprites
 
+sprite_table_copy
+  hex 0000
+  hex 0000
+  hex 0000
+  hex 0000
+  hex 0000
+  hex 0000
+  hex 0000
+  hex 0000
+
 **
 ** BILLY sprites
 **
@@ -1547,7 +1760,7 @@ billy_sprite
   hex 0000 ; +28 anim_timer
 
 *-------------------------------
-* Globals (used by erase/DUMP01)
+* Globals (used by erase/draw_sprite)
 *-------------------------------
 FRAME_X  HEX 0900         ; current frame width
 FRAME_Y  HEX 2800         ; current frame height
@@ -1562,7 +1775,7 @@ IMAGE01_YPOS HEX 6400
 IMAGE01_MIRROR HEX 0000
 x_scroll_idx HEX 0000
 scroll_src_bank dfb $51    ; current source bank for scroll fill
-draw_bank da $0001         ; bank for DUMP01 destination (default $01, shadowed to $E1)
+draw_bank da $0001         ; bank for draw_sprite destination (default $01, shadowed to $E1)
 scroll_src_off HEX 0000   ; byte offset within source bank scanline
 MASKHI HEX 60
 MASKLO HEX 06
@@ -2112,7 +2325,7 @@ PUNCH22LEN EQU *-PUNCH22
 
 william_sprite
   hex 6400 ; +0  ypos
-  hex a000 ; +2  xpos
+  hex 4000 ; +2  xpos
   hex 0100 ; +4  mirror (0 or 1)
   hex 0000 ; +6  anim_step (unused)
   hex 0500 ; +8  anim_count (unused)
