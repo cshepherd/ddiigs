@@ -207,7 +207,35 @@ erase_all
  lda #>sprite_table
  sta spr_ptr+1
 :loop jsr load_sprite
- bcs :done
+ bcc :not_end
+ jmp :done
+:not_end
+* Check for death sentinel ($FFFF)
+ ldy #24
+ lda (info_ptr),y     ; anim_ptr low
+ cmp #$FF
+ bne :not_dead
+ iny
+ lda (info_ptr),y     ; anim_ptr high
+ cmp #$FF
+ bne :not_dead
+* Death: erase at prev position, then remove from table
+ ldy #32
+ lda (info_ptr),y
+ sta IMAGE01_YPOS
+ ldy #34
+ lda (info_ptr),y
+ sta IMAGE01_XPOS
+ ldy #36
+ lda (info_ptr),y
+ sta FRAME_X
+ ldy #38
+ lda (info_ptr),y
+ sta FRAME_Y
+ jsr erase
+ jsr remove_from_sprite_table
+ bra :loop            ; don't advance spr_ptr — entries shifted down
+:not_dead
 * Erase if bit 1 set (needs_erase)
  ldy #30
  lda (info_ptr),y
@@ -256,9 +284,9 @@ erase_all
  clc
  adc #2
  sta spr_ptr
- bcc :loop
+ bcc :jloop
  inc spr_ptr+1
- bra :loop
+:jloop jmp :loop
 :done rts
 
 *----------------------------------------------------------
@@ -847,6 +875,31 @@ update_anims
  sta (info_ptr),y     ; anim_frame = 0
  bra :load_frame
 :anim_done
+* Check if this was a fall_anim and punch_count >= 6 (death)
+ ldy #50
+ lda (info_ptr),y     ; fall_anim low
+ cmp anim_ptr
+ bne :normal_end
+ iny
+ lda (info_ptr),y     ; fall_anim high
+ cmp anim_ptr+1
+ bne :normal_end
+ ldy #48
+ lda (info_ptr),y     ; punch_count
+ cmp #6
+ bcc :normal_end
+* Death: set $FFFF sentinel, mark dirty for erase+removal
+ ldy #24
+ lda #$FF
+ sta (info_ptr),y     ; anim_ptr = $FFFF
+ iny
+ sta (info_ptr),y
+ ldy #30
+ lda #$03
+ sta (info_ptr),y     ; dirty = erase+draw
+ jmp :next
+
+:normal_end
 * Terminate animation, restore idle frame
  ldy #24
  lda #0
@@ -1467,6 +1520,22 @@ anim_wpunched
  dfb $09,$28,5       ; WPUNCHED: 9 wide, 40 tall, 5 VBLs
  da WPUNCHED
 
+anim_wfall
+ dfb 2               ; num_frames
+ dfb $14             ; max_width (WFALL is widest at $14)
+ dfb $00             ; flags: none (one-shot)
+ dfb $14,$23,3       ; WFALL: 20 wide, 35 tall, 3 VBLs
+ da WFALL
+ dfb $12,$17,60      ; WFALLEN: 18 wide, 15 tall, 60 VBLs
+ da WFALLEN
+
+anim_bfall
+ dfb 1               ; num_frames
+ dfb $09             ; max_width (IMAGE01)
+ dfb $00             ; flags: none (one-shot, placeholder)
+ dfb $09,$28,33      ; IMAGE01: 9 wide, 40 tall, 33 VBLs
+ da IMAGE01
+
 *----------------------------------------------------------
 * check_punch_hit - Check if the punching sprite (whose
 * state is in globals) hit any other sprite in the table.
@@ -1710,6 +1779,51 @@ npc_seek_player
 * mark_overlapping - After erasing a sprite, check if the
 * erased rectangle overlaps any other sprite's on-screen
 * position (prev). If so, mark that sprite for redraw.
+*----------------------------------------------------------
+* remove_from_sprite_table - Remove the entry at spr_ptr
+* by shifting all subsequent entries down by 2 bytes.
+* spr_ptr is left pointing at the same position (now the
+* next entry, or the null terminator).
+*----------------------------------------------------------
+remove_from_sprite_table
+* Use sort_src as read pointer (spr_ptr + 2),
+* sort_dst as write pointer (spr_ptr)
+ lda spr_ptr
+ sta sort_dst
+ clc
+ adc #2
+ sta sort_src
+ lda spr_ptr+1
+ sta sort_dst+1
+ adc #0
+ sta sort_src+1
+:shift
+ ldy #0
+ lda (sort_src),y
+ sta (sort_dst),y
+ iny
+ lda (sort_src),y
+ sta (sort_dst),y
+* Check if we just copied the null terminator
+ dey
+ ora (sort_dst),y
+ beq :rm_done
+ lda sort_src
+ clc
+ adc #2
+ sta sort_src
+ bcc :s2
+ inc sort_src+1
+:s2 lda sort_dst
+ clc
+ adc #2
+ sta sort_dst
+ bcc :shift
+ inc sort_dst+1
+ bra :shift
+:rm_done rts
+
+*----------------------------------------------------------
 * Erased rect is in IMAGE01_XPOS/YPOS/FRAME_X/FRAME_Y.
 * Saves/restores spr_ptr and info_ptr.
 *----------------------------------------------------------
@@ -1892,6 +2006,26 @@ check_punch_hit
  bne :not_self
  jmp :advance
 :not_self
+* Check if target is immune (fall_anim active)
+ ldy #24
+ lda (info_ptr),y     ; anim_ptr low
+ sta anim_ptr
+ iny
+ lda (info_ptr),y     ; anim_ptr high
+ sta anim_ptr+1
+ ora anim_ptr
+ beq :not_immune      ; no animation, punchable
+* Check if active animation is the fall_anim
+ ldy #50
+ lda (info_ptr),y     ; fall_anim low
+ cmp anim_ptr
+ bne :not_immune
+ iny
+ lda (info_ptr),y     ; fall_anim high
+ cmp anim_ptr+1
+ bne :not_immune
+ jmp :advance         ; fall_anim active, immune
+:not_immune
 
 * Read target's ypos, xpos, frame_x, frame_y
  ldy #0
@@ -1956,7 +2090,13 @@ check_punch_hit
  jmp :advance        ; target too far left
 :hit
 
-* Hit! Increment low nibble of border color
+* Hit! Increment target's punch count
+ ldy #48
+ lda (info_ptr),y
+ clc
+ adc #1
+ sta (info_ptr),y
+* Increment low nibble of border color
  ldal $E0C034
  clc
  adc #1
@@ -1966,8 +2106,14 @@ check_punch_hit
  and #$F0
  ora :tmp
  stal $E0C034
-* Start punched animation on target sprite
-* info_ptr currently points to target's sprite block
+* Check if punch_count triggers a fall (3 or 6)
+ ldy #48
+ lda (info_ptr),y     ; punch_count
+ cmp #3
+ beq :use_fall
+ cmp #6
+ beq :use_fall
+* Normal punch — use punched_anim
  ldy #40
  lda (info_ptr),y     ; punched_anim low
  sta anim_ptr
@@ -1976,7 +2122,18 @@ check_punch_hit
  sta anim_ptr+1
  ora anim_ptr
  bne :do_punched
- jmp :advance         ; no punched anim defined, skip
+ jmp :advance
+:use_fall
+* Fall — use fall_anim
+ ldy #50
+ lda (info_ptr),y     ; fall_anim low
+ sta anim_ptr
+ iny
+ lda (info_ptr),y     ; fall_anim high
+ sta anim_ptr+1
+ ora anim_ptr
+ bne :do_punched
+ jmp :advance
 :do_punched
 * Save puncher's globals before overwriting with target's
  lda IMAGE01_YPOS
@@ -2447,6 +2604,8 @@ billy_sprite
   da IMAGE01       ; +42 idle_addr
   hex 0900         ; +44 idle_x
   hex 2800         ; +46 idle_y
+  hex 0000         ; +48 punch_count
+  da anim_bfall    ; +50 fall_anim pointer
 
 *-------------------------------
 * Globals (used by erase/draw_sprite)
@@ -3082,6 +3241,8 @@ william_sprite
   da WILLIAM1      ; +42 idle_addr
   hex 0900         ; +44 idle_x
   hex 2800         ; +46 idle_y
+  hex 0000         ; +48 punch_count
+  da anim_wfall    ; +50 fall_anim pointer
 
 william2_sprite
   hex 8400 ; +0  ypos
@@ -3108,6 +3269,8 @@ william2_sprite
   da WILLIAM1      ; +42 idle_addr
   hex 0900         ; +44 idle_x
   hex 2800         ; +46 idle_y
+  hex 0000         ; +48 punch_count
+  da anim_wfall    ; +50 fall_anim pointer
 
 WILLIAM1_Y HEX 2800
 WILLIAM1_X HEX 0900
@@ -3272,12 +3435,12 @@ WPUNCHED
  HEX EEE0000F44F000000E
  HEX EEEEE0400000000EEE
  HEX EEEEEE066660060EEE
- HEX EEEEEE061110060EEE
- HEX EEEEEE061116060EEE
- HEX EEEEEE006111000EEE
- HEX EEEEEEE06611600EEE
- HEX EEEEEEE00061100EEE
- HEX EEEEEEEE0661100EEE
+ HEX EEEEEE069990060EEE
+ HEX EEEEEE069996060EEE
+ HEX EEEEEE006999000EEE
+ HEX EEEEEEE06699600EEE
+ HEX EEEEEEE00069900EEE
+ HEX EEEEEEEE0669900EEE
  HEX EEEEEEEE0066600EEE
  HEX EEEEEEEE0A90000EEE
  HEX EEEEEEEE099900EEEE
@@ -3328,9 +3491,17 @@ WFALL HEX EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE
  HEX EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE
 WFALLLEN EQU *-WFALL
 
-WFALLEN_Y HEX 0F00
+WFALLEN_Y HEX 1700
 WFALLEN_X HEX 1200
 WFALLEN HEX EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE
+ HEX EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE
+ HEX EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE
+ HEX EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE
+ HEX EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE
+ HEX EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE
+ HEX EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE
+ HEX EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE
+ HEX EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE
  HEX EE00000000EEEEEEEEEEEE0000EEEEEEEEEE
  HEX EEFFFFFFF00000EEEEEEE066600EEEEEEEEE
  HEX EE0FFFF000000000EEEE06000000EEEEEEEE
