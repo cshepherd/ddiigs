@@ -4,6 +4,17 @@
 *----------------------------------------------------------
     org $2000
 
+NinjaTrackerPlus        =   $0F0000
+NTPprepare              =   NinjaTrackerPlus
+NTPplay                 =   NinjaTrackerPlus+3
+NTPstop                 =   NinjaTrackerPlus+6
+NTPgetvuptr             =   NinjaTrackerPlus+9
+NTPgete8ptr             =   NinjaTrackerPlus+12
+NTPforcesongpos         =   NinjaTrackerPlus+15
+NTPgetsongpos           =   NinjaTrackerPlus+18
+NTPsetplayvolume        =   NinjaTrackerPlus+21
+NTPstreamsound          =   NinjaTrackerPlus+24
+
 ]IOBUF = $6C00        ; 1024-byte ProDOS I/O buffer (page-aligned)
 ]RDBUF = $7000         ; 4KB read buffer
 
@@ -19,6 +30,18 @@
  stal $C035
  sec
  xce                   ; back to emulation for ProDOS calls
+
+* Load NTPPLAYER to bank $0F starting at $0F/0000
+ jsr load_ntp_file
+
+* Load MISSION1.NTP to banks $10+ starting at $10/0000
+ lda #<m1ntp_path
+ sta ntp_open+1
+ lda #>m1ntp_path
+ sta ntp_open+2
+ lda #$10
+ sta ntp_bank
+ jsr load_ntp_file
 
 * Load MISSION11.PAK -> $4F, unpack to $50, copy $50 -> $01
  lda #$50
@@ -69,6 +92,15 @@
  clc
  xce
  rep $30
+
+  ldy #$10
+  ldx #$00
+  txa
+  jsl NTPprepare
+
+  lda #00
+  jsl NTPplay
+
  lda #225
  pha
  lda #20
@@ -1249,6 +1281,110 @@ copy_50_to_01
  sec
  xce                   ; back to emulation mode
  rts
+
+*----------------------------------------------------------
+* load_ntp_file - Load a file to ntp_bank+ via ProDOS 8
+* in 4KB chunks. Bank increments when address wraps.
+* Set ntp_open pathname pointer and ntp_bank before calling.
+* First call uses default pathname (NTPPLAYER) and bank $0F.
+*----------------------------------------------------------
+ mx %11                ; emulation mode
+load_ntp_file
+ jsr $BF00
+ dfb $C8              ; OPEN
+ da ntp_open
+ bcs :err
+ lda ntp_oref
+ sta ntp_rref
+ sta ntp_cref
+
+ lda #$00
+ sta ntp_dest
+ sta ntp_dest+1
+
+:readlp
+ jsr $BF00
+ dfb $CA              ; READ
+ da ntp_read
+ bcs :close
+
+ jsr ntp_copy_chunk
+
+* Advance destination by $1000
+ lda ntp_dest+1
+ clc
+ adc #$10
+ sta ntp_dest+1
+ bcc :readlp
+* Address wrapped — next bank
+ lda #$00
+ sta ntp_dest+1
+ inc ntp_bank
+ bra :readlp
+
+:close
+ php
+ jsr $BF00
+ dfb $CC              ; CLOSE
+ da ntp_close
+ plp
+:err rts
+
+*----------------------------------------------------------
+* ntp_copy_chunk - Copy 4KB from ]RDBUF to ntp_bank/ntp_dest
+*----------------------------------------------------------
+ntp_copy_chunk
+ clc
+ xce                   ; native mode
+ rep $30
+ mx %00                ; tell Merlin: 16-bit A and index
+
+ lda ntp_dest
+ sta $F0
+ sep $20
+ lda ntp_bank
+ sta $F2
+ rep $30
+
+ ldy #$0000
+ ldx #$0800            ; $1000/2 = $0800 word copies
+
+:loop lda ]RDBUF,y
+ sta [$F0],y
+ iny
+ iny
+ dex
+ bne :loop
+
+ sec
+ xce                   ; back to emulation mode
+ rts
+
+*----------------------------------------------------------
+* NTP loader ProDOS 8 parameter blocks
+*----------------------------------------------------------
+ntp_dest ds 2
+ntp_bank dfb $0F       ; default bank (NTPPLAYER)
+
+ntp_open dfb 3
+ da ntpp_path          ; default pathname (NTPPLAYER)
+ da ]IOBUF
+ntp_oref dfb 0
+
+ntp_read dfb 4
+ntp_rref dfb 0
+ da ]RDBUF
+ da $1000
+ ds 2                  ; transfer count
+
+ntp_close dfb 1
+ntp_cref dfb 0
+
+ntpp_path dfb 17
+ asc '/DDIIGS/NTPPLAYER'
+
+m1ntp_path dfb 20
+ asc '/DDIIGS/MISSION1.NTP'
 
 *----------------------------------------------------------
 * scroll_right - Scroll playfield 1 byte (2 pixels) right.
