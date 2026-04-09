@@ -2,8 +2,25 @@
 
   ORG $2000
 
+NinjaTrackerPlus        =   $0F0000
+NTPprepare              =   NinjaTrackerPlus
+NTPplay                 =   NinjaTrackerPlus+3
+NTPstop                 =   NinjaTrackerPlus+6
+NTPgetvuptr             =   NinjaTrackerPlus+9
+NTPgete8ptr             =   NinjaTrackerPlus+12
+NTPforcesongpos         =   NinjaTrackerPlus+15
+NTPgetsongpos           =   NinjaTrackerPlus+18
+NTPsetplayvolume        =   NinjaTrackerPlus+21
+NTPstreamsound          =   NinjaTrackerPlus+24
+
   jsr toolbox_init
 
+* Load NTPPLAYER to bank $0F starting at $0F/0000
+  jsr load_ntpplayer
+
+* Load TITLE.NTP to banks $10-$12 starting at $10/0000
+  jsr load_titlentp
+  
   lda #$C1
   sta $E0C029
 
@@ -11,6 +28,15 @@
   clc
   xce
   rep #$30
+
+  ldy #$10
+  ldx #$00
+  txa
+  jsl NTPprepare
+
+  lda #00
+  jsl NTPplay
+
   sep $20
   ldal $C035
   and #$F7             ; clear bit 3
@@ -1262,3 +1288,177 @@ DDRAGON HEX 0000000000000000000000000000000000000000000000000000000000000000
  HEX 0000000000000000000000000000000000000000000000000000000000000000
  HEX 000000
 DDRAGONLEN EQU *-DDRAGON
+
+*----------------------------------------------------------
+* ProDOS 8 file loading and relocation
+*----------------------------------------------------------
+
+]IOBUF = $6C00         ; 1024-byte ProDOS I/O buffer (page-aligned)
+]RDBUF = $7000         ; 4KB read buffer
+
+*----------------------------------------------------------
+* load_ntpplayer - Load NTPPLAYER file from disk via ProDOS 8
+* in 4KB chunks to ]RDBUF, copying each chunk to $0F/xxxx.
+*----------------------------------------------------------
+ mx %11                ; emulation mode for ProDOS 8 calls
+load_ntpplayer
+ jsr $BF00
+ dfb $C8              ; OPEN
+ da t_open
+ bcs :err
+ lda t_oref
+ sta t_rref
+ sta t_cref
+
+ lda #$00
+ sta t_dest
+ sta t_dest+1          ; destination starts at $0F/0000
+ lda #$0F
+ sta t_bank
+
+:readlp
+ jsr $BF00
+ dfb $CA              ; READ
+ da t_read
+ bcs :close
+
+ jsr copy_chunk_bank
+
+* Advance destination by $1000
+ lda t_dest+1
+ clc
+ adc #$10
+ sta t_dest+1
+ bcc :readlp
+* Address wrapped — next bank
+ lda #$00
+ sta t_dest+1
+ inc t_bank
+ bra :readlp
+
+:close
+ php
+ jsr $BF00
+ dfb $CC              ; CLOSE
+ da t_close
+ plp
+:err rts
+
+*----------------------------------------------------------
+* load_titlentp - Load TITLE.NTP to banks $10+ starting
+* at $10/0000. File spans multiple banks; bank increments
+* when address wraps past $FFFF.
+*----------------------------------------------------------
+load_titlentp
+ jsr $BF00
+ dfb $C8              ; OPEN
+ da t2_open
+ bcs :err
+ lda t2_oref
+ sta t2_rref
+ sta t2_cref
+
+ lda #$00
+ sta t_dest
+ sta t_dest+1          ; destination starts at $xx/0000
+ lda #$10
+ sta t_bank            ; starting bank
+
+:readlp
+ jsr $BF00
+ dfb $CA              ; READ
+ da t2_read
+ bcs :close
+
+ jsr copy_chunk_bank
+
+* Advance destination by $1000
+ lda t_dest+1
+ clc
+ adc #$10
+ sta t_dest+1
+ bcc :readlp           ; no wrap, continue
+* Address wrapped past $FFFF — reset to $0000, next bank
+ lda #$00
+ sta t_dest+1
+ inc t_bank
+ bra :readlp
+
+:close
+ php
+ jsr $BF00
+ dfb $CC              ; CLOSE
+ da t2_close
+ plp
+:err rts
+
+*----------------------------------------------------------
+* copy_chunk_bank - Copy 4KB from ]RDBUF to t_bank/t_dest.
+* Uses ZP $F0-$F2 for indirect long pointer.
+*----------------------------------------------------------
+copy_chunk_bank
+ clc
+ xce                   ; native mode
+ rep $30
+ mx %00                ; tell Merlin: 16-bit A and index
+
+ lda t_dest
+ sta $F0               ; destination low/high
+ sep $20
+ lda t_bank
+ sta $F2               ; bank byte
+ rep $30
+
+ ldy #$0000
+ ldx #$0800            ; $1000/2 = $0800 word copies
+
+:loop lda ]RDBUF,y
+ sta [$F0],y
+ iny
+ iny
+ dex
+ bne :loop
+
+ sec
+ xce                   ; back to emulation mode
+ rts
+
+*----------------------------------------------------------
+* ProDOS 8 parameter blocks for title loader
+*----------------------------------------------------------
+t_dest ds 2            ; current destination offset
+t_bank dfb 0           ; current destination bank
+
+t_open dfb 3           ; param count
+ da t_path             ; pathname pointer
+ da ]IOBUF             ; I/O buffer
+t_oref dfb 0           ; ref_num (returned by OPEN)
+
+t_read dfb 4           ; param count
+t_rref dfb 0           ; ref_num
+ da ]RDBUF             ; data buffer
+ da $1000              ; request count (4KB)
+ ds 2                  ; transfer count (returned)
+
+t_close dfb 1          ; param count
+t_cref dfb 0           ; ref_num
+
+t_path dfb 17
+ asc '/DDIIGS/NTPPLAYER'
+
+t2_open dfb 3          ; param count
+ da t2_path            ; pathname pointer
+ da ]IOBUF             ; I/O buffer
+t2_oref dfb 0          ; ref_num
+
+t2_read dfb 4          ; param count
+t2_rref dfb 0          ; ref_num
+ da ]RDBUF             ; data buffer
+ da $1000              ; request count (4KB)
+ ds 2                  ; transfer count (returned)
+
+t2_close dfb 1         ; param count
+t2_cref dfb 0          ; ref_num
+
+t2_path dfb 17
+ asc '/DDIIGS/TITLE.NTP'
