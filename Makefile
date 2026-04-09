@@ -48,6 +48,9 @@ $(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.sh
 	cp out/title out/TITLE\#FF0000
 	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/TITLE\#FF0000 --quiet
 	rm out/TITLE\#FF0000
+	# Add NTP music assets
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ assets/audio/TITLE.NTP#000000 --quiet
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ assets/audio/MISSION1.NTP\#000000 --quiet
 	cadius CATALOG $(IMGFILE)
 
 clean:
