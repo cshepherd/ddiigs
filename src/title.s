@@ -61,6 +61,7 @@ NTPstreamsound          =   NinjaTrackerPlus+24
 
 ; palette 1 is all black
   lda #$00
+  ldx #$20
 ]pal_loop2 stal $019e20,x
   dex
   dex
