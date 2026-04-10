@@ -6,17 +6,22 @@ IMGFILE = out/$(VOLNAME).po
 
 package: $(IMGFILE)
 
-out/mission1: src/mission1.s
+out/game: src/game.s
 	mkdir -p out
-	cd src && merlin32 mission1.s
-	mv src/mission1 out/mission1
+	cd src && merlin32 game.s
+	mv src/game out/game
 
 out/title: src/title.s
 	mkdir -p out
 	cd src && merlin32 title.s
 	mv src/title out/title
 
-$(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.shr assets/mission13.shr assets/mission14.shr assets/mission15.shr out/mission1 out/title
+out/mission1: src/mission1.s
+	mkdir -p out
+	cd src && merlin32 mission1.s
+	mv src/mission1 out/mission1
+
+$(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.shr assets/mission13.shr assets/mission14.shr assets/mission15.shr out/game out/title out/mission1
 	mkdir -p out
 	rm -f $(IMGFILE)
 	cadius CREATEVOLUME $(IMGFILE) $(VOLNAME) 800KB --quiet
@@ -42,9 +47,12 @@ $(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.sh
 	python3 tools/packbytes.py pack --length 32000 assets/mission15.shr out/MISSION15.PAK\#C00000
 	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/MISSION15.PAK\#C00000 --quiet
 	rm out/MISSION15.PAK\#C00000
-	cp out/mission1 out/MISSION1\#FF2000
-	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/MISSION1\#FF2000 --quiet
-	rm out/MISSION1\#FF2000
+	cp out/mission1 out/MISSION1\#060000
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/MISSION1\#060000 --quiet
+	rm out/MISSION1\#060000
+	cp out/game out/GAME\#FF2000
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/GAME\#FF2000 --quiet
+	rm out/GAME\#FF2000
 	cp out/title out/TITLE\#FF0000
 	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/TITLE\#FF0000 --quiet
 	rm out/TITLE\#FF0000
