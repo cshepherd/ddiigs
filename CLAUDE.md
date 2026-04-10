@@ -52,7 +52,7 @@ This separation allows different levels (or different games) to ship different l
 3. Load MISSION1 level data to bank $02 via ProDOS 8
 4. `init_level`: read sprite address table from $02, patch engine structures
 5. Load NTPPLAYER to bank $0F, MISSION1.NTP to banks $10+
-6. Load MISSION11-15.PAK, unpack to banks $50-$54 (background art)
+6. Load MISSION11-15.PAK, unpack to banks $03-$05 (background art)
 7. Copy bank $50 to bank $01 (initial screen via shadowing)
 8. Draw HUD text via QuickDraw II
 9. Initial `draw_all` to render all sprites
@@ -83,12 +83,14 @@ game_loop:
 | $00 | various | Sprite info blocks, sprite table, animation descriptors, globals (mutable, patched at init) |
 | $01 | $2000-$9FFF | SHR screen memory (via shadowing from bank $01 to $E1) |
 | $02 | $0000+ | Level data: header, screen map, sprite pixel data (mission1 binary) |
-| $03-$07 | $0000/$8000 | Background art (2 screens per bank, 32KB each) |
+| $03 | $0000/$8000 | Backgrounds 0,1 (2 per bank, 32KB each) |
+| $04 | $0000/$8000 | Backgrounds 2,3 |
+| $05 | $0000/$8000 | Backgrounds 4,5 |
+| $06-$07 | $0000/$8000 | Room for more backgrounds |
 | $0F | $0000+ | NTP player code |
 | $10-$12 | $0000+ | NTP music data |
 | $4F | $0000+ | Temporary buffer for PAK decompression |
-| $50 | $2000-$9FFF | Shadow copy of current playfield (erase source) |
-| $51-$54 | $2000-$9FFF | Additional background screens for scrolling |
+| $50 | $2000-$9FFF | Shadow copy of current playfield (erase source, copied from active background) |
 | $55 | $2000-$9FFF | Back buffer for scroll compositing |
 
 ### Level data format (bank $02)
