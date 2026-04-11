@@ -15,6 +15,53 @@ NTPstreamsound          =   NinjaTrackerPlus+24
 
   jsr toolbox_init
 
+* Load CCC.SHR to bank $02 starting at $02/2000
+* NOTE ccc.pak (PackBytes) is 32309 bytes, so no sense compressing it
+  jsr load_ccc
+
+  clc
+  xce
+  rep $30
+  sep $20
+  ldal $e0C035
+  and #$F7             ; clear bit 3: enable SHR shadow ($01->$E1)
+  stal $e0C035
+  ldal $e0c034
+  and #$F0
+  stal $e0c034
+  rep $20
+
+; clear just palette colors ($019E00-$019FFF)
+  ldx #$01FE
+  lda #$0000
+]cls stal $019E00,x
+  dex
+  dex
+  bpl ]cls
+
+; copy all of ccc.shr to SHR screen
+; except colors
+  ldx #$7e00
+]cpy ldal $022000,x
+  stal $012000,x
+  dex
+  dex
+  bpl ]cpy
+
+  jsr fadeIn
+
+  jsr half_sec
+  jsr half_sec
+
+  jsr half_sec
+  jsr half_sec
+
+  jsr fadeOut
+
+  sec
+  xce
+  sep $30
+
 * Load NTPPLAYER to bank $0F starting at $0F/0000
   jsr load_ntpplayer
 
@@ -37,19 +84,13 @@ NTPstreamsound          =   NinjaTrackerPlus+24
   lda #00
   jsl NTPplay
 
-  sep $20
-  ldal $C035
-  and #$F7             ; clear bit 3
-  stal $C035
-  rep $20
-
 ; clear screen data and zero all SCBs
   ldx #$7e00
   lda #$0000
 ]cls  stal $012000,x
   dex
   dex
-  bne ]cls
+  bpl ]cls
 
 ; set palettes: palette 0 is main
   ldx #30
@@ -1298,6 +1339,54 @@ DDRAGONLEN EQU *-DDRAGON
 ]RDBUF = $7000         ; 4KB read buffer
 
 *----------------------------------------------------------
+* load_ccc - Load CCC.SHR to bank $02 starting at $02/2000
+*----------------------------------------------------------
+ mx %11
+load_ccc
+ jsr $BF00
+ dfb $C8              ; OPEN
+ da ccc_open
+ bcs :err
+ lda ccc_oref
+ sta ccc_rref
+ sta ccc_cref
+
+ lda #$00
+ sta t_dest
+ lda #$20
+ sta t_dest+1          ; destination starts at $xx/2000
+ lda #$02
+ sta t_bank
+
+:readlp
+ jsr $BF00
+ dfb $CA              ; READ
+ da ccc_read
+ bcs :close
+
+ jsr copy_chunk_bank
+
+* Advance destination by $1000
+ lda t_dest+1
+ clc
+ adc #$10
+ sta t_dest+1
+ bcc :readlp
+* Address wrapped — next bank
+ lda #$00
+ sta t_dest+1
+ inc t_bank
+ bra :readlp
+
+:close
+ php
+ jsr $BF00
+ dfb $CC              ; CLOSE
+ da ccc_close
+ plp
+:err rts
+
+*----------------------------------------------------------
 * load_ntpplayer - Load NTPPLAYER file from disk via ProDOS 8
 * in 4KB chunks to ]RDBUF, copying each chunk to $0F/xxxx.
 *----------------------------------------------------------
@@ -1463,3 +1552,300 @@ t2_cref dfb 0          ; ref_num
 
 t2_path dfb 17
  asc '/DDIIGS/TITLE.NTP'
+
+ccc_open dfb 3
+ da ccc_path
+ da ]IOBUF
+ccc_oref dfb 0
+
+ccc_read dfb 4
+ccc_rref dfb 0
+ da ]RDBUF
+ da $1000
+ ds 2
+
+ccc_close dfb 1
+ccc_cref dfb 0
+
+ccc_path dfb 15
+ asc '/DDIIGS/CCC.SHR'
+
+*----------------------------------------------------------
+* fadeOut - Fade all 16 palettes (256 words at $019E00) to
+* black over 16 steps using the fadeBlack lookup table.
+* Each palette word is $0RGB. Each nibble is faded
+* individually: fadeBlack[nibble*16 + step].
+* Must be called in native mode with REP $30.
+*----------------------------------------------------------
+ mx %00
+fadeOut
+* First, save the original palette to a buffer
+ ldx #$01FE           ; 256 words = 512 bytes, index last word
+:save
+ ldal $019E00,x
+ sta origPal,x
+ dex
+ dex
+ bpl :save
+
+ lda #0
+ sta :step             ; fade step counter (0-15)
+
+:stepLoop
+* For each palette word, fade R, G, B nibbles
+ ldx #0               ; palette byte index (0-$1FE, step 2)
+
+:wordLoop
+* Read original palette word
+ lda origPal,x
+ sta :origWord
+
+* Fade Blue (bits 0-3)
+ and #$000F            ; isolate B nibble
+ asl
+ asl
+ asl
+ asl                   ; * 16 = row offset in fadeBlack
+ clc
+ adc :step             ; + step = table index
+ tay
+ sep $20
+ lda fadeBlack,y       ; faded B value
+ sta :fadedB
+ rep $20
+
+* Fade Green (bits 4-7)
+ lda :origWord
+ and #$00F0
+                       ; already *16 relative to nibble value
+                       ; but we need (nibble_value * 16) + step
+                       ; nibble_value = bits 4-7 >> 4
+ lsr
+ lsr
+ lsr
+ lsr                   ; now have green nibble in low 4 bits
+ asl
+ asl
+ asl
+ asl                   ; * 16
+ clc
+ adc :step
+ tay
+ sep $20
+ lda fadeBlack,y       ; faded G value
+ asl
+ asl
+ asl
+ asl                   ; shift back to bits 4-7
+ ora :fadedB
+ sta :fadedGB
+ rep $20
+
+* Fade Red (bits 8-11)
+ lda :origWord
+ and #$0F00
+ xba                   ; swap bytes: red nibble now in low byte
+ asl
+ asl
+ asl
+ asl                   ; * 16
+ clc
+ adc :step
+ tay
+ sep $20
+ lda fadeBlack,y       ; faded R value (8-bit, 0-F)
+ sta :fadedR
+ rep $20
+* Combine $0RGB from :fadedR (R), :fadedGB (G+B)
+ lda :fadedR
+ and #$000F            ; $000R
+ xba                   ; $0R00
+ sta :fadedRGB         ; save R in high byte position
+ lda :fadedGB
+ and #$00FF            ; $00GB
+ ora :fadedRGB         ; $0RGB
+ stal $019E00,x        ; write to palette RAM
+
+ inx
+ inx
+ cpx #$0200
+ bcc :wordLoop
+
+* Wait for VBL
+ sep $20
+:vbl1 bit $C019
+ bmi :vbl1
+:vbl2 bit $C019
+ bpl :vbl2
+ rep $20
+
+* Next step
+ lda :step
+ clc
+ adc #1
+ sta :step
+ cmp #16
+ bcs :fadeDone
+ jmp :stepLoop
+:fadeDone
+
+ rts
+
+:step dw 0
+:origWord dw 0
+:fadedB dfb 0
+:fadedGB dfb 0
+:fadedR dfb 0
+:fadedRGB dw 0
+
+*----------------------------------------------------------
+* fadeIn - Fade all 16 palettes from black to the target
+* palette stored at $02/9E00 over 16 steps.
+* Works backwards through the fadeBlack table (step 15→0).
+* Must be called in native mode with REP $30.
+*----------------------------------------------------------
+ mx %00
+fadeIn
+* Save target palette from bank $02 to buffer
+ sep $20
+ lda #$02
+ sta $F2               ; bank byte for indirect long
+ rep $20
+ lda #$9E00
+ sta $F0               ; $F0 = $02/9E00
+ ldy #0
+:loadTgt
+ lda [$F0],y
+ sta targetPal,y
+ iny
+ iny
+ cpy #$0200
+ bcc :loadTgt
+
+ lda #15
+ sta :istep            ; start at step 15 (fully black)
+
+:istepLoop
+ ldx #0               ; palette byte index
+
+:iwordLoop
+* Read target palette word
+ lda targetPal,x
+ sta :iorigWord
+
+* Fade Blue (bits 0-3)
+ and #$000F
+ asl
+ asl
+ asl
+ asl                   ; * 16
+ clc
+ adc :istep
+ tay
+ sep $20
+ lda fadeBlack,y
+ sta :ifadedB
+ rep $20
+
+* Fade Green (bits 4-7)
+ lda :iorigWord
+ and #$00F0
+ lsr
+ lsr
+ lsr
+ lsr                   ; green nibble in low bits
+ asl
+ asl
+ asl
+ asl                   ; * 16
+ clc
+ adc :istep
+ tay
+ sep $20
+ lda fadeBlack,y
+ asl
+ asl
+ asl
+ asl                   ; shift to bits 4-7
+ ora :ifadedB
+ sta :ifadedGB
+ rep $20
+
+* Fade Red (bits 8-11)
+ lda :iorigWord
+ and #$0F00
+ xba                   ; red nibble in low byte
+ asl
+ asl
+ asl
+ asl                   ; * 16
+ clc
+ adc :istep
+ tay
+ sep $20
+ lda fadeBlack,y       ; faded R value (8-bit, 0-F)
+ sta :ifadedR
+ rep $20
+* Combine $0RGB from :ifadedR (R), :ifadedGB (G+B)
+ lda :ifadedR
+ and #$000F            ; $000R
+ xba                   ; $0R00
+ sta :ifadedRGB
+ lda :ifadedGB
+ and #$00FF            ; $00GB
+ ora :ifadedRGB        ; $0RGB
+ stal $019E00,x
+
+ inx
+ inx
+ cpx #$0200
+ bcc :iwordLoop
+
+* Wait for VBL
+ sep $20
+:ivbl1 bit $C019
+ bmi :ivbl1
+:ivbl2 bit $C019
+ bpl :ivbl2
+ rep $20
+
+* Decrement step (15→14→...→0)
+ lda :istep
+ sec
+ sbc #1
+ sta :istep
+ bpl :jstep
+ rts                   ; done when step goes negative
+:jstep jmp :istepLoop
+
+:istep dw 0
+:iorigWord dw 0
+:ifadedB dfb 0
+:ifadedGB dfb 0
+:ifadedR dfb 0
+:ifadedRGB dw 0
+
+targetPal ds 512       ; target palette from bank $02
+
+origPal ds 512          ; saved copy of original palette (used by fadeOut)
+
+; fade table for title screen fade-in/out effect, indexed by frame (0-15) and color index (0-15)
+; use fadeBlack[orig*16]+step to get faded color index for a given original color nibble and fade step
+; NOTE this is for gamma value 1.6
+fadeBlack
+    db $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
+    db $01, $01, $01, $01, $01, $01, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
+    db $02, $02, $02, $01, $01, $01, $01, $01, $01, $00, $00, $00, $00, $00, $00, $00
+    db $03, $03, $02, $02, $02, $02, $01, $01, $01, $01, $01, $00, $00, $00, $00, $00
+    db $04, $04, $03, $03, $02, $02, $02, $01, $01, $01, $01, $00, $00, $00, $00, $00
+    db $05, $04, $04, $03, $03, $03, $02, $02, $01, $01, $01, $01, $00, $00, $00, $00
+    db $06, $05, $05, $04, $04, $03, $03, $02, $02, $01, $01, $01, $00, $00, $00, $00
+    db $07, $06, $06, $05, $04, $04, $03, $03, $02, $02, $01, $01, $01, $00, $00, $00
+    db $08, $07, $06, $06, $05, $04, $04, $03, $02, $02, $01, $01, $01, $00, $00, $00
+    db $09, $08, $07, $06, $05, $05, $04, $03, $03, $02, $02, $01, $01, $00, $00, $00
+    db $0A, $09, $08, $07, $06, $05, $04, $04, $03, $02, $02, $01, $01, $00, $00, $00
+    db $0B, $0A, $09, $08, $07, $06, $05, $04, $03, $03, $02, $01, $01, $00, $00, $00
+    db $0C, $0B, $0A, $08, $07, $06, $05, $04, $04, $03, $02, $01, $01, $00, $00, $00
+    db $0D, $0C, $0A, $09, $08, $07, $06, $05, $04, $03, $02, $02, $01, $01, $00, $00
+    db $0E, $0D, $0B, $0A, $09, $07, $06, $05, $04, $03, $02, $02, $01, $01, $00, $00
+    db $0F, $0D, $0C, $0A, $09, $08, $07, $05, $04, $03, $03, $02, $01, $01, $00, $00
