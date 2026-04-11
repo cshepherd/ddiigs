@@ -21,7 +21,17 @@ out/mission1: src/mission1.s
 	cd src && merlin32 mission1.s
 	mv src/mission1 out/mission1
 
-$(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.shr assets/mission13.shr assets/mission14.shr assets/mission15.shr out/game out/title out/mission1
+out/cutscene: src/cutscene.s
+	mkdir -p out
+	cd src && merlin32 cutscene.s
+	mv src/cutscene out/cutscene
+
+out/cutscene1: src/cutscene1.s
+	mkdir -p out
+	cd src && merlin32 cutscene1.s
+	mv src/cutscene1 out/cutscene1
+
+$(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.shr assets/mission13.shr assets/mission14.shr assets/mission15.shr out/game out/title out/mission1 out/cutscene out/cutscene1
 	mkdir -p out
 	rm -f $(IMGFILE)
 	cadius CREATEVOLUME $(IMGFILE) $(VOLNAME) 800KB --quiet
@@ -53,6 +63,12 @@ $(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.sh
 	cp out/game out/GAME\#FF2000
 	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/GAME\#FF2000 --quiet
 	rm out/GAME\#FF2000
+	cp out/cutscene out/CUTSCENE\#FF2000
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/CUTSCENE\#FF2000 --quiet
+	rm out/CUTSCENE\#FF2000
+	cp out/cutscene1 out/CUTSCENE1\#040000
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/CUTSCENE1\#040000 --quiet
+	rm out/CUTSCENE1\#040000
 	cp out/title out/TITLE\#FF0000
 	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/TITLE\#FF0000 --quiet
 	rm out/TITLE\#FF0000
