@@ -8,7 +8,7 @@
   xce
   rep $30
 
-  pea #$000B
+  pea #$0006
   ldx #$A004
   jsl $E10000        ; SetForeColor
 
