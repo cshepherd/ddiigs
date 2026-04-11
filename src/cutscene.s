@@ -16,6 +16,10 @@
   ldx #$A204
   jsl $E10000        ; SetBackColor
 
+  pea #$0001         ; bit 1 = bold
+  ldx #$9A04
+  jsl $E10000        ; SetTextFace
+
   sep $20
   ldal $e0C035
   and #$F7             ; clear bit 3: enable SHR shadow ($01->$E1)
