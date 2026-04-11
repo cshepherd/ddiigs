@@ -290,7 +290,7 @@ CUTSCENE14_TEXT2
 CUTSCENE14_TEXT3
     dw 10 ; Xpos
     dw 80 ; Ypos
-    ASC 'Billy''s girlfriend,',00
+    ASC 'Billy',27,'s girlfriend,',00
 CUTSCENE14_TEXT4
     dw 10 ; Xpos
     dw 100 ; Ypos
@@ -319,7 +319,7 @@ CUTSCENE15_TEXT3
 CUTSCENE15_TEXT4
     dw 10 ; Xpos
     dw 130 ; Ypos
-    ASC 'Let''s go Double Dragons !',00
+    ASC 'Let',27,'s go Double Dragons !',00
 CUTSCENE15_TEXT5
     dw 10 ; Xpos
     dw 150 ; Ypos
