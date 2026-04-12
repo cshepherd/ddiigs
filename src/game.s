@@ -210,10 +210,352 @@ game_loop
  jsr wait_for_vbl
  jsr erase_all
  jsr process_input
-; jsr update_npcs
+ jsr run_script
+ jsr update_npcs
  jsr update_anims
  jsr draw_all
  bra game_loop
+
+*----------------------------------------------------------
+* run_script - Execute level script bytecode from bank $02.
+* Called each frame. Executes immediate opcodes until hitting
+* a blocking op (WAITX, WAITY, WAITCLR) or END.
+* When blocked, checks condition each frame until satisfied.
+*----------------------------------------------------------
+run_script
+ lda script_state
+ cmp #SCRIPT_DONE
+ beq :rs_rts           ; level ended, nothing to do
+
+* Check if we're waiting on a condition
+ cmp #SCRIPT_WAITX
+ bne :nwx
+ jmp :check_waitx
+:nwx cmp #SCRIPT_WAITY
+ bne :nwy
+ jmp :check_waity
+:nwy cmp #SCRIPT_WAITCLR
+ bne :nwc
+ jmp :check_waitclr
+:nwc
+
+* SCRIPT_RUN — execute opcodes
+:exec_loop
+ ldy #0
+ lda [script_pc],y     ; read opcode byte
+ and #$FF              ; mask to 8-bit (emulation mode load is already 8-bit)
+
+ cmp #OP_END
+ bne :not_end
+ lda #SCRIPT_DONE
+ sta script_state
+:rs_rts rts
+
+:not_end
+ cmp #OP_SCREEN
+ bne :not_screen
+* OP_SCREEN: param = 1 byte screen index
+ ldy #1
+ lda [script_pc],y     ; screen index
+ jsr script_set_screen
+ lda script_pc
+ clc
+ adc #2                ; opcode(1) + param(1)
+ sta script_pc
+ jmp :exec_loop
+
+:not_screen
+ cmp #OP_NPC
+ bne :not_npc
+* OP_NPC: params = dw sprite_ptr(2), db xpos(1), db ypos(1), db orient(1)
+ ldy #1
+ lda [script_pc],y     ; sprite_ptr low
+ sta sc_npc_ptr
+ iny
+ lda [script_pc],y     ; sprite_ptr high
+ sta sc_npc_ptr+1
+ ldy #3
+ lda [script_pc],y     ; xpos
+ sta sc_npc_x
+ ldy #4
+ lda [script_pc],y     ; ypos
+ sta sc_npc_y
+ ldy #5
+ lda [script_pc],y     ; orientation (mirror)
+ sta sc_npc_orient
+ jsr script_spawn_npc
+ lda script_pc
+ clc
+ adc #6                ; opcode(1) + ptr(2) + x(1) + y(1) + orient(1)
+ sta script_pc
+ jmp :exec_loop
+
+:not_npc
+ cmp #OP_RIGHT
+ bne :not_right
+* OP_RIGHT: param = 1 byte screen index
+ ldy #1
+ lda [script_pc],y
+ sta scroll_right_screen
+ lda #1
+ sta scroll_right_enabled
+ lda script_pc
+ clc
+ adc #2
+ sta script_pc
+ jmp :exec_loop
+
+:not_right
+ cmp #OP_LEFT
+ bne :not_left
+ ldy #1
+ lda [script_pc],y
+ sta scroll_left_screen
+ lda #1
+ sta scroll_left_enabled
+ lda script_pc
+ clc
+ adc #2
+ sta script_pc
+ jmp :exec_loop
+
+:not_left
+ cmp #OP_SCRLOCK
+ bne :not_scrlock
+ stz scroll_right_enabled
+ stz scroll_left_enabled
+ inc script_pc          ; opcode only, no params
+ jmp :exec_loop
+
+:not_scrlock
+ cmp #OP_WAITX
+ bne :not_waitx
+* OP_WAITX: param = 1 byte X threshold
+ ldy #1
+ lda [script_pc],y
+ sta script_wait_val
+ lda #SCRIPT_WAITX
+ sta script_state
+ lda script_pc
+ clc
+ adc #2                ; advance past opcode + param
+ sta script_pc
+ rts                   ; yield until condition met
+
+:not_waitx
+ cmp #OP_WAITY
+ bne :not_waity
+ ldy #1
+ lda [script_pc],y
+ sta script_wait_val
+ lda #SCRIPT_WAITY
+ sta script_state
+ lda script_pc
+ clc
+ adc #2
+ sta script_pc
+ rts
+
+:not_waity
+ cmp #OP_WAITCLR
+ bne :not_waitclr
+ lda #SCRIPT_WAITCLR
+ sta script_state
+ inc script_pc          ; opcode only
+ rts
+
+:not_waitclr
+* OP_NONE or unknown — skip 1 byte
+ inc script_pc
+ jmp :exec_loop
+
+*--- Wait condition checks ---
+
+:check_waitx
+* Check if player X >= threshold
+ lda IMAGE01_XPOS
+ cmp script_wait_val
+ bcc :rs_rts2           ; not yet
+ lda #SCRIPT_RUN
+ sta script_state
+ jmp :exec_loop         ; condition met, resume executing
+
+:check_waity
+ lda IMAGE01_YPOS
+ cmp script_wait_val
+ bcc :rs_rts2
+ lda #SCRIPT_RUN
+ sta script_state
+ jmp :exec_loop
+
+:check_waitclr
+* Check if all NPCs are defeated (no controller=$00 sprites in table)
+ lda #<sprite_table
+ sta spr_ptr
+ lda #>sprite_table
+ sta spr_ptr+1
+:clr_loop
+ ldy #0
+ lda (spr_ptr),y
+ sta info_ptr
+ iny
+ lda (spr_ptr),y
+ sta info_ptr+1
+ ora info_ptr
+ beq :all_clear         ; end of table, no NPCs found
+ ldy #22
+ lda (info_ptr),y       ; controller
+ beq :npc_alive         ; found an NPC, not clear yet
+ lda spr_ptr
+ clc
+ adc #2
+ sta spr_ptr
+ bcc :clr_loop
+ inc spr_ptr+1
+ bra :clr_loop
+:npc_alive
+:rs_rts2 rts
+:all_clear
+ lda #SCRIPT_RUN
+ sta script_state
+ jmp :exec_loop
+
+*--- Script helper: set screen ---
+script_set_screen
+* A = screen index. Load background from screen map.
+* For now, just stores the current screen index.
+ sta current_screen
+ rts
+
+*--- Script helper: spawn NPC ---
+script_spawn_npc
+* Copy sprite info block template from bank $02 to a free
+* slot in bank $00, set position/orientation, add to sprite_table.
+* sc_npc_ptr = bank $02 sprite block address
+* sc_npc_x, sc_npc_y, sc_npc_orient = spawn params
+*
+* Find first null entry in sprite_table
+ lda #<sprite_table
+ sta spr_ptr
+ lda #>sprite_table
+ sta spr_ptr+1
+:find_slot
+ ldy #0
+ lda (spr_ptr),y
+ iny
+ ora (spr_ptr),y
+ beq :found_slot
+ lda spr_ptr
+ clc
+ adc #2
+ sta spr_ptr
+ bcc :find_slot
+ inc spr_ptr+1
+ bra :find_slot
+:found_slot
+* Allocate next NPC buffer
+ lda npc_buf_next
+ sta info_ptr
+ lda npc_buf_next+1
+ sta info_ptr+1
+* Copy 52 bytes from bank $02 template to bank $00 buffer
+ clc
+ xce                   ; native mode
+ rep $30
+ mx %00
+ lda sc_npc_ptr
+ sta $F0
+ sep $20
+ lda #$02
+ sta $F2               ; source: bank $02
+ rep $20
+ ldy #0
+:copy_blk
+ lda [$F0],y
+ sta (info_ptr),y
+ iny
+ iny
+ cpy #52
+ bcc :copy_blk
+ sec
+ xce                   ; back to emulation mode
+* Set position and orientation
+ ldy #0
+ lda sc_npc_y
+ sta (info_ptr),y      ; +0 ypos
+ ldy #2
+ lda sc_npc_x
+ sta (info_ptr),y      ; +2 xpos
+ ldy #4
+ lda sc_npc_orient
+ sta (info_ptr),y      ; +4 mirror
+* Patch animation pointers to bank $00 versions
+* (template has bank $02 addresses which can't be read via (dp),Y)
+ ldy #40
+ lda #<anim_wpunched
+ sta (info_ptr),y      ; +40 punched_anim low
+ iny
+ lda #>anim_wpunched
+ sta (info_ptr),y      ; +41 punched_anim high
+ ldy #42
+ lda spr_william1      ; idle_addr — bank $02 address (low byte)
+ sta (info_ptr),y
+ iny
+ lda spr_william1+1    ; idle_addr high byte
+ sta (info_ptr),y
+ ldy #50
+ lda #<anim_wfall
+ sta (info_ptr),y      ; +50 fall_anim low
+ iny
+ lda #>anim_wfall
+ sta (info_ptr),y      ; +51 fall_anim high
+* Set dirty = draw only (bit 0)
+ ldy #30
+ lda #$01
+ sta (info_ptr),y
+* Copy prev to match current
+ ldy #0
+ lda (info_ptr),y
+ ldy #32
+ sta (info_ptr),y      ; prev_ypos
+ ldy #2
+ lda (info_ptr),y
+ ldy #34
+ sta (info_ptr),y      ; prev_xpos
+* Write pointer into sprite_table
+ ldy #0
+ lda info_ptr
+ sta (spr_ptr),y
+ iny
+ lda info_ptr+1
+ sta (spr_ptr),y
+* Advance NPC buffer pointer (52 bytes per block)
+ lda npc_buf_next
+ clc
+ adc #52
+ sta npc_buf_next
+ lda npc_buf_next+1
+ adc #0
+ sta npc_buf_next+1
+ rts
+
+sc_npc_ptr   ds 2
+sc_npc_x     dfb 0
+sc_npc_y     dfb 0
+sc_npc_orient dfb 0
+
+*-------------------------------
+* Script state variables
+*-------------------------------
+current_screen dfb 0
+scroll_right_enabled dfb 0
+scroll_left_enabled dfb 0
+scroll_right_screen dfb 0
+scroll_left_screen dfb 0
+npc_buf_next dw npc_buffers   ; next free NPC buffer address
+
+* NPC sprite block buffers (8 slots x 52 bytes = 416 bytes)
+npc_buffers ds 416
 
 *----------------------------------------------------------
 * update_npcs - Iterate sprite_table, call npc_seek_player
@@ -472,6 +814,28 @@ save_sprite
 spr_ptr = $E0         ; ZP pointer into sprite_table
 info_ptr = $E2        ; ZP pointer to current sprite info block
 anim_ptr = $E4        ; ZP pointer to animation descriptor (3 bytes: addr + bank at $E6)
+script_pc = $EA       ; 3-byte ZP pointer to current level script position (bank $02)
+
+* Level script opcodes (must match mission1.s definitions)
+OP_NONE     = 0
+OP_SCREEN   = 1
+OP_WAITX    = 2
+OP_NPC      = 3
+OP_RIGHT    = 4
+OP_LEFT     = 5
+OP_UP       = 6
+OP_DOWN     = 7
+OP_SCRLOCK  = 8
+OP_END      = 9
+OP_WAITY    = 10
+OP_WAITCLR  = 11
+
+* Script interpreter state
+SCRIPT_RUN  = 0       ; executing opcodes
+SCRIPT_WAITX = 1      ; waiting for player X threshold
+SCRIPT_WAITY = 2      ; waiting for player Y threshold
+SCRIPT_WAITCLR = 3    ; waiting for all NPCs defeated
+SCRIPT_DONE = 4       ; level ended
 
 *----------------------------------------------------------
 * process_input - Read keyboard, update Billy's state.
@@ -1321,14 +1685,16 @@ init_level
 * Table order: IMAGE01, IMAGE02, IMAGE03, JUMP1-3, KICK1-2,
 * PUNCH11-12, PUNCH21-22, BPUNCHED, WILLIAM1, WPUNCHED, WFALL, WFALLEN
 
-* Set up ZP $F0 to point to sprite address table in bank $02
-* Table starts at offset $12 (18 bytes) from $020000
+* Read sprite address table offset from header field at $02/0012
  lda #$0012
  sta $F0
  sep $20
  lda #$02
- sta $F2              ; $F0 = $02/0018
+ sta $F2              ; $F0 = $02/0012
  rep $20
+ ldy #0
+ lda [$F0],y          ; read spr_addr_off value from header
+ sta $F0              ; now $F0 points to the actual sprite address table
 
 * Read each sprite address and patch the engine's DA references
 * IMAGE01 (table offset +0)
@@ -1493,6 +1859,24 @@ init_level
 * Set sprite bank
  lda #$0002
  sta sprite_bank
+
+* Initialize level script pointer from header
+* level_scr_off is at offset $0E in the header
+ lda #$000E
+ sta $F0
+ sep $20
+ lda #$02
+ sta $F2
+ rep $20
+ ldy #0
+ lda [$F0],y           ; read level_script address from header
+ sta script_pc
+ sep $20
+ lda #$02
+ sta script_pc+2       ; bank $02
+ lda #SCRIPT_RUN
+ sta script_state
+ rep $20
 
  sec
  xce                   ; back to emulation mode
@@ -2929,9 +3313,9 @@ path15 dfb 21
 
 * master sprite table
 sprite_table
-  dw billy_sprite
-  dw william_sprite
-  dw william2_sprite
+  dw billy_sprite       ; player (always first)
+  hex 0000              ; NPC slots (populated by level script)
+  hex 0000
   hex 0000
   hex 0000
   hex 0000
@@ -3003,6 +3387,12 @@ scroll_src_off HEX 0000   ; byte offset within source bank scanline
 MASKHI HEX 60
 MASKLO HEX 06
 MASK HEX 66
+
+*-------------------------------
+* Level script state
+*-------------------------------
+script_state dfb SCRIPT_RUN
+script_wait_val dfb 0         ; threshold value for WAITX/WAITY
 
 
 **

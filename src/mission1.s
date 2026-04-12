@@ -6,6 +6,23 @@
 *----------------------------------------------------------
     org $020000
 
+; level script bytecodes
+OP_NONE     EQU 0 ; NOP
+OP_SCREEN   EQU 1 ; display screen (params: screen index)
+OP_WAITX    EQU 2 ; wait for player to cross X threshold (params: X position)
+OP_NPC      EQU 3 ; add NPC to screen (params: sprite ptr, xpos, ypos, orientation)
+OP_RIGHT    EQU 4 ; connect screen to the right and permit scrolling (params: screen index)
+OP_LEFT     EQU 5 ; connect screen to the left and permit scrolling (params: screen index)
+OP_UP       EQU 6 ; connect screen above and permit scrolling (params: screen index)
+OP_DOWN     EQU 7 ; connect screen below and permit scrolling (params: screen index)
+OP_SCRLOCK  EQU 8 ; lock scrolling in current screen (no params)
+OP_END      EQU 9 ; end of level (no params)
+OP_WAITY    EQU 10 ; wait for player to cross Y threshold (params: Y position)
+OP_WAITCLR  EQU 11 ; wait for screen to be clear of enemies (no params)
+; NOTE OP_NPC just takes a sprite index as parameter for now
+;  but in the future it will also accept a NPC Script pointer
+;  once those exist. But for now he just stands still and you kick his ass
+
 *==========================================================
 * Level header
 *==========================================================
@@ -19,13 +36,15 @@ sprite_tbl_off dw sprite_table ; offset to sprite table
 sprite_dat_off dw $0000        ; offset to sprite pixel data (TBD)
 mask_dat_off   dw $0000        ; offset to mask data (TBD)
 anim_desc_off  dw anim_descs   ; offset to animation descriptors
-level_scr_off  dw $0000        ; offset to level script (TBD)
+level_scr_off  dw level_script  ; offset to level script
 npc_scr_off    dw $0000        ; offset to NPC script table (TBD)
+spr_addr_off   dw spr_addr_tbl ; offset to sprite address table
 
 *-------------------------------
 * Sprite pixel data address table (bank $02 addresses)
 * Engine reads these at init to set up frame_addr/idle_addr
 *-------------------------------
+spr_addr_tbl
 spr_image01    dw IMAGE01
 spr_image02    dw IMAGE02
 spr_image03    dw IMAGE03
@@ -43,6 +62,23 @@ spr_william1   dw WILLIAM1
 spr_wpunched   dw WPUNCHED
 spr_wfall      dw WFALL
 spr_wfallen    dw WFALLEN
+
+; Level 1 script
+level_script
+    db OP_SCREEN, 0     ; start on screen 0
+    db OP_NPC           ; William1
+    dw william_sprite
+    db $58,$5f,$00      ; William1 xpos, ypos, orientation
+    db OP_NPC           ; William2
+    dw william_sprite
+    db $58,$84,$00      ; William2 xpos, ypos, orientation
+    db OP_WAITCLR       ; wait for player to defeat NPCs
+    db OP_NPC           ; William3
+    dw william_sprite
+    db $01,$84,$01      ; William3 xpos, ypos, orientation (mirrored)
+    db OP_RIGHT,1       ; connect screen 0 to screen 1 on the right
+
+    db OP_END           ; end of level
 
 *==========================================================
 * Screen map - one entry per screen
