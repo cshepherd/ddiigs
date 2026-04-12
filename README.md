@@ -27,6 +27,11 @@ The game features:
 
 Although an extensive amount of stuff is implemented and many assets have been mastered into the game, this should still be considered a Proof Of Concept. It is known to be both unoptimized and incomplete, with weeks if not months of work necessary to finish, even with LLM assistance.
 
+You can check on things for yourself by booting the 800KB disk image at out/ddiigs.po, it boots to BASIC.SYSTEM.
+- `-TITLE` to see Title Sequence (PoC)
+- `-CUTSCENE` to see Mission 1 Cutscene (probably final, it uses the Cutscene Engine)
+- `-GAME` to see the gameplay (about 25% of assets for Mission 1 are done, uses the new Level Scripting Engine at least)
+
 It is vital that I not be asked about the status of this project, if we wish for it to finish.
 
 ## Next Steps 4/12/2026
