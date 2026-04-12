@@ -88,7 +88,7 @@ SCREEN5
     dw PALETTE01        ; params: palette data
     db OP_GFX           ; render graphics
     dw CUTSCENE11       ; params: graphics data
-    dw #60              ; params: x position (in bytes not nibbles)
+    dw #65              ; params: x position (in bytes not nibbles)
     dw #100           ; params: y position
     db OP_FADEIN        ; fade in
     db OP_WAIT          ; wait
@@ -104,7 +104,7 @@ SCREEN6
     db OP_GFX           ; render graphics
     dw CUTSCENE12       ; params: graphics data
     dw #60              ; params: x position (in bytes not nibbles)
-    dw #30              ; params: y position
+    dw #60              ; params: y position
     db OP_FADEIN        ; fade in
     db OP_WAIT          ; wait
     dw 60*3             ; params: frames to wait
@@ -118,8 +118,8 @@ SCREEN7
     dw PALETTE01        ; params: palette data
     db OP_GFX           ; render graphics
     dw CUTSCENE13       ; params: graphics data
-    dw #80              ; params: x position (in bytes not nibbles)
-    dw #10              ; params: y position
+    dw #120              ; params: x position (in bytes not nibbles)
+    dw #20              ; params: y position
     db OP_FADEIN        ; fade in
     db OP_WAIT          ; wait
     dw 60*3             ; params: frames to wait
@@ -133,7 +133,7 @@ SCREEN8
     dw PALETTE01        ; params: palette data
     db OP_GFX           ; render graphics
     dw CUTSCENE14       ; params: graphics data
-    dw #25              ; params: x position (in bytes not nibbles)
+    dw #60              ; params: x position (in bytes not nibbles)
     dw #50              ; params: y position
     db OP_FADEIN        ; fade in
     db OP_WAIT          ; wait
@@ -148,7 +148,7 @@ SCREEN9
     dw PALETTE01        ; params: palette data
     db OP_GFX           ; render graphics
     dw CUTSCENE15       ; params: graphics data
-    dw #40              ; params: x position (in bytes not nibbles)
+    dw #70              ; params: x position (in bytes not nibbles)
     dw #5              ; params: y position
     db OP_TEXT          ; render text
     dw CUTSCENE15_TEXT  ; params: text display list
@@ -173,45 +173,45 @@ CUTSCENE11_TEXT
     hex 0000
 
 CUTSCENE11_TEXT1
-    dw 10 ; Xpos
+    dw 50 ; Xpos
     dw 10 ; Ypos
-    ASC 'In 19xx . . . .',00
+    ASC 'IN 19XX . . . .',00
 CUTSCENE11_TEXT2
-    dw 10 ; Xpos
+    dw 50 ; Xpos
     dw 30 ; Ypos
-    ASC ' Violence ruled the streets',00
+    ASC ' VIOLENCE RULED THE STREETS',00
 CUTSCENE11_TEXT3
-    dw 10 ; Xpos
+    dw 50 ; Xpos
     dw 50 ; Ypos
-    ASC 'of New York City after the',00
+    ASC 'OF NEW YORK CITY AFTER THE',00
 CUTSCENE11_TEXT4
-    dw 10 ; Xpos
+    dw 50 ; Xpos
     dw 70 ; Ypos
-    ASC 'nuclear war.  Even with the',00
+    ASC 'NUCLEAR WAR.  EVEN WITH THE',00
 CUTSCENE11_TEXT5
-    dw 10 ; Xpos
+    dw 50 ; Xpos
     dw 90 ; Ypos
-    ASC 'crime syndicates growing',00
+    ASC 'CRIME SYNDICATES GROWING',00
 CUTSCENE11_TEXT6
-    dw 10 ; Xpos
+    dw 50 ; Xpos
     dw 110 ; Ypos
-    ASC 'bigger every year,',00
+    ASC 'BIGGER EVERY YEAR,',00
 CUTSCENE11_TEXT7
-    dw 10 ; Xpos
+    dw 50 ; Xpos
     dw 130 ; Ypos
-    ASC 'two young men were brave',00
+    ASC 'TWO YOUNG MEN WERE BRAVE',00
 CUTSCENE11_TEXT8
-    dw 10 ; Xpos
+    dw 50 ; Xpos
     dw 150 ; Ypos
-    ASC 'enough to challenge them.',00
+    ASC 'ENOUGH TO CHALLENGE THEM.',00
 CUTSCENE11_TEXT9
-    dw 10 ; Xpos
+    dw 50 ; Xpos
     dw 170 ; Ypos
-    ASC 'while their names were',00
+    ASC 'WHILE THEIR NAMES WERE',00
 CUTSCENE11_TEXT10
-    dw 10 ; Xpos
+    dw 50 ; Xpos
     dw 190 ; Ypos
-    ASC 'Billy and Jimmy Lee . . .',00
+    ASC 'BILLY AND JIMMY LEE . . .',00
 
 CUTSCENE12_TEXT
     dw CUTSCENE12_TEXT1
@@ -220,17 +220,17 @@ CUTSCENE12_TEXT
     hex 0000
 
 CUTSCENE12_TEXT1
-    dw 30 ; Xpos
-    dw 40 ; Ypos
-    ASC '. . . people called',00
+    dw 80 ; Xpos
+    dw 90 ; Ypos
+    ASC '. . . PEOPLE CALLED',00
 CUTSCENE12_TEXT2
-    dw 30 ; Xpos
-    dw 60 ; Ypos
-    ASC '        them',00
+    dw 80 ; Xpos
+    dw 110 ; Ypos
+    ASC '          THEM',00
 CUTSCENE12_TEXT3
-    dw 30 ; Xpos
-    dw 80 ; Ypos
-    ASC 'the DOUBLE DRAGONS !',00
+    dw 80 ; Xpos
+    dw 130 ; Ypos
+    ASC 'THE DOUBLE DRAGONS !',00
 
 
 CUTSCENE13_TEXT
@@ -244,33 +244,33 @@ CUTSCENE13_TEXT
     hex 0000
 
 CUTSCENE13_TEXT1
-    dw 10 ; Xpos
+    dw 80 ; Xpos
     dw 40 ; Ypos
-    ASC '    And yet,',00
+    ASC '         AND YET,',00
 CUTSCENE13_TEXT2
-    dw 10 ; Xpos
+    dw 80 ; Xpos
     dw 60 ; Ypos
-    ASC 'the dragons had one',00
+    ASC 'THE DRAGONS HAD ONE',00
 CUTSCENE13_TEXT3
-    dw 10 ; Xpos
+    dw 80 ; Xpos
     dw 80 ; Ypos
-    ASC 'terrible enemy.',00
+    ASC 'TERRIBLE ENEMY.',00
 CUTSCENE13_TEXT4
-    dw 10 ; Xpos
+    dw 80 ; Xpos
     dw 100 ; Ypos
-    ASC 'To fight against him',00
+    ASC 'TO FIGHT AGAINST HIM',00
 CUTSCENE13_TEXT5
-    dw 10 ; Xpos
+    dw 80 ; Xpos
     dw 120 ; Ypos
-    ASC 'was the destiny and',00
+    ASC 'WAS THE DESTINY AND',00
 CUTSCENE13_TEXT6
-    dw 10 ; Xpos
+    dw 80 ; Xpos
     dw 140 ; Ypos
-    ASC '    fate of',00
+    ASC '         FATE OF',00
 CUTSCENE13_TEXT7
-    dw 10 ; Xpos
+    dw 80 ; Xpos
     dw 160 ; Ypos
-    ASC 'The Double Dragons.',00
+    ASC 'THE DOUBLE DRAGONS.',00
 
 CUTSCENE14_TEXT
     dw CUTSCENE14_TEXT1
@@ -280,21 +280,21 @@ CUTSCENE14_TEXT
     hex 0000
 
 CUTSCENE14_TEXT1
-    dw 10 ; Xpos
-    dw 40 ; Ypos
-    ASC 'One day, Shadow Warriors',00
-CUTSCENE14_TEXT2
-    dw 10 ; Xpos
-    dw 60 ; Ypos
-    ASC 'attacked the city and',00
-CUTSCENE14_TEXT3
-    dw 10 ; Xpos
+    dw 70 ; Xpos
     dw 80 ; Ypos
-    ASC 'Billy',27,'s girlfriend,',00
-CUTSCENE14_TEXT4
-    dw 10 ; Xpos
+    ASC 'ONE DAY, SHADOW WARRIORS',00
+CUTSCENE14_TEXT2
+    dw 70 ; Xpos
     dw 100 ; Ypos
-    ASC 'Marian, was killed.',00
+    ASC 'ATTACKED THE CITY AND',00
+CUTSCENE14_TEXT3
+    dw 70 ; Xpos
+    dw 120 ; Ypos
+    ASC 'BILLY',27,'S GIRLFRIEND,',00
+CUTSCENE14_TEXT4
+    dw 70 ; Xpos
+    dw 140 ; Ypos
+    ASC 'MARIAN, WAS KILLED.',00
 
 CUTSCENE15_TEXT
     dw CUTSCENE15_TEXT1
@@ -305,25 +305,25 @@ CUTSCENE15_TEXT
     hex 0000
 
 CUTSCENE15_TEXT1
-    dw 10 ; Xpos
+    dw 90 ; Xpos
     dw 70 ; Ypos
-    ASC 'The Double Dragons',00
+    ASC 'THE DOUBLE DRAGONS',00
 CUTSCENE15_TEXT2
-    dw 10 ; Xpos
+    dw 90 ; Xpos
     dw 90 ; Ypos
-    ASC 'swore to',00
+    ASC '       SWORE TO',00
 CUTSCENE15_TEXT3
-    dw 10 ; Xpos
+    dw 90 ; Xpos
     dw 110 ; Ypos
-    ASC 'avenge her death !',00
+    ASC ' AVENGE HER DEATH !',00
 CUTSCENE15_TEXT4
-    dw 10 ; Xpos
-    dw 130 ; Ypos
-    ASC 'Let',27,'s go Double Dragons !',00
+    dw 53 ; Xpos
+    dw 140 ; Ypos
+    ASC 'LET',27,'S GO DOUBLE DRAGONS !',00
 CUTSCENE15_TEXT5
-    dw 10 ; Xpos
-    dw 150 ; Ypos
-    ASC 'Mission 1 -- Into The Turf',00
+    dw 50 ; Xpos
+    dw 160 ; Ypos
+    ASC 'MISSION 1 -- INTO THE TURF',00
 
 ; graphics assets
 
