@@ -211,7 +211,7 @@ game_loop
  jsr erase_all
  jsr process_input
  jsr run_script
- jsr update_npcs
+; jsr update_npcs      ; disabled until NPC scripts control this
  jsr update_anims
  jsr draw_all
  bra game_loop

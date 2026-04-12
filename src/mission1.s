@@ -68,14 +68,14 @@ level_script
     db OP_SCREEN, 0     ; start on screen 0
     db OP_NPC           ; William1
     dw william_sprite
-    db $58,$5f,$00      ; William1 xpos, ypos, orientation
+    db $58,$5f,$01      ; William1 xpos, ypos, orientation
     db OP_NPC           ; William2
     dw william_sprite
-    db $58,$84,$00      ; William2 xpos, ypos, orientation
+    db $58,$84,$01      ; William2 xpos, ypos, orientation
     db OP_WAITCLR       ; wait for player to defeat NPCs
     db OP_NPC           ; William3
     dw william_sprite
-    db $01,$84,$01      ; William3 xpos, ypos, orientation (mirrored)
+    db $01,$84,$00      ; William3 xpos, ypos, orientation (mirrored)
     db OP_RIGHT,1       ; connect screen 0 to screen 1 on the right
 
     db OP_END           ; end of level
