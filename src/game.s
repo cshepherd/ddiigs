@@ -859,15 +859,15 @@ fo_approach
  rts
 
 *----------------------------------------------------------
-* fo_start_punch - Trigger anim_punch1 on the NPC.
-* Replicates start_anim's setup but stays on the NPC sprite.
+* fo_start_punch - Trigger anim_wpunch on the NPC (William's
+* punch). Replicates start_anim's setup but stays on the NPC.
 *----------------------------------------------------------
 fo_start_punch
  ldy #24
- lda #<anim_punch1
+ lda #<anim_wpunch
  sta (info_ptr),y
  iny
- lda #>anim_punch1
+ lda #>anim_wpunch
  sta (info_ptr),y
  ldy #26
  lda #0
@@ -875,21 +875,18 @@ fo_start_punch
  ldy #28
  lda #6                ; first frame duration
  sta (info_ptr),y      ; anim_timer
-* Frame data is loaded by update_anims when timer expires;
-* but we need to get the FIRST frame on screen now.
-* Read frame 0's data from anim_punch1 descriptor:
-* offset +3: frame_x, +4: frame_y, +5: dur, +6/+7: addr
+* Load frame 0's data so it shows this frame.
  ldy #10
- lda anim_punch1+3     ; frame_x
+ lda anim_wpunch+3     ; frame_x
  sta (info_ptr),y
  ldy #12
- lda anim_punch1+4     ; frame_y
+ lda anim_wpunch+4     ; frame_y
  sta (info_ptr),y
  ldy #14
- lda anim_punch1+6     ; frame_addr low
+ lda anim_wpunch+6     ; frame_addr low
  sta (info_ptr),y
  iny
- lda anim_punch1+7     ; frame_addr high
+ lda anim_wpunch+7     ; frame_addr high
  sta (info_ptr),y
  rts
 
@@ -1215,10 +1212,9 @@ fl_close
  lda fl_x_done
  ora fl_y_done
  bne :no_action
-* In position — only strike if player is engaged with
-* another NPC (someone is currently being punched or falling)
- jsr fl_player_engaged
- beq :no_action
+* In position — only strike if no other live NPCs remain.
+ jsr fl_others_alive
+ bne :no_action
 * Reached back-side punch position — punch
  ldy #7
  lda #FL_PUNCH
@@ -1228,13 +1224,13 @@ fl_close
  rts
 
 *----------------------------------------------------------
-* fl_player_engaged - Returns A=1 (Z=0) if any OTHER live
-* NPC is currently in its punched or fall animation
-* (i.e., the player is busy hitting someone). Returns A=0
-* (Z=1) otherwise.
+* fl_others_alive - Returns A=1 (Z=0) if any OTHER live
+* NPC exists in the sprite table (excluding self and the
+* keyboard player). Returns A=0 (Z=1) if this flanker is
+* the only NPC left.
 * Preserves spr_ptr/info_ptr.
 *----------------------------------------------------------
-fl_player_engaged
+fl_others_alive
  lda spr_ptr
  sta fl_save_spr
  lda spr_ptr+1
@@ -1260,7 +1256,7 @@ fl_player_engaged
  lda (spr_ptr),y
  sta info_ptr+1
  ora info_ptr
- beq :nope            ; null terminator — none engaged
+ beq :nope            ; end of table — no others found
 * Skip self
  lda info_ptr
  cmp fl_self
@@ -1274,33 +1270,17 @@ fl_player_engaged
  lda (info_ptr),y
  cmp #$01
  beq :next
-* Compare anim_ptr (+24) with punched_anim (+40)
+* Skip if this NPC is already dying ($FFFF sentinel)
  ldy #24
  lda (info_ptr),y
- sta fl_anim
- iny
+ cmp #$FF
+ bne :alive
+ ldy #25
  lda (info_ptr),y
- sta fl_anim+1
- ora fl_anim
- beq :next            ; no active anim
- ldy #40
- lda (info_ptr),y
- cmp fl_anim
- bne :try_fall
- iny
- lda (info_ptr),y
- cmp fl_anim+1
- beq :yes
- dey
-:try_fall
- ldy #50
- lda (info_ptr),y
- cmp fl_anim
- bne :next
- iny
- lda (info_ptr),y
- cmp fl_anim+1
- beq :yes
+ cmp #$FF
+ beq :next
+:alive
+ jmp :yes
 :next
  lda spr_ptr
  clc
@@ -2178,25 +2158,34 @@ update_anims
  pla
  ldy #28
  sta (info_ptr),y     ; anim_timer = duration
-* Check for punch hit (if this is frame 1 of punch1 or punch2)
+* Check for punch hit (frame 1 of punch1, punch2, or wpunch)
  ldy #26
  lda (info_ptr),y     ; anim_frame
  cmp #1
  bne :no_punch_hit
  lda anim_ptr
  cmp #<anim_punch1
- beq :do_hit
- cmp #<anim_punch2
- bne :no_punch_hit
- lda anim_ptr+1
- cmp #>anim_punch2
- bne :no_punch_hit
- bra :do_hit2
-:do_hit
+ bne :try_p2
  lda anim_ptr+1
  cmp #>anim_punch1
+ beq :do_hit_now
+ bra :no_punch_hit
+:try_p2
+ lda anim_ptr
+ cmp #<anim_punch2
+ bne :try_wp
+ lda anim_ptr+1
+ cmp #>anim_punch2
+ beq :do_hit_now
+ bra :no_punch_hit
+:try_wp
+ lda anim_ptr
+ cmp #<anim_wpunch
  bne :no_punch_hit
-:do_hit2
+ lda anim_ptr+1
+ cmp #>anim_wpunch
+ bne :no_punch_hit
+:do_hit_now
  jsr check_punch_hit
 :no_punch_hit
  jsr save_sprite
@@ -2592,6 +2581,16 @@ init_level
  lda [$F0],y
  sta spr_william3
 
+* WPUNCH1 (offset +38)
+ ldy #38
+ lda [$F0],y
+ sta spr_wpunch1
+
+* WPUNCH2 (offset +40)
+ ldy #40
+ lda [$F0],y
+ sta spr_wpunch2
+
 * Now patch all DA references in animation descriptors
 * and sprite info blocks with bank $02 addresses.
 * Each anim frame has: dfb x,y,dur, DA addr (5 bytes per frame)
@@ -2660,6 +2659,12 @@ init_level
  sta anim_wwalk+3+13
  lda spr_william2
  sta anim_wwalk+3+18
+
+* Patch anim_wpunch: 2 frames (WPUNCH1, WPUNCH2)
+ lda spr_wpunch1
+ sta anim_wpunch+3+3
+ lda spr_wpunch2
+ sta anim_wpunch+3+8
 
 * Patch billy_sprite frame_addr (+14) and idle_addr (+42)
  lda spr_img01
@@ -2757,6 +2762,8 @@ spr_wfall    ds 2
 spr_wfallen  ds 2
 spr_william2 ds 2
 spr_william3 ds 2
+spr_wpunch1  ds 2
+spr_wpunch2  ds 2
 
 *----------------------------------------------------------
 * Set ntp_open pathname pointer and ntp_bank before calling.
@@ -3163,6 +3170,16 @@ anim_wwalk
   hex 0000             ; patched: WILLIAM3
  dfb $09,$28,5       ; WILLIAM2
   hex 0000             ; patched: WILLIAM2
+
+* William's offensive punch (NPC). 2 frames, non-looping.
+anim_wpunch
+ dfb 2               ; num_frames
+ dfb $11             ; max_width (WPUNCH2 is widest)
+ dfb $00             ; flags: none (one-shot)
+ dfb $0B,$28,6       ; WPUNCH1
+  hex 0000             ; patched: WPUNCH1
+ dfb $11,$28,6       ; WPUNCH2
+  hex 0000             ; patched: WPUNCH2
 
 *----------------------------------------------------------
 * check_punch_hit - Check if the punching sprite (whose
