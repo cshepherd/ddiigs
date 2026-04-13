@@ -333,15 +333,18 @@ run_script
 :not_scrlock
  cmp #OP_WAITX
  bne :not_waitx
-* OP_WAITX: param = 1 byte X threshold
+* OP_WAITX: param = 2-byte absolute X threshold (low, high)
  ldy #1
  lda [script_pc],y
  sta script_wait_val
+ ldy #2
+ lda [script_pc],y
+ sta script_wait_val+1
  lda #SCRIPT_WAITX
  sta script_state
  lda script_pc
  clc
- adc #2                ; advance past opcode + param
+ adc #3                ; advance past opcode + 2-byte param
  sta script_pc
  rts                   ; yield until condition met
 
@@ -375,10 +378,15 @@ run_script
 *--- Wait condition checks ---
 
 :check_waitx
-* Check if player X >= threshold
- lda IMAGE01_XPOS
+* Check if player absolute X >= threshold (16-bit compare)
+ lda abs_x+1
+ cmp script_wait_val+1
+ bcc :rs_rts2           ; not yet (high byte less)
+ bne :waitx_done        ; high byte greater — done
+ lda abs_x
  cmp script_wait_val
- bcc :rs_rts2           ; not yet
+ bcc :rs_rts2           ; low byte less
+:waitx_done
  lda #SCRIPT_RUN
  sta script_state
  jmp :exec_loop         ; condition met, resume executing
@@ -627,8 +635,10 @@ update_npcs
 *   FO_PUNCH    - throw a punch animation
 *   FO_COOLDOWN - wait N frames after punch finishes
 *----------------------------------------------------------
+* xpos byte-units; 100 bytes = 200 pixels in 320 mode.
+SCROLL_THRESH = 100    ; player xpos at/over which walking scrolls
 FO_RANGE   = 4         ; pixels — engage punching at this distance
-FO_CD_TIME = 30        ; cooldown frames after a punch
+FO_CD_TIME = 90        ; cooldown frames after a punch
 
 behav_faceoff
  ldy #7
@@ -939,14 +949,18 @@ fo_cooldown
 * advance to (and load) frame 0 this same frame.
 *----------------------------------------------------------
 npc_ensure_walking
+* Only install anim_wwalk if no animation is currently
+* active (anim_ptr == 0). Don't clobber punched/fall/punch
+* animations — they need to play out so the death sentinel
+* (set when fall_anim ends with punch_count>=6) can fire.
  ldy #24
  lda (info_ptr),y
- cmp #<anim_wwalk
- bne :install
+ sta :tmp
  ldy #25
  lda (info_ptr),y
- cmp #>anim_wwalk
- beq :done
+ ora :tmp
+ beq :install
+ rts
 :install
  ldy #24
  lda #<anim_wwalk
@@ -960,8 +974,8 @@ npc_ensure_walking
  ldy #28
  lda #1
  sta (info_ptr),y      ; anim_timer = 1 (expires this frame)
-:done
  rts
+:tmp dfb 0
 
 * Face-off scratch variables
 fo_plr_x dfb 0
@@ -988,7 +1002,7 @@ fo_save_info ds 2
 *   +7 state, +8 timer, +9 corner_y (0 = uninitialized)
 *----------------------------------------------------------
 FL_RANGE      = 4         ; pixels behind player to punch
-FL_CD_TIME    = 30
+FL_CD_TIME    = 90
 FL_ARC_OFFSET = 14        ; vertical detour distance
 
 behav_flank
@@ -1683,6 +1697,14 @@ process_input
  jsr save_sprite
  jsr scroll_right
  jsr load_sprite
+* Player advanced 1 byte (2 pixels) through the world
+ lda abs_x
+ clc
+ adc #2
+ sta abs_x
+ lda abs_x+1
+ adc #0
+ sta abs_x+1
  rts
 :not_scroll
  cmp #'8'
@@ -1703,6 +1725,12 @@ process_input
  cmp #2
  bcc :skip_left        ; already at minimum (1)
  dec IMAGE01_XPOS
+* Decrement absolute X (16-bit)
+ lda abs_x
+ bne :dec_lo
+ dec abs_x+1
+:dec_lo
+ dec abs_x
 :skip_left
  lda #$01
  sta IMAGE01_MIRROR
@@ -1711,11 +1739,38 @@ process_input
  rts
 :not_left cmp #'6'
  bne :not_jump
+* If at scroll threshold AND scrolling enabled, advance the
+* world instead of the player. Otherwise walk normally.
  lda IMAGE01_XPOS
- cmp #100
- bcs :skip_right       ; already at maximum (100)
+ cmp #SCROLL_THRESH
+ bcc :walk_right       ; xpos < threshold, walk
+ lda scroll_right_enabled
+ beq :clamp_right      ; can't scroll, clamp at edge
+* Scroll world right by 4 bytes (8 pixels = 2 words)
+ jsr save_sprite
+ jsr scroll_right
+ jsr scroll_right
+ jsr scroll_right
+ jsr scroll_right
+ jsr load_sprite
+* abs_x advances by 8 pixels through the world
+ lda abs_x
+ clc
+ adc #8
+ sta abs_x
+ lda abs_x+1
+ adc #0
+ sta abs_x+1
+ bra :finish_right
+:walk_right
  inc IMAGE01_XPOS
-:skip_right
+ inc abs_x
+ bne :finish_right
+ inc abs_x+1
+ bra :finish_right
+:clamp_right
+* At edge with no scroll — just face right, no movement
+:finish_right
  stz IMAGE01_MIRROR
  jsr advance_walk
  jsr save_sprite
@@ -2707,6 +2762,8 @@ init_level
  lda [$F0],y           ; player_spawn_x
  sta billy_sprite+2
  sta billy_sprite+34
+ sta abs_x             ; initialize absolute X
+ stz abs_x+1
  ldy #1
  lda [$F0],y           ; player_spawn_y
  sta billy_sprite
@@ -4279,7 +4336,8 @@ MASK HEX 66
 * Level script state
 *-------------------------------
 script_state dfb SCRIPT_RUN
-script_wait_val dfb 0         ; threshold value for WAITX/WAITY
+script_wait_val ds 2          ; 16-bit threshold for WAITX (1 byte for WAITY)
+abs_x           ds 2          ; player's absolute X across all screens
 
 
 **

@@ -91,7 +91,8 @@ level_script
     db OP_RIGHT,1       ; connect screen 0 to screen 1 on the right
 
 ; screen 2
-    db OP_WAITX,400     ; wait for player to cross to second screen
+    db OP_WAITX
+    dw 400              ; wait for player abs X >= 400
     db OP_SCRLOCK       ; stuck here
 ;    db OP_NPC           ; Roper near right edge
 ;    dw roper_sprite
