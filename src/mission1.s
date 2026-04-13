@@ -22,9 +22,13 @@ OP_WAITCLR  EQU 11 ; wait for screen to be clear of enemies (no params)
 OP_WAITNPC  EQU 12 ; wait for a particular count of NPC sprites to be active (params: count)
 ; NOTE OP_WAITX and OP_WAITY use 'absolute X' (level-wide) not screen xpos/ypos
 ;  so it's easier to use for game logic
-; NOTE OP_NPC just takes a sprite index as parameter for now
-;  but in the future it will also accept a NPC Script pointer
-;  once those exist. But for now he just stands still and you kick his ass
+; NOTE OP_NPC params are: sprite_ptr (2b), xpos (1b), ypos (1b), orient (1b), behavior (1b)
+
+; NPC behavior IDs (used in OP_NPC parameter)
+BEHAV_NONE    EQU 0 ; just stand there
+BEHAV_FACEOFF EQU 1 ; approach player to 5px and punch
+BEHAV_FLANK   EQU 2 ; approach player from behind (TBD)
+BEHAV_LURK    EQU 3 ; stay on opposite side of screen (TBD)
 
 *==========================================================
 * Level header
@@ -32,7 +36,7 @@ OP_WAITNPC  EQU 12 ; wait for a particular count of NPC sprites to be active (pa
 level_header
 num_screens    dfb 5           ; number of screens in this level
 initial_screen dfb 0           ; starting screen index
-player_spawn_x dfb $01         ; player starting X position
+player_spawn_x dfb $20         ; player starting X position
 player_spawn_y dfb $64         ; player starting Y position
 screen_map_off dw screen_map   ; offset to screen map
 sprite_tbl_off dw sprite_table ; offset to sprite table
@@ -65,21 +69,23 @@ spr_william1   dw WILLIAM1
 spr_wpunched   dw WPUNCHED
 spr_wfall      dw WFALL
 spr_wfallen    dw WFALLEN
+spr_william2   dw WILLIAM2
+spr_william3   dw WILLIAM3
 
 ; Level 1 script
 level_script
 ; screen 1
     db OP_SCREEN, 0     ; start on screen 0
-    db OP_NPC           ; William1
+    db OP_NPC           ; William1 - face-off attacker
     dw william_sprite
-    db $58,$5f,$01      ; William1 xpos, ypos, orientation
+    db $58,$5f,$01,BEHAV_FACEOFF  ; xpos, ypos, orientation, behavior
     db OP_NPC           ; William2
     dw william_sprite
-    db $58,$84,$01      ; William2 xpos, ypos, orientation
+    db $58,$84,$01,BEHAV_FLANK     ; xpos, ypos, orientation, behavior
     db OP_WAITCLR       ; wait for player to defeat NPCs
     db OP_NPC           ; William3
     dw william_sprite
-    db $01,$84,$00      ; William3 xpos, ypos, orientation (mirrored)
+    db $01,$84,$00,BEHAV_NONE     ; xpos, ypos, orientation, behavior
     db OP_RIGHT,1       ; connect screen 0 to screen 1 on the right
 
 ; screen 2

@@ -211,7 +211,7 @@ game_loop
  jsr erase_all
  jsr process_input
  jsr run_script
-; jsr update_npcs      ; disabled until NPC scripts control this
+ jsr update_npcs       ; runs behavior state machines
  jsr update_anims
  jsr draw_all
  bra game_loop
@@ -267,7 +267,7 @@ run_script
 :not_screen
  cmp #OP_NPC
  bne :not_npc
-* OP_NPC: params = dw sprite_ptr(2), db xpos(1), db ypos(1), db orient(1)
+* OP_NPC: params = dw sprite_ptr(2), db xpos(1), db ypos(1), db orient(1), db behavior(1)
  ldy #1
  lda [script_pc],y     ; sprite_ptr low
  sta sc_npc_ptr
@@ -283,10 +283,13 @@ run_script
  ldy #5
  lda [script_pc],y     ; orientation (mirror)
  sta sc_npc_orient
+ ldy #6
+ lda [script_pc],y     ; behavior
+ sta sc_npc_behavior
  jsr script_spawn_npc
  lda script_pc
  clc
- adc #6                ; opcode(1) + ptr(2) + x(1) + y(1) + orient(1)
+ adc #7                ; opcode(1) + ptr(2) + x(1) + y(1) + orient(1) + behavior(1)
  sta script_pc
  jmp :exec_loop
 
@@ -489,6 +492,17 @@ script_spawn_npc
  ldy #4
  lda sc_npc_orient
  sta (info_ptr),y      ; +4 mirror
+* Store behavior at +6, behavior_state at +7 (init 0)
+ ldy #6
+ lda sc_npc_behavior
+ sta (info_ptr),y      ; +6 behavior
+ ldy #7
+ lda #0
+ sta (info_ptr),y      ; +7 behavior_state (FO_APPROACH)
+ ldy #8
+ sta (info_ptr),y      ; +8 behavior_timer low
+ ldy #9
+ sta (info_ptr),y      ; +9 behavior_timer high
 * Patch animation pointers to bank $00 versions
 * (template has bank $02 addresses which can't be read via (dp),Y)
  ldy #40
@@ -543,6 +557,7 @@ sc_npc_ptr   ds 2
 sc_npc_x     dfb 0
 sc_npc_y     dfb 0
 sc_npc_orient dfb 0
+sc_npc_behavior dfb 0
 
 *-------------------------------
 * Script state variables
@@ -558,8 +573,8 @@ npc_buf_next dw npc_buffers   ; next free NPC buffer address
 npc_buffers ds 416
 
 *----------------------------------------------------------
-* update_npcs - Iterate sprite_table, call npc_seek_player
-* for each NPC (controller = $00, not the terminator).
+* update_npcs - Iterate sprite_table, dispatch each NPC's
+* behavior. Called each frame by the game loop.
 *----------------------------------------------------------
 update_npcs
  lda #<sprite_table
@@ -577,8 +592,21 @@ update_npcs
  beq :done            ; null terminator
  ldy #22
  lda (info_ptr),y     ; controller
- bne :skip            ; non-zero = player or other, skip
- jsr npc_seek_player
+ bne :skip            ; non-zero = player, skip
+* Dispatch by behavior at offset +6
+ ldy #6
+ lda (info_ptr),y
+ cmp #BEHAV_FACEOFF
+ bne :nbf
+ jsr behav_faceoff
+ bra :skip
+:nbf
+ cmp #BEHAV_FLANK
+ bne :nbfl
+ jsr behav_flank
+ bra :skip
+:nbfl
+* BEHAV_NONE or unknown — do nothing
 :skip
  lda spr_ptr
  clc
@@ -588,6 +616,771 @@ update_npcs
  inc spr_ptr+1
  bra :loop
 :done rts
+
+*----------------------------------------------------------
+* behav_faceoff - Face-Off behavior state machine.
+* info_ptr points to NPC's sprite block.
+*
+* States (at info_ptr+7):
+*   FO_APPROACH - walk toward player until within 5 pixels
+*                 along the player's facing axis
+*   FO_PUNCH    - throw a punch animation
+*   FO_COOLDOWN - wait N frames after punch finishes
+*----------------------------------------------------------
+FO_RANGE   = 4         ; pixels — engage punching at this distance
+FO_CD_TIME = 30        ; cooldown frames after a punch
+
+behav_faceoff
+ ldy #7
+ lda (info_ptr),y      ; behavior_state
+ cmp #FO_PUNCH
+ beq :st_punch
+ cmp #FO_COOLDOWN
+ beq :st_cooldown
+* default: FO_APPROACH
+ jmp fo_approach
+
+:st_punch
+ jmp fo_punch
+:st_cooldown
+ jmp fo_cooldown
+
+*----------------------------------------------------------
+* fo_find_player - Locate the keyboard-controlled player
+* sprite. Returns its position/facing in fo_plr_x/y/facing.
+* Returns Z=0 if found, Z=1 if not.
+*----------------------------------------------------------
+fo_find_player
+ lda spr_ptr
+ sta fo_save_spr
+ lda spr_ptr+1
+ sta fo_save_spr+1
+ lda info_ptr
+ sta fo_save_info
+ lda info_ptr+1
+ sta fo_save_info+1
+
+ lda #<sprite_table
+ sta spr_ptr
+ lda #>sprite_table
+ sta spr_ptr+1
+:fpl
+ ldy #0
+ lda (spr_ptr),y
+ sta info_ptr
+ iny
+ lda (spr_ptr),y
+ sta info_ptr+1
+ ora info_ptr
+ beq :notfound
+ ldy #22
+ lda (info_ptr),y      ; controller
+ cmp #$01
+ beq :found
+ lda spr_ptr
+ clc
+ adc #2
+ sta spr_ptr
+ bcc :fpl
+ inc spr_ptr+1
+ bra :fpl
+:found
+ ldy #0
+ lda (info_ptr),y
+ sta fo_plr_y
+ ldy #2
+ lda (info_ptr),y
+ sta fo_plr_x
+ ldy #4
+ lda (info_ptr),y
+ sta fo_plr_facing
+ ldy #10
+ lda (info_ptr),y
+ sta fo_plr_w
+* Restore caller's pointers, return Z=0
+ lda fo_save_spr
+ sta spr_ptr
+ lda fo_save_spr+1
+ sta spr_ptr+1
+ lda fo_save_info
+ sta info_ptr
+ lda fo_save_info+1
+ sta info_ptr+1
+ lda #$01              ; non-zero: found
+ rts
+:notfound
+ lda fo_save_spr
+ sta spr_ptr
+ lda fo_save_spr+1
+ sta spr_ptr+1
+ lda fo_save_info
+ sta info_ptr
+ lda fo_save_info+1
+ sta info_ptr+1
+ lda #0                ; Z=1: not found
+ rts
+
+*----------------------------------------------------------
+* fo_approach - Walk toward player. When within FO_RANGE
+* of the player's facing edge, transition to FO_PUNCH.
+*----------------------------------------------------------
+fo_approach
+ jsr fo_find_player
+ bne :have_player
+ jmp :no_action
+:have_player
+ jsr npc_ensure_walking
+
+* Compute target X based on player's facing:
+*   If player faces right (mirror=0): target = player_x + player_w + FO_RANGE
+*   If player faces left  (mirror=1): target = player_x - FO_RANGE - npc_w
+ lda fo_plr_facing
+ bne :plr_left
+
+* Player faces right — target is to the right of player
+ lda fo_plr_x
+ clc
+ adc fo_plr_w
+ clc
+ adc #FO_RANGE
+ sta fo_target_x
+* NPC should face LEFT (mirror=1) to face the player
+ ldy #4
+ lda #$01
+ sta (info_ptr),y
+ bra :do_move
+
+:plr_left
+* Player faces left — target is to the left of player
+ lda fo_plr_x
+ sec
+ sbc #FO_RANGE
+ ldy #10
+ sec
+ sbc (info_ptr),y      ; subtract NPC width
+ sta fo_target_x
+* NPC should face RIGHT (mirror=0) to face the player
+ ldy #4
+ lda #$00
+ sta (info_ptr),y
+
+:do_move
+* Snapshot current pos/size to prev fields before modifying
+* (so erase_all knows where to erase last frame's drawing)
+ ldy #0
+ lda (info_ptr),y      ; current ypos
+ ldy #32
+ sta (info_ptr),y      ; -> prev_ypos
+ ldy #2
+ lda (info_ptr),y      ; current xpos
+ ldy #34
+ sta (info_ptr),y      ; -> prev_xpos
+ ldy #10
+ lda (info_ptr),y      ; current frame_x
+ ldy #36
+ sta (info_ptr),y      ; -> prev_frame_x
+ ldy #12
+ lda (info_ptr),y      ; current frame_y
+ ldy #38
+ sta (info_ptr),y      ; -> prev_frame_y
+
+* Compare NPC X to target X. Move 1 pixel toward target.
+* Set mirror to match motion direction (left = mirror=1).
+ ldy #2
+ lda (info_ptr),y      ; current xpos
+ cmp fo_target_x
+ beq :x_at_target
+ bcs :x_decrement
+* xpos < target, increment (moving right)
+ clc
+ adc #1
+ sta (info_ptr),y
+ ldy #4
+ lda #$00
+ sta (info_ptr),y      ; mirror = 0 (facing right)
+ bra :move_y
+:x_decrement
+ sec
+ sbc #1
+ sta (info_ptr),y
+ ldy #4
+ lda #$01
+ sta (info_ptr),y      ; mirror = 1 (facing left)
+:x_at_target
+
+:move_y
+* Move toward player Y at 1 pixel/frame
+ ldy #0
+ lda (info_ptr),y      ; current ypos
+ cmp fo_plr_y
+ beq :y_at_target
+ bcs :y_decrement
+ clc
+ adc #1
+ sta (info_ptr),y
+ bra :check_range
+:y_decrement
+ sec
+ sbc #1
+ sta (info_ptr),y
+:y_at_target
+
+:check_range
+* If we're close to target X and player Y, transition to PUNCH
+ ldy #2
+ lda (info_ptr),y
+ cmp fo_target_x
+ bne :still_moving     ; not in X position yet
+ ldy #0
+ lda (info_ptr),y
+ cmp fo_plr_y
+ bne :still_moving     ; not in Y position yet
+* Reached target — start punch
+ ldy #7
+ lda #FO_PUNCH
+ sta (info_ptr),y
+ lda #FO_CD_TIME
+ ldy #8
+ sta (info_ptr),y      ; behavior_timer
+ ldy #9
+ lda #0
+ sta (info_ptr),y
+* Start the punch1 animation on this NPC
+ jsr fo_start_punch
+ jmp :commit
+
+:still_moving
+:commit
+* Mark dirty (position changed)
+ ldy #30
+ lda #$03
+ sta (info_ptr),y
+:no_action
+ rts
+
+*----------------------------------------------------------
+* fo_start_punch - Trigger anim_punch1 on the NPC.
+* Replicates start_anim's setup but stays on the NPC sprite.
+*----------------------------------------------------------
+fo_start_punch
+ ldy #24
+ lda #<anim_punch1
+ sta (info_ptr),y
+ iny
+ lda #>anim_punch1
+ sta (info_ptr),y
+ ldy #26
+ lda #0
+ sta (info_ptr),y      ; anim_frame = 0
+ ldy #28
+ lda #6                ; first frame duration
+ sta (info_ptr),y      ; anim_timer
+* Frame data is loaded by update_anims when timer expires;
+* but we need to get the FIRST frame on screen now.
+* Read frame 0's data from anim_punch1 descriptor:
+* offset +3: frame_x, +4: frame_y, +5: dur, +6/+7: addr
+ ldy #10
+ lda anim_punch1+3     ; frame_x
+ sta (info_ptr),y
+ ldy #12
+ lda anim_punch1+4     ; frame_y
+ sta (info_ptr),y
+ ldy #14
+ lda anim_punch1+6     ; frame_addr low
+ sta (info_ptr),y
+ iny
+ lda anim_punch1+7     ; frame_addr high
+ sta (info_ptr),y
+ rts
+
+*----------------------------------------------------------
+* fo_punch - Wait for the punch animation to finish.
+* When anim_ptr returns to 0 (animation terminated),
+* transition to COOLDOWN.
+*----------------------------------------------------------
+fo_punch
+ ldy #24
+ lda (info_ptr),y
+ iny
+ ora (info_ptr),y
+ bne :still_punching
+* Animation done — go to cooldown
+ ldy #7
+ lda #FO_COOLDOWN
+ sta (info_ptr),y
+ lda #FO_CD_TIME
+ ldy #8
+ sta (info_ptr),y
+ ldy #9
+ lda #0
+ sta (info_ptr),y
+:still_punching
+ rts
+
+*----------------------------------------------------------
+* fo_cooldown - Decrement timer. When zero, return to APPROACH.
+*----------------------------------------------------------
+fo_cooldown
+ ldy #8
+ lda (info_ptr),y
+ beq :expired         ; safety: if already 0, expire
+ sec
+ sbc #1
+ sta (info_ptr),y
+ bne :wait_more
+:expired
+* Timer expired — back to approach
+ ldy #7
+ lda #FO_APPROACH
+ sta (info_ptr),y
+:wait_more
+ rts
+
+*----------------------------------------------------------
+* npc_ensure_walking - If NPC's anim_ptr is not anim_wwalk,
+* install it. anim_frame=$FF + timer=1 makes update_anims
+* advance to (and load) frame 0 this same frame.
+*----------------------------------------------------------
+npc_ensure_walking
+ ldy #24
+ lda (info_ptr),y
+ cmp #<anim_wwalk
+ bne :install
+ ldy #25
+ lda (info_ptr),y
+ cmp #>anim_wwalk
+ beq :done
+:install
+ ldy #24
+ lda #<anim_wwalk
+ sta (info_ptr),y
+ ldy #25
+ lda #>anim_wwalk
+ sta (info_ptr),y
+ ldy #26
+ lda #$FF
+ sta (info_ptr),y      ; anim_frame = $FF (so +1 wraps to 0)
+ ldy #28
+ lda #1
+ sta (info_ptr),y      ; anim_timer = 1 (expires this frame)
+:done
+ rts
+
+* Face-off scratch variables
+fo_plr_x dfb 0
+fo_plr_y dfb 0
+fo_plr_facing dfb 0
+fo_plr_w dfb 0
+fo_target_x dfb 0
+fo_save_spr ds 2
+fo_save_info ds 2
+
+*----------------------------------------------------------
+* behav_flank - Flank behavior state machine.
+* Flanker arcs around to a target X on the OPPOSITE side
+* of the player from FACEOFF (behind the player), then
+* closes in and punches.
+*
+* States (at info_ptr+7):
+*   FL_ARC      - move toward (target_x, corner_y)
+*   FL_CLOSE    - move toward (target_x, player_y)
+*   FL_PUNCH    - punch animation in progress
+*   FL_COOLDOWN - countdown before next attempt
+*
+* Storage:
+*   +7 state, +8 timer, +9 corner_y (0 = uninitialized)
+*----------------------------------------------------------
+FL_RANGE      = 4         ; pixels behind player to punch
+FL_CD_TIME    = 30
+FL_ARC_OFFSET = 14        ; vertical detour distance
+
+behav_flank
+ ldy #7
+ lda (info_ptr),y
+ cmp #FL_CLOSE
+ beq :st_close
+ cmp #FL_PUNCH
+ beq :st_punch
+ cmp #FL_COOLDOWN
+ beq :st_cd
+* default: FL_ARC
+ jmp fl_arc
+:st_close
+ jmp fl_close
+:st_punch
+ jmp fl_punch
+:st_cd
+ jmp fl_cooldown
+
+*----------------------------------------------------------
+* fl_compute_target - Sets fo_target_x to the back-side
+* punch X for flanker, and writes NPC mirror to face player.
+* Requires fo_find_player to have been called first.
+* Trashes A.
+*----------------------------------------------------------
+fl_compute_target
+ lda fo_plr_facing
+ bne :pf_left
+* Player faces right: flanker target is to the LEFT of player
+ lda fo_plr_x
+ sec
+ sbc #FL_RANGE
+ ldy #10
+ sec
+ sbc (info_ptr),y      ; subtract NPC width
+ sta fo_target_x
+* NPC faces RIGHT (mirror=0) toward player's back
+ ldy #4
+ lda #$00
+ sta (info_ptr),y
+ rts
+:pf_left
+* Player faces left: flanker target is to the RIGHT of player
+ lda fo_plr_x
+ clc
+ adc fo_plr_w
+ clc
+ adc #FL_RANGE
+ sta fo_target_x
+* NPC faces LEFT (mirror=1)
+ ldy #4
+ lda #$01
+ sta (info_ptr),y
+ rts
+
+*----------------------------------------------------------
+* fl_snapshot_prev - Snapshot pos/size to prev fields so
+* erase_all knows where to erase last frame's drawing.
+*----------------------------------------------------------
+fl_snapshot_prev
+ ldy #0
+ lda (info_ptr),y
+ ldy #32
+ sta (info_ptr),y
+ ldy #2
+ lda (info_ptr),y
+ ldy #34
+ sta (info_ptr),y
+ ldy #10
+ lda (info_ptr),y
+ ldy #36
+ sta (info_ptr),y
+ ldy #12
+ lda (info_ptr),y
+ ldy #38
+ sta (info_ptr),y
+ rts
+
+*----------------------------------------------------------
+* fl_step_x - Move xpos one toward fo_target_x.
+* Returns Z=1 if reached.
+*----------------------------------------------------------
+fl_step_x
+ ldy #2
+ lda (info_ptr),y
+ cmp fo_target_x
+ beq :done
+ bcs :dec
+ clc
+ adc #1
+ sta (info_ptr),y
+ ldy #4
+ lda #$00
+ sta (info_ptr),y      ; mirror = 0 (facing right)
+ lda #1                ; not at target
+ rts
+:dec
+ sec
+ sbc #1
+ sta (info_ptr),y
+ ldy #4
+ lda #$01
+ sta (info_ptr),y      ; mirror = 1 (facing left)
+ lda #1
+ rts
+:done
+ lda #0
+ rts
+
+*----------------------------------------------------------
+* fl_step_y_to - Move ypos one toward value in A.
+* Returns Z=1 if reached.
+*----------------------------------------------------------
+fl_step_y_to
+ sta fl_y_target
+ ldy #0
+ lda (info_ptr),y
+ cmp fl_y_target
+ beq :done
+ bcs :dec
+ clc
+ adc #1
+ sta (info_ptr),y
+ lda #1
+ rts
+:dec
+ sec
+ sbc #1
+ sta (info_ptr),y
+ lda #1
+ rts
+:done
+ lda #0
+ rts
+
+*----------------------------------------------------------
+* fl_arc - Arc to a corner behind the player.
+* Computes corner_y on first entry: detour above or below
+* depending on which side of player_y the NPC starts on.
+*----------------------------------------------------------
+fl_arc
+ jsr fo_find_player
+ bne :have_player
+ jmp :no_action
+:have_player
+ jsr npc_ensure_walking
+
+ jsr fl_compute_target
+
+* Lazy init corner_y if zero
+ ldy #9
+ lda (info_ptr),y
+ bne :have_corner
+* Compute corner_y based on NPC's current Y vs player Y
+ ldy #0
+ lda (info_ptr),y      ; npc ypos
+ cmp fo_plr_y
+ bcs :below
+* npc_y < player_y → detour above (smaller Y)
+ lda fo_plr_y
+ sec
+ sbc #FL_ARC_OFFSET
+ bra :store_corner
+:below
+ lda fo_plr_y
+ clc
+ adc #FL_ARC_OFFSET
+:store_corner
+ ora #$01              ; ensure non-zero sentinel safety
+ ldy #9
+ sta (info_ptr),y
+:have_corner
+
+ jsr fl_snapshot_prev
+ jsr fl_step_x
+ sta fl_x_done         ; 0 if reached
+ ldy #9
+ lda (info_ptr),y
+ jsr fl_step_y_to
+ sta fl_y_done
+
+* Mark dirty (position changed)
+ ldy #30
+ lda #$03
+ sta (info_ptr),y
+
+* If both axes at corner, transition to FL_CLOSE
+ lda fl_x_done
+ ora fl_y_done
+ bne :no_action
+ ldy #7
+ lda #FL_CLOSE
+ sta (info_ptr),y
+:no_action
+ rts
+
+*----------------------------------------------------------
+* fl_close - Move from corner to back-side punch X at
+* player_y. When reached, start punch.
+*----------------------------------------------------------
+fl_close
+ jsr fo_find_player
+ bne :have_player
+ jmp :no_action
+:have_player
+ jsr npc_ensure_walking
+
+ jsr fl_compute_target
+ jsr fl_snapshot_prev
+ jsr fl_step_x
+ sta fl_x_done
+ lda fo_plr_y
+ jsr fl_step_y_to
+ sta fl_y_done
+
+ ldy #30
+ lda #$03
+ sta (info_ptr),y
+
+ lda fl_x_done
+ ora fl_y_done
+ bne :no_action
+* In position — only strike if player is engaged with
+* another NPC (someone is currently being punched or falling)
+ jsr fl_player_engaged
+ beq :no_action
+* Reached back-side punch position — punch
+ ldy #7
+ lda #FL_PUNCH
+ sta (info_ptr),y
+ jsr fo_start_punch
+:no_action
+ rts
+
+*----------------------------------------------------------
+* fl_player_engaged - Returns A=1 (Z=0) if any OTHER live
+* NPC is currently in its punched or fall animation
+* (i.e., the player is busy hitting someone). Returns A=0
+* (Z=1) otherwise.
+* Preserves spr_ptr/info_ptr.
+*----------------------------------------------------------
+fl_player_engaged
+ lda spr_ptr
+ sta fl_save_spr
+ lda spr_ptr+1
+ sta fl_save_spr+1
+ lda info_ptr
+ sta fl_save_info
+ lda info_ptr+1
+ sta fl_save_info+1
+ lda info_ptr
+ sta fl_self
+ lda info_ptr+1
+ sta fl_self+1
+
+ lda #<sprite_table
+ sta spr_ptr
+ lda #>sprite_table
+ sta spr_ptr+1
+:loop
+ ldy #0
+ lda (spr_ptr),y
+ sta info_ptr
+ iny
+ lda (spr_ptr),y
+ sta info_ptr+1
+ ora info_ptr
+ beq :nope            ; null terminator — none engaged
+* Skip self
+ lda info_ptr
+ cmp fl_self
+ bne :check
+ lda info_ptr+1
+ cmp fl_self+1
+ beq :next
+:check
+* Skip the player (controller=$01)
+ ldy #22
+ lda (info_ptr),y
+ cmp #$01
+ beq :next
+* Compare anim_ptr (+24) with punched_anim (+40)
+ ldy #24
+ lda (info_ptr),y
+ sta fl_anim
+ iny
+ lda (info_ptr),y
+ sta fl_anim+1
+ ora fl_anim
+ beq :next            ; no active anim
+ ldy #40
+ lda (info_ptr),y
+ cmp fl_anim
+ bne :try_fall
+ iny
+ lda (info_ptr),y
+ cmp fl_anim+1
+ beq :yes
+ dey
+:try_fall
+ ldy #50
+ lda (info_ptr),y
+ cmp fl_anim
+ bne :next
+ iny
+ lda (info_ptr),y
+ cmp fl_anim+1
+ beq :yes
+:next
+ lda spr_ptr
+ clc
+ adc #2
+ sta spr_ptr
+ bcc :loop
+ inc spr_ptr+1
+ bra :loop
+:yes
+ lda fl_save_spr
+ sta spr_ptr
+ lda fl_save_spr+1
+ sta spr_ptr+1
+ lda fl_save_info
+ sta info_ptr
+ lda fl_save_info+1
+ sta info_ptr+1
+ lda #1
+ rts
+:nope
+ lda fl_save_spr
+ sta spr_ptr
+ lda fl_save_spr+1
+ sta spr_ptr+1
+ lda fl_save_info
+ sta info_ptr
+ lda fl_save_info+1
+ sta info_ptr+1
+ lda #0
+ rts
+
+*----------------------------------------------------------
+* fl_punch - Wait for punch animation to terminate, then
+* go to cooldown.
+*----------------------------------------------------------
+fl_punch
+ ldy #24
+ lda (info_ptr),y
+ iny
+ ora (info_ptr),y
+ bne :still
+ ldy #7
+ lda #FL_COOLDOWN
+ sta (info_ptr),y
+ lda #FL_CD_TIME
+ ldy #8
+ sta (info_ptr),y
+:still
+ rts
+
+*----------------------------------------------------------
+* fl_cooldown - Decrement timer. When zero, clear corner_y
+* and return to FL_ARC for another approach.
+*----------------------------------------------------------
+fl_cooldown
+ ldy #8
+ lda (info_ptr),y
+ beq :expired
+ sec
+ sbc #1
+ sta (info_ptr),y
+ bne :wait
+:expired
+ ldy #7
+ lda #FL_ARC
+ sta (info_ptr),y
+ ldy #9
+ lda #0
+ sta (info_ptr),y      ; recompute corner next time
+:wait
+ rts
+
+* Flank scratch variables
+fl_x_done   dfb 0
+fl_y_done   dfb 0
+fl_y_target dfb 0
+fl_self     ds 2
+fl_anim     ds 2
+fl_save_spr ds 2
+fl_save_info ds 2
 
 *----------------------------------------------------------
 * erase_all - Iterate sprite_table, load each sprite,
@@ -836,6 +1629,23 @@ SCRIPT_WAITX = 1      ; waiting for player X threshold
 SCRIPT_WAITY = 2      ; waiting for player Y threshold
 SCRIPT_WAITCLR = 3    ; waiting for all NPCs defeated
 SCRIPT_DONE = 4       ; level ended
+
+* NPC behaviors (must match mission1.s definitions)
+BEHAV_NONE    = 0
+BEHAV_FACEOFF = 1
+BEHAV_FLANK   = 2
+BEHAV_LURK    = 3
+
+* Face-off sub-states (stored at info_block+7)
+FO_APPROACH = 0       ; walking toward player
+FO_PUNCH    = 1       ; throwing a punch
+FO_COOLDOWN = 2       ; waiting after punch
+
+* Flank sub-states (stored at info_block+7)
+FL_ARC      = 0       ; arc to a corner behind player
+FL_CLOSE    = 1       ; close in to back-side punch range
+FL_PUNCH    = 2       ; throw a punch
+FL_COOLDOWN = 3       ; waiting after punch
 
 *----------------------------------------------------------
 * process_input - Read keyboard, update Billy's state.
@@ -1772,6 +2582,16 @@ init_level
  lda [$F0],y
  sta spr_wfallen
 
+* WILLIAM2 (offset +34)
+ ldy #34
+ lda [$F0],y
+ sta spr_william2
+
+* WILLIAM3 (offset +36)
+ ldy #36
+ lda [$F0],y
+ sta spr_william3
+
 * Now patch all DA references in animation descriptors
 * and sprite info blocks with bank $02 addresses.
 * Each anim frame has: dfb x,y,dur, DA addr (5 bytes per frame)
@@ -1831,6 +2651,16 @@ init_level
  lda spr_img01
  sta anim_bfall+3+3
 
+* Patch anim_wwalk: 4 frames (WILLIAM1, WILLIAM2, WILLIAM3, WILLIAM2)
+ lda spr_william1
+ sta anim_wwalk+3+3
+ lda spr_william2
+ sta anim_wwalk+3+8
+ lda spr_william3
+ sta anim_wwalk+3+13
+ lda spr_william2
+ sta anim_wwalk+3+18
+
 * Patch billy_sprite frame_addr (+14) and idle_addr (+42)
  lda spr_img01
  sta billy_sprite+14
@@ -1855,6 +2685,29 @@ init_level
  sta walk_addr_tbl+4
  lda spr_img02
  sta walk_addr_tbl+6
+
+* Read player_spawn_x/y from header ($02/0002, $02/0003)
+* and apply to billy_sprite xpos/ypos (+ prev fields).
+ sep $20
+ mx %10
+ lda #$02
+ sta $F2
+ rep $20
+ mx %00
+ lda #$0002
+ sta $F0
+ sep $20
+ mx %10
+ ldy #0
+ lda [$F0],y           ; player_spawn_x
+ sta billy_sprite+2
+ sta billy_sprite+34
+ ldy #1
+ lda [$F0],y           ; player_spawn_y
+ sta billy_sprite
+ sta billy_sprite+32
+ rep $20
+ mx %00
 
 * Set sprite bank
  lda #$0002
@@ -1902,6 +2755,8 @@ spr_william1 ds 2
 spr_wpunched ds 2
 spr_wfall    ds 2
 spr_wfallen  ds 2
+spr_william2 ds 2
+spr_william3 ds 2
 
 *----------------------------------------------------------
 * Set ntp_open pathname pointer and ntp_bank before calling.
@@ -2293,6 +3148,21 @@ anim_bfall
  dfb $00             ; flags: none (one-shot, placeholder)
  dfb $09,$28,33      ; IMAGE01: 9 wide, 40 tall, 33 VBLs
   hex 0000             ; patched: IMAGE01
+
+* William walking cycle (WILLIAM1, 2, 3, 2). Looping, no
+* auto-advance — behavior code controls position.
+anim_wwalk
+ dfb 4               ; num_frames
+ dfb $09             ; max_width
+ dfb $02             ; flags: loop
+ dfb $09,$28,5       ; WILLIAM1
+  hex 0000             ; patched: WILLIAM1
+ dfb $09,$28,5       ; WILLIAM2
+  hex 0000             ; patched: WILLIAM2
+ dfb $09,$28,5       ; WILLIAM3
+  hex 0000             ; patched: WILLIAM3
+ dfb $09,$28,5       ; WILLIAM2
+  hex 0000             ; patched: WILLIAM2
 
 *----------------------------------------------------------
 * check_punch_hit - Check if the punching sprite (whose
