@@ -94,6 +94,7 @@ level_script
     db OP_WAITX
     dw 400              ; wait for player abs X >= 400
     db OP_SCRLOCK       ; stuck here
+    db OP_END           ; placeholder until the rest of mission 1 is built
 ;    db OP_NPC           ; Roper near right edge
 ;    dw roper_sprite
 ;    db $58,$5f,$01

@@ -28,6 +28,9 @@ NTPstreamsound          =   NinjaTrackerPlus+24
  ldal $C035
  and #$F7             ; clear bit 3
  stal $C035
+ ldal $C034
+ and #$F0
+ stal $C034
  sec
  xce                   ; back to emulation for ProDOS calls
 
@@ -371,9 +374,17 @@ run_script
  rts
 
 :not_waitclr
-* OP_NONE or unknown — skip 1 byte
+* OP_NONE — skip 1 byte and continue
+ cmp #OP_NONE
+ bne :unknown_op
  inc script_pc
  jmp :exec_loop
+:unknown_op
+* Unknown opcode — halt the script rather than march forward
+* into adjacent data (which spawns garbage NPCs).
+ lda #SCRIPT_DONE
+ sta script_state
+ rts
 
 *--- Wait condition checks ---
 
@@ -735,6 +746,14 @@ fo_find_player
 * of the player's facing edge, transition to FO_PUNCH.
 *----------------------------------------------------------
 fo_approach
+* If a stun/action animation is playing (not idle and not
+* anim_wwalk), don't advance behavior — let it finish.
+* Otherwise we'd transition to PUNCH mid-fall and clobber
+* the fall, preventing the death sentinel from firing.
+ jsr npc_behavior_blocked
+ beq :not_blocked
+ rts
+:not_blocked
  jsr fo_find_player
  bne :have_player
  jmp :no_action
@@ -948,6 +967,36 @@ fo_cooldown
 * install it. anim_frame=$FF + timer=1 makes update_anims
 * advance to (and load) frame 0 this same frame.
 *----------------------------------------------------------
+*----------------------------------------------------------
+* npc_behavior_blocked - Returns A=1 (Z=0) if a stun or
+* attack animation is playing (anim_ptr != 0 and != anim_wwalk).
+* Returns A=0 (Z=1) if behavior is free to advance.
+*----------------------------------------------------------
+npc_behavior_blocked
+ ldy #24
+ lda (info_ptr),y
+ sta :tmp
+ ldy #25
+ lda (info_ptr),y
+ ora :tmp
+ beq :free            ; anim_ptr == 0 — idle, free to advance
+* Non-zero anim_ptr — check if it's anim_wwalk (also free)
+ ldy #24
+ lda (info_ptr),y
+ cmp #<anim_wwalk
+ bne :blocked
+ ldy #25
+ lda (info_ptr),y
+ cmp #>anim_wwalk
+ bne :blocked
+:free
+ lda #0
+ rts
+:blocked
+ lda #1
+ rts
+:tmp dfb 0
+
 npc_ensure_walking
 * Only install anim_wwalk if no animation is currently
 * active (anim_ptr == 0). Don't clobber punched/fall/punch
@@ -1145,6 +1194,10 @@ fl_step_y_to
 * depending on which side of player_y the NPC starts on.
 *----------------------------------------------------------
 fl_arc
+ jsr npc_behavior_blocked
+ beq :not_blocked
+ rts
+:not_blocked
  jsr fo_find_player
  bne :have_player
  jmp :no_action
@@ -1205,6 +1258,10 @@ fl_arc
 * player_y. When reached, start punch.
 *----------------------------------------------------------
 fl_close
+ jsr npc_behavior_blocked
+ beq :not_blocked
+ rts
+:not_blocked
  jsr fo_find_player
  bne :have_player
  jmp :no_action
@@ -3799,15 +3856,15 @@ check_punch_hit
  adc #1
  sta (info_ptr),y
 * Increment low nibble of border color
- ldal $E0C034
- clc
- adc #1
- and #$0F
- sta :tmp
- ldal $E0C034
- and #$F0
- ora :tmp
- stal $E0C034
+; ldal $E0C034
+; clc
+; adc #1
+; and #$0F
+; sta :tmp
+; ldal $E0C034
+; and #$F0
+; ora :tmp
+; stal $E0C034
 * Check if punch_count triggers a fall (3 or 6)
  ldy #48
  lda (info_ptr),y     ; punch_count
