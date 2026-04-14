@@ -79,6 +79,19 @@ $(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.sh
 	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ res/ntpplayer\#060000 --quiet
 	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ assets/audio/TITLE.NTP#000000 --quiet
 	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ assets/audio/MISSION1.NTP\#000000 --quiet
+	# Add sound effect RAW files
+	cp assets/audio/punch.raw out/PUNCH.RAW\#060000
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/PUNCH.RAW\#060000 --quiet
+	rm out/PUNCH.RAW\#060000
+	cp assets/audio/finger.raw out/FINGER.RAW\#060000
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/FINGER.RAW\#060000 --quiet
+	rm out/FINGER.RAW\#060000
+	cp assets/audio/fall.raw out/FALL.RAW\#060000
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/FALL.RAW\#060000 --quiet
+	rm out/FALL.RAW\#060000
+	cp assets/audio/punchlanded.raw out/PUNCHLANDED.RAW\#060000
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/PUNCHLANDED.RAW\#060000 --quiet
+	rm out/PUNCHLANDED.RAW\#060000
 	cadius CATALOG $(IMGFILE)
 
 clean:
