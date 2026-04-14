@@ -80,46 +80,24 @@ def replace_nibble(rows: List[str], old: str, new: str) -> List[str]:
 # Parsing
 # ----------------------------
 
-def parse_sprite_block(text: str) -> SpriteBlock:
-    lines = [line.rstrip() for line in text.splitlines() if line.strip()]
-    if len(lines) < 3:
-        raise ValueError("Sprite block too short")
-
-    m0 = HEX_LINE_RE.match(lines[0])
-    m1 = HEX_LINE_RE.match(lines[1])
-
-    if not (m0 and m1):
-        raise ValueError("Failed to parse Y/X header lines")
-
-    y_label = m0.group("label")
-    x_label = m1.group("label")
-
-    if not (y_label and x_label):
-        raise ValueError("Missing Y/X labels")
-
-    y_value = parse_le16(m0.group("data"))
-    x_value = parse_le16(m1.group("data"))
-
-    # Line 3 may be "LABEL HEX data" or a bare label with data on line 4+
-    m2 = HEX_LINE_RE.match(lines[2])
-    if m2 and m2.group("label"):
-        base_label = m2.group("label")
-        rows = [m2.group("data").upper()]
-        data_start = 3
+def _find_label_and_rows(lines: List[str]) -> Tuple[str, List[str]]:
+    """Find the base label and HEX data rows starting from the first line.
+    Handles both 'LABEL HEX data' and bare-label-then-HEX-rows formats."""
+    m = HEX_LINE_RE.match(lines[0])
+    if m and m.group("label"):
+        base_label = m.group("label")
+        rows = [m.group("data").upper()]
+        data_start = 1
     else:
-        bare = BARE_LABEL_RE.match(lines[2])
+        bare = BARE_LABEL_RE.match(lines[0])
         if not bare:
-            raise ValueError(f"Failed to parse line 3: {lines[2]}")
+            raise ValueError(f"Failed to parse label line: {lines[0]}")
         base_label = bare.group("label")
-        m3 = HEX_LINE_RE.match(lines[3])
-        if not m3:
-            raise ValueError(f"Failed to parse first data row: {lines[3]}")
-        rows = [m3.group("data").upper()]
-        data_start = 4
-
-    base = base_label
-    if not y_label.startswith(base) or not x_label.startswith(base):
-        raise ValueError("Label mismatch")
+        m1 = HEX_LINE_RE.match(lines[1])
+        if not m1:
+            raise ValueError(f"Failed to parse first data row: {lines[1]}")
+        rows = [m1.group("data").upper()]
+        data_start = 2
 
     for line in lines[data_start:]:
         m = HEX_LINE_RE.match(line)
@@ -127,12 +105,61 @@ def parse_sprite_block(text: str) -> SpriteBlock:
             raise ValueError(f"Bad row: {line}")
         rows.append(m.group("data").upper())
 
+    return base_label, rows
+
+
+def _is_data_line(line: str) -> bool:
+    """Return True if the line is a HEX row, a bare label, or a _Y/_X header.
+    Filters out comments (* ...), EQU directives, and blank lines."""
+    s = line.strip()
+    if not s:
+        return False
+    if s.startswith("*") or s.startswith(";"):
+        return False
+    if " EQU " in s.upper() or "\tEQU\t" in s.upper() or "\tEQU " in s.upper():
+        return False
+    return True
+
+
+def parse_sprite_block(text: str) -> SpriteBlock:
+    lines = [line.rstrip() for line in text.splitlines() if _is_data_line(line)]
+    if len(lines) < 1:
+        raise ValueError("Sprite block is empty")
+
+    # Try to detect optional _Y / _X header lines.
+    # They look like "LABEL_Y HEX xxxx" / "LABEL_X HEX xxxx" with
+    # 2-byte (4-nibble) data.  If present, skip them; if absent,
+    # start directly at the base label / HEX rows.
+    skip = 0
+    m0 = HEX_LINE_RE.match(lines[0])
+    if m0 and m0.group("label") and len(m0.group("data")) == 4:
+        lbl = m0.group("label")
+        if lbl.endswith("_Y") or lbl.endswith("_X"):
+            skip += 1
+            m1 = HEX_LINE_RE.match(lines[1])
+            if m1 and m1.group("label") and len(m1.group("data")) == 4:
+                lbl1 = m1.group("label")
+                if lbl1.endswith("_Y") or lbl1.endswith("_X"):
+                    skip += 1
+
+    base_label, rows = _find_label_and_rows(lines[skip:])
+
     width = len(rows[0])
     for r in rows:
         if len(r) != width:
             raise ValueError("Row width mismatch")
 
-    return SpriteBlock(base, x_label, y_label, x_value, y_value, rows)
+    x_value = width // 2
+    y_value = len(rows)
+
+    return SpriteBlock(
+        base_label,
+        f"{base_label}_X",
+        f"{base_label}_Y",
+        x_value,
+        y_value,
+        rows,
+    )
 
 
 # ----------------------------
