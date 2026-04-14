@@ -212,11 +212,13 @@ over1
 game_loop
  jsr wait_for_vbl
  jsr erase_all
+ jsr update_overlay
  jsr process_input
  jsr run_script
  jsr update_npcs       ; runs behavior state machines
  jsr update_anims
  jsr draw_all
+ jsr draw_overlay
  bra game_loop
 
 *----------------------------------------------------------
@@ -240,7 +242,10 @@ run_script
 :nwy cmp #SCRIPT_WAITCLR
  bne :nwc
  jmp :check_waitclr
-:nwc
+:nwc cmp #SCRIPT_WAITNPC
+ bne :nwn
+ jmp :check_waitnpc
+:nwn
 
 * SCRIPT_RUN — execute opcodes
 :exec_loop
@@ -305,6 +310,9 @@ run_script
  sta scroll_right_screen
  lda #1
  sta scroll_right_enabled
+* Show POINT_RIGHT overlay for 180 frames
+ lda #180
+ sta overlay_timer
  lda script_pc
  clc
  adc #2
@@ -374,6 +382,21 @@ run_script
  rts
 
 :not_waitclr
+ cmp #OP_WAITNPC
+ bne :not_waitnpc
+* OP_WAITNPC: param = 1 byte NPC count threshold
+ ldy #1
+ lda [script_pc],y
+ sta script_wait_val   ; reuse low byte for NPC count
+ lda #SCRIPT_WAITNPC
+ sta script_state
+ lda script_pc
+ clc
+ adc #2                ; opcode + 1 byte param
+ sta script_pc
+ rts
+
+:not_waitnpc
 * OP_NONE — skip 1 byte and continue
  cmp #OP_NONE
  bne :unknown_op
@@ -441,6 +464,48 @@ run_script
  lda #SCRIPT_RUN
  sta script_state
  jmp :exec_loop
+
+:check_waitnpc
+* Check if NPC count <= threshold in script_wait_val.
+* Count controller=$00 sprites in table.
+ lda #0
+ sta :npc_count
+ lda #<sprite_table
+ sta spr_ptr
+ lda #>sprite_table
+ sta spr_ptr+1
+:wnpc_loop
+ ldy #0
+ lda (spr_ptr),y
+ sta info_ptr
+ iny
+ lda (spr_ptr),y
+ sta info_ptr+1
+ ora info_ptr
+ beq :wnpc_done        ; end of table
+ ldy #22
+ lda (info_ptr),y       ; controller
+ bne :wnpc_next         ; skip player
+ inc :npc_count
+:wnpc_next
+ lda spr_ptr
+ clc
+ adc #2
+ sta spr_ptr
+ bcc :wnpc_loop
+ inc spr_ptr+1
+ bra :wnpc_loop
+:wnpc_done
+ lda :npc_count
+ cmp script_wait_val
+ bcc :wnpc_met          ; count < threshold — condition met
+ beq :wnpc_met          ; count == threshold — condition met
+ rts                    ; count > threshold — wait
+:wnpc_met
+ lda #SCRIPT_RUN
+ sta script_state
+ jmp :exec_loop
+:npc_count dfb 0
 
 *--- Script helper: set screen ---
 script_set_screen
@@ -682,7 +747,113 @@ scroll_right_screen dfb 0
 scroll_left_screen dfb 0
 npc_buf_next dw npc_buffers   ; next free NPC buffer address
 
-* NPC sprite block buffers (8 slots x 52 bytes = 416 bytes)
+* Overlay state (POINT_RIGHT arrow shown on OP_RIGHT)
+overlay_timer  dfb 0          ; frames remaining (0 = inactive)
+OVERLAY_X      = 100          ; screen byte position (200 pixels / 2)
+OVERLAY_Y      = 120          ; screen scanline
+OVERLAY_W      = $0C          ; POINT_RIGHT width in bytes
+OVERLAY_H      = $10          ; POINT_RIGHT height in rows
+OVERLAY_MASK   = $77          ; transparent byte for POINT_RIGHT
+
+*----------------------------------------------------------
+* update_overlay - Decrement overlay timer. When it expires,
+* erase the overlay rect from the $50 shadow.
+*----------------------------------------------------------
+update_overlay
+ lda overlay_timer
+ beq :done
+ sec
+ sbc #1
+ sta overlay_timer
+ bne :done
+* Timer just hit 0 — erase overlay from screen
+ lda #OVERLAY_Y
+ sta IMAGE01_YPOS
+ lda #OVERLAY_X
+ sta IMAGE01_XPOS
+ lda #OVERLAY_W
+ sta FRAME_X
+ lda #OVERLAY_H
+ sta FRAME_Y
+ jsr erase
+:done rts
+
+*----------------------------------------------------------
+* draw_overlay - If overlay is active, draw POINT_RIGHT
+* at fixed screen position. Uses draw_sprite globals.
+*----------------------------------------------------------
+draw_overlay
+ lda overlay_timer
+ bne :active
+ rts
+:active
+* Save current globals
+ lda IMAGE01_YPOS
+ pha
+ lda IMAGE01_XPOS
+ pha
+ lda IMAGE01_MIRROR
+ pha
+ lda FRAME_X
+ pha
+ lda FRAME_Y
+ pha
+ lda FRAME_ADDR
+ pha
+ lda FRAME_ADDR+1
+ pha
+ lda MASK
+ pha
+ lda MASKHI
+ pha
+ lda MASKLO
+ pha
+* Set overlay globals
+ lda #OVERLAY_Y
+ sta IMAGE01_YPOS
+ lda #OVERLAY_X
+ sta IMAGE01_XPOS
+ lda #0
+ sta IMAGE01_MIRROR
+ lda #OVERLAY_W
+ sta FRAME_X
+ lda #OVERLAY_H
+ sta FRAME_Y
+ lda spr_pointright
+ sta FRAME_ADDR
+ lda spr_pointright+1
+ sta FRAME_ADDR+1
+ lda #OVERLAY_MASK
+ sta MASK
+ lda #$70
+ sta MASKHI
+ lda #$07
+ sta MASKLO
+ jsr draw_sprite
+* Restore globals
+ pla
+ sta MASKLO
+ pla
+ sta MASKHI
+ pla
+ sta MASK
+ pla
+ sta FRAME_ADDR+1
+ pla
+ sta FRAME_ADDR
+ pla
+ sta FRAME_Y
+ pla
+ sta FRAME_X
+ pla
+ sta IMAGE01_MIRROR
+ pla
+ sta IMAGE01_XPOS
+ pla
+ sta IMAGE01_YPOS
+:done rts
+
+* NPC sprite block buffers
 npc_buffers ds 448           ; 8 slots x 56 bytes
 
 *----------------------------------------------------------
@@ -741,7 +912,8 @@ update_npcs
 *   FO_COOLDOWN - wait N frames after punch finishes
 *----------------------------------------------------------
 * xpos byte-units; 100 bytes = 200 pixels in 320 mode.
-SCROLL_THRESH = 100    ; player xpos at/over which walking scrolls
+SCROLL_THRESH = 80    ; player xpos at/over which walking scrolls
+PLAYFIELD_EDGE = 109   ; rightmost byte position in the 110-byte playfield
 FO_RANGE   = 4         ; pixels — engage punching at this distance
 FO_CD_TIME = 90        ; cooldown frames after a punch
 
@@ -1784,6 +1956,7 @@ OP_SCRLOCK  = 8
 OP_END      = 9
 OP_WAITY    = 10
 OP_WAITCLR  = 11
+OP_WAITNPC  = 12
 
 * Script interpreter state
 SCRIPT_RUN  = 0       ; executing opcodes
@@ -1791,6 +1964,7 @@ SCRIPT_WAITX = 1      ; waiting for player X threshold
 SCRIPT_WAITY = 2      ; waiting for player Y threshold
 SCRIPT_WAITCLR = 3    ; waiting for all NPCs defeated
 SCRIPT_DONE = 4       ; level ended
+SCRIPT_WAITNPC = 5    ; waiting for NPC count <= threshold
 
 * NPC behaviors (must match mission1.s definitions)
 BEHAV_NONE    = 0
@@ -1865,10 +2039,10 @@ process_input
  jsr save_sprite
  jsr scroll_right
  jsr load_sprite
-* Player advanced 1 byte (2 pixels) through the world
+* Player advanced 4 bytes (8 pixels) through the world
  lda abs_x
  clc
- adc #2
+ adc #8
  sta abs_x
  lda abs_x+1
  adc #0
@@ -1907,18 +2081,15 @@ process_input
  rts
 :not_left cmp #'6'
  bne :not_jump
-* If at scroll threshold AND scrolling enabled, advance the
-* world instead of the player. Otherwise walk normally.
+* If at scroll threshold AND scrolling enabled, scroll world.
+* If scroll disabled, walk normally up to the playfield edge.
+ lda scroll_right_enabled
+ beq :walk_right       ; scroll disabled — walk to edge
  lda IMAGE01_XPOS
  cmp #SCROLL_THRESH
  bcc :walk_right       ; xpos < threshold, walk
- lda scroll_right_enabled
- beq :clamp_right      ; can't scroll, clamp at edge
 * Scroll world right by 4 bytes (8 pixels = 2 words)
  jsr save_sprite
- jsr scroll_right
- jsr scroll_right
- jsr scroll_right
  jsr scroll_right
  jsr load_sprite
 * abs_x advances by 8 pixels through the world
@@ -1931,13 +2102,16 @@ process_input
  sta abs_x+1
  bra :finish_right
 :walk_right
+ lda IMAGE01_XPOS
+ cmp #PLAYFIELD_EDGE
+ bcs :clamp_right      ; at right edge of playfield
  inc IMAGE01_XPOS
  inc abs_x
  bne :finish_right
  inc abs_x+1
  bra :finish_right
 :clamp_right
-* At edge with no scroll — just face right, no movement
+* At edge — just face right, no movement
 :finish_right
  stz IMAGE01_MIRROR
  jsr advance_walk
@@ -2893,6 +3067,11 @@ init_level
  lda [$F0],y
  sta spr_lfall2
 
+* POINT_RIGHT (offset +74)
+ ldy #74
+ lda [$F0],y
+ sta spr_pointright
+
 * Now patch all DA references in animation descriptors
 * and sprite info blocks with bank $02 addresses.
 * Each anim frame has: dfb x,y,dur, DA addr (5 bytes per frame)
@@ -3138,6 +3317,7 @@ spr_lpunch2  ds 2
 spr_lpunched ds 2
 spr_lfall1   ds 2
 spr_lfall2   ds 2
+spr_pointright ds 2
 
 *----------------------------------------------------------
 * Set ntp_open pathname pointer and ntp_bank before calling.
@@ -3252,15 +3432,23 @@ mission1_path dfb 16
 * 4) Redraw sprite
 *----------------------------------------------------------
 scroll_right
- inc x_scroll_idx      ; 8-bit inc, fine for values < 256
+* Scroll playfield 4 bytes (2 words, 8 pixels) to the left.
+* Coarse NES-style scroll: shift in 16-bit mode, then fill
+* the rightmost 4 bytes from the next screen's background.
+ lda x_scroll_idx
+ clc
+ adc #4
+ sta x_scroll_idx
 
  clc
  xce                   ; native mode
  rep $30               ; 16-bit A, X, Y
+ mx %00
 
-* Step 1: Shift bytes 1-110 left by one in bank $50
- lda #$2001
- sta $F0               ; src = line_start + 1
+* Step 1: Shift each scanline 4 bytes left in bank $50.
+* Copy words from offset+4 to offset, 53 words (106 bytes).
+ lda #$2004
+ sta $F0               ; src = line_start + 4
  lda #$2000
  sta $F3               ; dst = line_start
  sep $20
@@ -3277,61 +3465,149 @@ scroll_right
  sta [$F3],y
  iny
  iny
- cpy #110
+ cpy #106              ; 110 - 4 = 106 bytes to move
  bcc :shift_word
 
  lda $F0
  clc
- adc #$A0
+ adc #$00A0
  sta $F0
  lda $F3
  clc
- adc #$A0
+ adc #$00A0
  sta $F3
  dex
  bne :shift_line
 
-* Step 2: Fill byte 109 (rightmost visible) from scroll source
+* Step 2: Fill rightmost 4 bytes (offsets 106-109) from
+* the scroll source background in scroll_src_bank.
+* If scroll_src_off is near the screen boundary (108),
+* fill 2 bytes from this bank and 2 from the next.
+ sep $20
+ mx %10
  lda scroll_src_off
+ cmp #108
+ bcc :fill_normal
+ beq :fill_split
+* src_off > 108 shouldn't happen, but treat as normal
+:fill_normal
+ rep $20
+ mx %00
+ lda scroll_src_off
+ and #$00FF
  clc
  adc #$2000
  sta $F0               ; src = scroll_src_bank/(2000 + scroll_src_off)
- lda #$206D            ; dst = $50/(2000 + 109)
+ lda #$206A            ; dst = $50/(2000 + 106)
  sta $F3
  sep $20
  lda scroll_src_bank
- sta $F2               ; src bank
+ sta $F2
  lda #$50
- sta $F5               ; dst bank
+ sta $F5
+ rep $20
 
- rep $20
+ ldy #0
  ldx #183
-:fill_line
- sep $20
- lda [$F0]             ; read 1 byte from source
- sta [$F3]             ; write to byte 109 in $50
- rep $20
+:fill_4
+ lda [$F0],y           ; first word
+ sta [$F3],y
+ iny
+ iny
+ lda [$F0],y           ; second word
+ sta [$F3],y
+ ldy #0
  lda $F0
  clc
- adc #$A0
+ adc #$00A0
  sta $F0
  lda $F3
  clc
- adc #$A0
+ adc #$00A0
  sta $F3
  dex
- bne :fill_line
+ bne :fill_4
 
-* Advance scroll source for next scroll
- inc scroll_src_off
- lda scroll_src_off
- cmp #110
- bcc :no_bank_wrap
- stz scroll_src_off    ; reset offset
+* Advance scroll source offset by 4 bytes
  sep $20
- inc scroll_src_bank   ; advance to next bank
+ mx %10
+ lda scroll_src_off
+ clc
+ adc #4
+ sta scroll_src_off
+ cmp #110
+ bcc :fill_done
+ stz scroll_src_off
+ inc scroll_src_bank
+ bra :fill_done
+
+* Split fill: 2 bytes from current bank (offset 108-109),
+* 2 bytes from next bank (offset 0-1).
+:fill_split
  rep $20
-:no_bank_wrap
+ mx %00
+* First pass: fill bytes 106-107 from current bank offset 108
+ lda #$2000+108
+ sta $F0
+ lda #$206A            ; dst = $50/(2000+106)
+ sta $F3
+ sep $20
+ lda scroll_src_bank
+ sta $F2
+ lda #$50
+ sta $F5
+ rep $20
+ ldy #0
+ ldx #183
+:split_1
+ lda [$F0],y
+ sta [$F3],y
+ lda $F0
+ clc
+ adc #$00A0
+ sta $F0
+ lda $F3
+ clc
+ adc #$00A0
+ sta $F3
+ dex
+ bne :split_1
+* Second pass: fill bytes 108-109 from NEXT bank offset 0
+ lda #$2000
+ sta $F0
+ lda #$206C            ; dst = $50/(2000+108)
+ sta $F3
+ sep $20
+ inc scroll_src_bank
+ lda scroll_src_bank
+ sta $F2
+ lda #$50
+ sta $F5
+ rep $20
+ ldy #0
+ ldx #183
+:split_2
+ lda [$F0],y
+ sta [$F3],y
+ lda $F0
+ clc
+ adc #$00A0
+ sta $F0
+ lda $F3
+ clc
+ adc #$00A0
+ sta $F3
+ dex
+ bne :split_2
+* Reset scroll source to offset 2 in the new bank
+ sep $20
+ mx %10
+ lda #2
+ sta scroll_src_off
+
+:fill_done
+ rep $20
+ mx %00
 
 * Step 3: Fast unrolled blit $50 -> $55 (back buffer)
  jsr fast_blit_50_55
@@ -3360,6 +3636,20 @@ scroll_right
  sta draw_bank
  lda #$00
  sta draw_bank+1
+* Brief delay after stack blit's CLI so pending sound
+* interrupts (NTP) can fire before we return to the caller.
+* 256 iterations ≈ 500 cycles — enough for the DOC IRQ
+* to service without noticeably stalling the scroll.
+ ldx #0
+:irq_wait
+ nop
+ dex
+ bne :irq_wait
+ ldx #0
+:irq_wait2
+ nop
+ dex
+ bne :irq_wait2
  rts
 
 *----------------------------------------------------------
