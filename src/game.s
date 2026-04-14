@@ -522,26 +522,110 @@ script_spawn_npc
  sta (info_ptr),y      ; +8 behavior_timer low
  ldy #9
  sta (info_ptr),y      ; +9 behavior_timer high
-* Patch animation pointers to bank $00 versions
-* (template has bank $02 addresses which can't be read via (dp),Y)
- ldy #40
+* Patch animation pointers to bank $00 versions.
+* Template has bank $02 DA addresses which can't be read
+* via (dp),Y. Determine NPC type from idle_addr (+42),
+* then patch punched_anim (+40) and fall_anim (+50) with
+* the correct bank $00 animation descriptor addresses.
+ ldy #42
+ lda (info_ptr),y      ; idle_addr low (bank $02 addr)
+ sta :id_lo
+ ldy #43
+ lda (info_ptr),y      ; idle_addr high
+ sta :id_hi
+* Check Roper
+ lda :id_lo
+ cmp spr_roper1
+ bne :not_roper
+ lda :id_hi
+ cmp spr_roper1+1
+ bne :not_roper
+ lda #<anim_rpunched
+ sta :punch_lo
+ lda #>anim_rpunched
+ sta :punch_hi
+ lda #<anim_rfall
+ sta :fall_lo
+ lda #>anim_rfall
+ sta :fall_hi
+ lda #<anim_rwalk
+ sta :walk_lo
+ lda #>anim_rwalk
+ sta :walk_hi
+ lda #<anim_rpunch
+ sta :atk_lo
+ lda #>anim_rpunch
+ sta :atk_hi
+ bra :do_patch
+:not_roper
+* Check Linda
+ lda :id_lo
+ cmp spr_linda1
+ bne :not_linda
+ lda :id_hi
+ cmp spr_linda1+1
+ bne :not_linda
+ lda #<anim_lpunched
+ sta :punch_lo
+ lda #>anim_lpunched
+ sta :punch_hi
+ lda #<anim_lfall
+ sta :fall_lo
+ lda #>anim_lfall
+ sta :fall_hi
+ lda #<anim_lwalk
+ sta :walk_lo
+ lda #>anim_lwalk
+ sta :walk_hi
+ lda #<anim_lpunch
+ sta :atk_lo
+ lda #>anim_lpunch
+ sta :atk_hi
+ bra :do_patch
+:not_linda
+* Default: William
  lda #<anim_wpunched
+ sta :punch_lo
+ lda #>anim_wpunched
+ sta :punch_hi
+ lda #<anim_wfall
+ sta :fall_lo
+ lda #>anim_wfall
+ sta :fall_hi
+ lda #<anim_wwalk
+ sta :walk_lo
+ lda #>anim_wwalk
+ sta :walk_hi
+ lda #<anim_wpunch
+ sta :atk_lo
+ lda #>anim_wpunch
+ sta :atk_hi
+:do_patch
+ ldy #40
+ lda :punch_lo
  sta (info_ptr),y      ; +40 punched_anim low
  iny
- lda #>anim_wpunched
+ lda :punch_hi
  sta (info_ptr),y      ; +41 punched_anim high
- ldy #42
- lda spr_william1      ; idle_addr — bank $02 address (low byte)
- sta (info_ptr),y
- iny
- lda spr_william1+1    ; idle_addr high byte
- sta (info_ptr),y
  ldy #50
- lda #<anim_wfall
+ lda :fall_lo
  sta (info_ptr),y      ; +50 fall_anim low
  iny
- lda #>anim_wfall
+ lda :fall_hi
  sta (info_ptr),y      ; +51 fall_anim high
+* Set per-NPC walk_anim (+52) and atk_anim (+54)
+ ldy #52
+ lda :walk_lo
+ sta (info_ptr),y
+ iny
+ lda :walk_hi
+ sta (info_ptr),y      ; +53
+ ldy #54
+ lda :atk_lo
+ sta (info_ptr),y
+ iny
+ lda :atk_hi
+ sta (info_ptr),y      ; +55
 * Set dirty = draw only (bit 0)
  ldy #30
  lda #$01
@@ -562,10 +646,10 @@ script_spawn_npc
  iny
  lda info_ptr+1
  sta (spr_ptr),y
-* Advance NPC buffer pointer (52 bytes per block)
+* Advance NPC buffer pointer (56 bytes per block)
  lda npc_buf_next
  clc
- adc #52
+ adc #56
  sta npc_buf_next
  lda npc_buf_next+1
  adc #0
@@ -577,6 +661,16 @@ sc_npc_x     dfb 0
 sc_npc_y     dfb 0
 sc_npc_orient dfb 0
 sc_npc_behavior dfb 0
+:id_lo       dfb 0
+:id_hi       dfb 0
+:punch_lo    dfb 0
+:punch_hi    dfb 0
+:fall_lo     dfb 0
+:fall_hi     dfb 0
+:walk_lo     dfb 0
+:walk_hi     dfb 0
+:atk_lo      dfb 0
+:atk_hi      dfb 0
 
 *-------------------------------
 * Script state variables
@@ -589,7 +683,7 @@ scroll_left_screen dfb 0
 npc_buf_next dw npc_buffers   ; next free NPC buffer address
 
 * NPC sprite block buffers (8 slots x 52 bytes = 416 bytes)
-npc_buffers ds 416
+npc_buffers ds 448           ; 8 slots x 56 bytes
 
 *----------------------------------------------------------
 * update_npcs - Iterate sprite_table, dispatch each NPC's
@@ -892,30 +986,45 @@ fo_approach
 * punch). Replicates start_anim's setup but stays on the NPC.
 *----------------------------------------------------------
 fo_start_punch
+* Read per-NPC atk_anim from +54/+55 into anim_ptr ZP
+ ldy #54
+ lda (info_ptr),y
+ sta anim_ptr
+ ldy #55
+ lda (info_ptr),y
+ sta anim_ptr+1
+* Install into sprite block
  ldy #24
- lda #<anim_wpunch
+ lda anim_ptr
  sta (info_ptr),y
  iny
- lda #>anim_wpunch
+ lda anim_ptr+1
  sta (info_ptr),y
  ldy #26
  lda #0
  sta (info_ptr),y      ; anim_frame = 0
+* Load frame 0's data from the descriptor so it shows now.
+* Descriptor header = 3 bytes, then frame_x(1), frame_y(1),
+* dur(1), addr(2). Frame 0 data at offsets +3..+7.
+ ldy #5
+ lda (anim_ptr),y      ; duration
  ldy #28
- lda #6                ; first frame duration
  sta (info_ptr),y      ; anim_timer
-* Load frame 0's data so it shows this frame.
+ ldy #3
+ lda (anim_ptr),y      ; frame_x
  ldy #10
- lda anim_wpunch+3     ; frame_x
  sta (info_ptr),y
+ ldy #4
+ lda (anim_ptr),y      ; frame_y
  ldy #12
- lda anim_wpunch+4     ; frame_y
  sta (info_ptr),y
+ ldy #6
+ lda (anim_ptr),y      ; frame_addr low
  ldy #14
- lda anim_wpunch+6     ; frame_addr low
  sta (info_ptr),y
- iny
- lda anim_wpunch+7     ; frame_addr high
+ ldy #7
+ lda (anim_ptr),y      ; frame_addr high
+ ldy #15
  sta (info_ptr),y
  rts
 
@@ -980,14 +1089,16 @@ npc_behavior_blocked
  lda (info_ptr),y
  ora :tmp
  beq :free            ; anim_ptr == 0 — idle, free to advance
-* Non-zero anim_ptr — check if it's anim_wwalk (also free)
+* Non-zero anim_ptr — check if it matches walk_anim (+52)
  ldy #24
  lda (info_ptr),y
- cmp #<anim_wwalk
+ ldy #52
+ cmp (info_ptr),y     ; walk_anim low
  bne :blocked
  ldy #25
  lda (info_ptr),y
- cmp #>anim_wwalk
+ ldy #53
+ cmp (info_ptr),y     ; walk_anim high
  bne :blocked
 :free
  lda #0
@@ -998,10 +1109,8 @@ npc_behavior_blocked
 :tmp dfb 0
 
 npc_ensure_walking
-* Only install anim_wwalk if no animation is currently
-* active (anim_ptr == 0). Don't clobber punched/fall/punch
-* animations — they need to play out so the death sentinel
-* (set when fall_anim ends with punch_count>=6) can fire.
+* Only install walk anim if no animation is currently
+* active (anim_ptr == 0). Reads per-NPC walk_anim from +52.
  ldy #24
  lda (info_ptr),y
  sta :tmp
@@ -1011,12 +1120,14 @@ npc_ensure_walking
  beq :install
  rts
 :install
+ ldy #52
+ lda (info_ptr),y      ; walk_anim low
  ldy #24
- lda #<anim_wwalk
- sta (info_ptr),y
+ sta (info_ptr),y      ; anim_ptr low
+ ldy #53
+ lda (info_ptr),y      ; walk_anim high
  ldy #25
- lda #>anim_wwalk
- sta (info_ptr),y
+ sta (info_ptr),y      ; anim_ptr high
  ldy #26
  lda #$FF
  sta (info_ptr),y      ; anim_frame = $FF (so +1 wraps to 0)
@@ -2238,7 +2349,7 @@ update_anims
  lda (info_ptr),y     ; idle_y
  sta FRAME_Y
  jsr save_sprite
- bra :next
+ jmp :next
 
 :load_frame
 * Load frame data from descriptor
@@ -2270,18 +2381,20 @@ update_anims
  pla
  ldy #28
  sta (info_ptr),y     ; anim_timer = duration
-* Check for punch hit (frame 1 of punch1, punch2, or wpunch)
+* Check for punch hit (frame 1 of any punch animation)
  ldy #26
  lda (info_ptr),y     ; anim_frame
  cmp #1
- bne :no_punch_hit
+ beq :maybe_punch
+ jmp :no_punch_hit
+:maybe_punch
  lda anim_ptr
  cmp #<anim_punch1
  bne :try_p2
  lda anim_ptr+1
  cmp #>anim_punch1
  beq :do_hit_now
- bra :no_punch_hit
+ bra :try_p2
 :try_p2
  lda anim_ptr
  cmp #<anim_punch2
@@ -2289,13 +2402,26 @@ update_anims
  lda anim_ptr+1
  cmp #>anim_punch2
  beq :do_hit_now
- bra :no_punch_hit
 :try_wp
  lda anim_ptr
  cmp #<anim_wpunch
- bne :no_punch_hit
+ bne :try_rp
  lda anim_ptr+1
  cmp #>anim_wpunch
+ beq :do_hit_now
+:try_rp
+ lda anim_ptr
+ cmp #<anim_rpunch
+ bne :try_lp
+ lda anim_ptr+1
+ cmp #>anim_rpunch
+ beq :do_hit_now
+:try_lp
+ lda anim_ptr
+ cmp #<anim_lpunch
+ bne :no_punch_hit
+ lda anim_ptr+1
+ cmp #>anim_lpunch
  bne :no_punch_hit
 :do_hit_now
  jsr check_punch_hit
@@ -2703,6 +2829,70 @@ init_level
  lda [$F0],y
  sta spr_wpunch2
 
+* ROPER1-3 (offsets +42, +44, +46)
+ ldy #42
+ lda [$F0],y
+ sta spr_roper1
+ ldy #44
+ lda [$F0],y
+ sta spr_roper2
+ ldy #46
+ lda [$F0],y
+ sta spr_roper3
+
+* RPUNCH1-2 (offsets +48, +50)
+ ldy #48
+ lda [$F0],y
+ sta spr_rpunch1
+ ldy #50
+ lda [$F0],y
+ sta spr_rpunch2
+
+* RPUNCHED (offset +52)
+ ldy #52
+ lda [$F0],y
+ sta spr_rpunched
+
+* RFALL1-2 (offsets +54, +56)
+ ldy #54
+ lda [$F0],y
+ sta spr_rfall1
+ ldy #56
+ lda [$F0],y
+ sta spr_rfall2
+
+* LINDA1-3 (offsets +58, +60, +62)
+ ldy #58
+ lda [$F0],y
+ sta spr_linda1
+ ldy #60
+ lda [$F0],y
+ sta spr_linda2
+ ldy #62
+ lda [$F0],y
+ sta spr_linda3
+
+* LPUNCH1-2 (offsets +64, +66)
+ ldy #64
+ lda [$F0],y
+ sta spr_lpunch1
+ ldy #66
+ lda [$F0],y
+ sta spr_lpunch2
+
+* LPUNCHED (offset +68)
+ ldy #68
+ lda [$F0],y
+ sta spr_lpunched
+
+* LFALL1-2 (offsets +70, +72)
+ ldy #70
+ lda [$F0],y
+ sta spr_lfall1
+ ldy #72
+ lda [$F0],y
+ sta spr_lfall2
+
 * Now patch all DA references in animation descriptors
 * and sprite info blocks with bank $02 addresses.
 * Each anim frame has: dfb x,y,dur, DA addr (5 bytes per frame)
@@ -2777,6 +2967,58 @@ init_level
  sta anim_wpunch+3+3
  lda spr_wpunch2
  sta anim_wpunch+3+8
+
+* Patch anim_rwalk: 4 frames (ROPER1, ROPER2, ROPER3, ROPER2)
+ lda spr_roper1
+ sta anim_rwalk+3+3
+ lda spr_roper2
+ sta anim_rwalk+3+8
+ lda spr_roper3
+ sta anim_rwalk+3+13
+ lda spr_roper2
+ sta anim_rwalk+3+18
+
+* Patch anim_rpunch: 2 frames
+ lda spr_rpunch1
+ sta anim_rpunch+3+3
+ lda spr_rpunch2
+ sta anim_rpunch+3+8
+
+* Patch anim_rpunched: 1 frame
+ lda spr_rpunched
+ sta anim_rpunched+3+3
+
+* Patch anim_rfall: 2 frames
+ lda spr_rfall1
+ sta anim_rfall+3+3
+ lda spr_rfall2
+ sta anim_rfall+3+8
+
+* Patch anim_lwalk: 4 frames (LINDA1, LINDA2, LINDA3, LINDA2)
+ lda spr_linda1
+ sta anim_lwalk+3+3
+ lda spr_linda2
+ sta anim_lwalk+3+8
+ lda spr_linda3
+ sta anim_lwalk+3+13
+ lda spr_linda2
+ sta anim_lwalk+3+18
+
+* Patch anim_lpunch: 2 frames
+ lda spr_lpunch1
+ sta anim_lpunch+3+3
+ lda spr_lpunch2
+ sta anim_lpunch+3+8
+
+* Patch anim_lpunched: 1 frame
+ lda spr_lpunched
+ sta anim_lpunched+3+3
+
+* Patch anim_lfall: 2 frames
+ lda spr_lfall1
+ sta anim_lfall+3+3
+ lda spr_lfall2
+ sta anim_lfall+3+8
 
 * Patch billy_sprite frame_addr (+14) and idle_addr (+42)
  lda spr_img01
@@ -2878,6 +3120,24 @@ spr_william2 ds 2
 spr_william3 ds 2
 spr_wpunch1  ds 2
 spr_wpunch2  ds 2
+; Roper
+spr_roper1   ds 2
+spr_roper2   ds 2
+spr_roper3   ds 2
+spr_rpunch1  ds 2
+spr_rpunch2  ds 2
+spr_rpunched ds 2
+spr_rfall1   ds 2
+spr_rfall2   ds 2
+; Linda Lash
+spr_linda1   ds 2
+spr_linda2   ds 2
+spr_linda3   ds 2
+spr_lpunch1  ds 2
+spr_lpunch2  ds 2
+spr_lpunched ds 2
+spr_lfall1   ds 2
+spr_lfall2   ds 2
 
 *----------------------------------------------------------
 * Set ntp_open pathname pointer and ntp_bank before calling.
@@ -3294,6 +3554,90 @@ anim_wpunch
   hex 0000             ; patched: WPUNCH1
  dfb $11,$28,6       ; WPUNCH2
   hex 0000             ; patched: WPUNCH2
+
+* Roper walk (ROPER1, 2, 3, 2). Looping, no auto-advance.
+anim_rwalk
+ dfb 4
+ dfb $09
+ dfb $02             ; flags: loop
+ dfb $09,$27,5       ; ROPER1
+  hex 0000             ; patched
+ dfb $09,$26,5       ; ROPER2
+  hex 0000             ; patched
+ dfb $09,$27,5       ; ROPER3
+  hex 0000             ; patched
+ dfb $09,$26,5       ; ROPER2
+  hex 0000             ; patched
+
+* Roper punch. 2 frames, one-shot.
+anim_rpunch
+ dfb 2
+ dfb $10             ; max_width (RPUNCH2)
+ dfb $00
+ dfb $0B,$27,6       ; RPUNCH1
+  hex 0000             ; patched
+ dfb $10,$27,6       ; RPUNCH2
+  hex 0000             ; patched
+
+* Roper punched reaction. 1 frame, one-shot.
+anim_rpunched
+ dfb 1
+ dfb $09
+ dfb $00
+ dfb $09,$26,5       ; RPUNCHED
+  hex 0000             ; patched
+
+* Roper fall. 2 frames, one-shot.
+anim_rfall
+ dfb 2
+ dfb $10
+ dfb $00
+ dfb $10,$17,3       ; RFALL1
+  hex 0000             ; patched
+ dfb $10,$0F,60      ; RFALL2
+  hex 0000             ; patched
+
+* Linda walk (LINDA1, 2, 3, 2). Looping, no auto-advance.
+anim_lwalk
+ dfb 4
+ dfb $09
+ dfb $02             ; flags: loop
+ dfb $09,$28,5       ; LINDA1
+  hex 0000             ; patched
+ dfb $09,$27,5       ; LINDA2
+  hex 0000             ; patched
+ dfb $09,$28,5       ; LINDA3
+  hex 0000             ; patched
+ dfb $09,$27,5       ; LINDA2
+  hex 0000             ; patched
+
+* Linda punch. 2 frames, one-shot.
+anim_lpunch
+ dfb 2
+ dfb $0E             ; max_width (LPUNCH2)
+ dfb $00
+ dfb $0B,$28,6       ; LPUNCH1
+  hex 0000             ; patched
+ dfb $0E,$28,6       ; LPUNCH2
+  hex 0000             ; patched
+
+* Linda punched reaction. 1 frame, one-shot.
+anim_lpunched
+ dfb 1
+ dfb $09
+ dfb $00
+ dfb $08,$26,5       ; LPUNCHED
+  hex 0000             ; patched
+
+* Linda fall. 2 frames, one-shot.
+anim_lfall
+ dfb 2
+ dfb $11
+ dfb $00
+ dfb $10,$17,3       ; LFALL1
+  hex 0000             ; patched
+ dfb $11,$0F,60      ; LFALL2
+  hex 0000             ; patched
 
 *----------------------------------------------------------
 * check_punch_hit - Check if the punching sprite (whose

@@ -112,18 +112,19 @@ level_script
     db OP_WAITX
     dw 400              ; wait for player abs X >= 400
     db OP_SCRLOCK       ; stuck here
+    db OP_NPC           ; Roper near right edge
+    dw roper_sprite
+    db $58,$5f,$01,BEHAV_FACEOFF  ; xpos, ypos, orientation, behavior
+    db OP_NPC           ; Roper running in frm left edge
+    dw roper_sprite
+    db $01,$5f,$00,BEHAV_FLANK     ; xpos, ypos, orientation, behavior
+    db OP_WAITNPC,$01
+    db OP_NPC           ; Final Roper near right edge
+    dw roper_sprite
+    db $58,$5f,$01,BEHAV_FACEOFF  ; xpos, ypos, orientation, behavior
     db OP_END           ; placeholder until the rest of mission 1 is built
-;    db OP_NPC           ; Roper near right edge
-;    dw roper_sprite
-;    db $58,$5f,$01
-;    db OP_NPC           ; Roper running in frm left edge
-;    dw roper_sprite
-;    db $01,$5f,$00
-;    db OP_WAITNPC,$01
-;    db OP_NPC           ; Final Roper near right edge
-;    dw roper_sprite
-;    db $58,$5f,$01
-;    db OP_RIGHT,2       ; connect screen 1 to screen 2 on the right
+
+    db OP_RIGHT,2       ; connect screen 1 to screen 2 on the right
 
 ; screen 3
 ;    db OP_WAITX,800     ; wait for player to cross the ladder
