@@ -509,9 +509,9 @@ run_script
 
 *--- Script helper: set screen ---
 script_set_screen
-* A = screen index. Load background from screen map.
-* For now, just stores the current screen index.
+* A = screen index. Update current screen and load its bounds.
  sta current_screen
+ jsr load_screen_bounds
  rts
 
 *--- Script helper: spawn NPC ---
@@ -746,6 +746,214 @@ scroll_left_enabled dfb 0
 scroll_right_screen dfb 0
 scroll_left_screen dfb 0
 npc_buf_next dw npc_buffers   ; next free NPC buffer address
+
+* Cheat: invincibility toggle
+god_mode       dfb 0          ; 0 = normal, 1 = invincible
+
+*----------------------------------------------------------
+* Y-axis movement bounds table. 200 entries (one per
+* scanline), 2 bytes each: min_x, max_x.
+* max_x=0 means the row is completely blocked.
+* Checked when player or NPC changes Y position.
+*----------------------------------------------------------
+* Split into two 200-byte arrays so Y can index directly
+* without needing Y*2 (which overflows at Y>=128 in 8-bit).
+bounds_tbl_lo                  ; min_x per scanline
+ LUP 80
+ dfb 0
+ --^
+ LUP 120
+ dfb 0
+ --^
+bounds_tbl_hi                  ; max_x per scanline (0=blocked)
+ LUP 80
+ dfb 0
+ --^
+ LUP 120
+ dfb 109
+ --^
+
+*----------------------------------------------------------
+* check_y_bounds - Test if a sprite at X position chk_xpos
+* is allowed at the proposed Y in A.
+* Input: A = proposed Y, chk_xpos = sprite's X
+* Output: C=1 blocked, C=0 allowed. Trashes A/X.
+*----------------------------------------------------------
+check_y_bounds
+ cmp #200
+ bcs :blocked          ; off-screen Y
+ sta :proposed
+* Compute table index = Y * 2. Must handle Y >= 128
+* without 8-bit overflow: put Y in X, then use 16-bit add.
+ tax
+ lda bounds_tbl_lo,x   ; min_x for this Y
+ sta :bmin
+ lda bounds_tbl_hi,x   ; max_x for this Y
+ beq :try_ladder       ; 0 = row blocked, but check ladders
+ sta :bmax
+ lda chk_xpos
+ cmp :bmin
+ bcc :try_ladder       ; X < min_x, check ladders
+ cmp :bmax
+ beq :ok               ; X == max_x, allowed
+ bcs :try_ladder       ; X > max_x, check ladders
+:ok clc
+ rts
+:try_ladder
+ lda :proposed
+ jsr check_ladder      ; C=0 if on ladder, C=1 if not
+ rts
+:blocked sec
+ rts
+:proposed dfb 0
+:bmin dfb 0
+:bmax dfb 0
+chk_xpos dfb 0
+bounds_base ds 2              ; bank $02 address of bounds_ptrs
+ladder_base ds 2              ; bank $02 address of ladder_ptrs
+
+* Ladder buffer (bank $00). Max 4 ladders per screen.
+* Format: count, then (x_left, x_right, y_top, y_bottom) × count
+ladder_count dfb 0
+ladder_buf   ds 16             ; 4 ladders × 4 bytes
+
+*----------------------------------------------------------
+* load_screen_bounds - Copy bounds table (400 bytes) and
+* ladder data from bank $02 to bank $00 for the given screen.
+* A = screen index (0-4). Called in emulation mode.
+*----------------------------------------------------------
+load_screen_bounds
+ sta :scr_idx
+ clc
+ xce                   ; native mode
+ rep $30
+ mx %00
+* --- Copy bounds table (de-interleave into lo/hi arrays) ---
+ lda :scr_idx
+ and #$00FF
+ asl
+ clc
+ adc bounds_base
+ sta $F0
+ sep $20
+ lda #$02
+ sta $F2
+ rep $20
+ ldy #0
+ lda [$F0],y
+ sta $F0               ; $F0 = bank $02 addr of interleaved table
+ sep $20
+ lda #$02
+ sta $F2
+ rep $20
+ ldy #0                ; source index (interleaved pairs)
+ ldx #0                ; dest index (0-199)
+:bcopy sep $20
+ lda [$F0],y           ; min_x
+ sta bounds_tbl_lo,x
+ rep $20
+ iny
+ sep $20
+ lda [$F0],y           ; max_x
+ sta bounds_tbl_hi,x
+ rep $20
+ iny
+ inx
+ cpx #200
+ bcc :bcopy
+
+* --- Copy ladder data ---
+ lda :scr_idx
+ and #$00FF
+ asl
+ clc
+ adc ladder_base
+ sta $F0
+ sep $20
+ lda #$02
+ sta $F2
+ rep $20
+ ldy #0
+ lda [$F0],y           ; read screen's ladder list address
+ sta $F0
+ sep $20
+ mx %10
+ ldy #0
+ lda [$F0],y           ; count byte
+ sta ladder_count
+ beq :no_ladders
+ rep $20
+ mx %00
+ lda ladder_count
+ and #$00FF
+ asl
+ asl                   ; count × 4
+ sta :llen
+ ldy #1                ; source offset (past count byte)
+ ldx #0                ; dest offset into ladder_buf
+:lcopy sep $20
+ lda [$F0],y
+ sta ladder_buf,x
+ rep $20
+ iny
+ inx
+ cpx :llen
+ bcc :lcopy
+:no_ladders
+ sec
+ xce                   ; back to emulation mode
+ rts
+:scr_idx ds 2
+:llen ds 2
+
+*----------------------------------------------------------
+* check_ladder - Test if sprite at chk_xpos / proposed Y
+* is on a ladder. Returns C=0 if on ladder, C=1 if not.
+* A = proposed Y. Preserves A on return.
+*----------------------------------------------------------
+check_ladder
+ sta :prop_y
+ lda ladder_count
+ beq :cl_no
+ lda #0
+ sta :cl_idx
+:cl_scan
+ ldx :cl_idx
+* x_left <= chk_xpos?
+ lda chk_xpos
+ cmp ladder_buf,x      ; x_left
+ bcc :cl_next           ; X < x_left
+* chk_xpos <= x_right?
+ lda ladder_buf+1,x    ; x_right
+ cmp chk_xpos
+ bcc :cl_next           ; x_right < X
+* y_top <= proposed_y?
+ lda :prop_y
+ cmp ladder_buf+2,x    ; y_top
+ bcc :cl_next           ; Y < y_top
+* proposed_y <= y_bottom?
+ lda ladder_buf+3,x    ; y_bottom
+ cmp :prop_y
+ bcc :cl_next           ; y_bottom < Y
+* On ladder
+ lda :prop_y
+ clc
+ rts
+:cl_next
+ lda :cl_idx
+ clc
+ adc #4
+ sta :cl_idx
+ lsr
+ lsr                   ; /4 = ladders checked
+ cmp ladder_count
+ bcc :cl_scan
+:cl_no
+ lda :prop_y
+ sec
+ rts
+:prop_y dfb 0
+:cl_idx dfb 0
 
 * Overlay state (POINT_RIGHT arrow shown on OP_RIGHT)
 overlay_timer  dfb 0          ; frames remaining (0 = inactive)
@@ -1104,17 +1312,34 @@ fo_approach
 :x_at_target
 
 :move_y
-* Move toward player Y at 1 pixel/frame
+* Move toward player Y at 1 pixel/frame (bounds-checked)
+ ldy #2
+ lda (info_ptr),y
+ sta chk_xpos          ; NPC's current X
  ldy #0
  lda (info_ptr),y      ; current ypos
  cmp fo_plr_y
  beq :y_at_target
  bcs :y_decrement
+* Try Y + 1
+ clc
+ adc #1
+ jsr check_y_bounds
+ bcs :y_at_target      ; blocked, skip Y move
+ ldy #0
+ lda (info_ptr),y
  clc
  adc #1
  sta (info_ptr),y
  bra :check_range
 :y_decrement
+* Try Y - 1
+ sec
+ sbc #1
+ jsr check_y_bounds
+ bcs :y_at_target      ; blocked
+ ldy #0
+ lda (info_ptr),y
  sec
  sbc #1
  sta (info_ptr),y
@@ -1451,17 +1676,35 @@ fl_step_x
 *----------------------------------------------------------
 fl_step_y_to
  sta fl_y_target
+* Set chk_xpos from NPC's current X
+ ldy #2
+ lda (info_ptr),y
+ sta chk_xpos
  ldy #0
  lda (info_ptr),y
  cmp fl_y_target
  beq :done
  bcs :dec
+* Try Y + 1
+ clc
+ adc #1
+ jsr check_y_bounds
+ bcs :done            ; blocked
+ ldy #0
+ lda (info_ptr),y
  clc
  adc #1
  sta (info_ptr),y
  lda #1
  rts
 :dec
+* Try Y - 1
+ sec
+ sbc #1
+ jsr check_y_bounds
+ bcs :done            ; blocked
+ ldy #0
+ lda (info_ptr),y
  sec
  sbc #1
  sta (info_ptr),y
@@ -2051,16 +2294,30 @@ process_input
 :not_scroll
  cmp #'8'
  bne :not_up
+ lda IMAGE01_XPOS
+ sta chk_xpos
+ lda IMAGE01_YPOS
+ sec
+ sbc #1               ; proposed Y
+ jsr check_y_bounds
+ bcs :skip_up         ; blocked
  dec IMAGE01_YPOS
  jsr save_sprite
  jsr resort_sprite_table
- rts
+:skip_up rts
 :not_up cmp #'2'
  bne :not_down
+ lda IMAGE01_XPOS
+ sta chk_xpos
+ lda IMAGE01_YPOS
+ clc
+ adc #1               ; proposed Y
+ jsr check_y_bounds
+ bcs :skip_down       ; blocked
  inc IMAGE01_YPOS
  jsr save_sprite
  jsr resort_sprite_table
- rts
+:skip_down rts
 :not_down cmp #'4'
  bne :not_left
  lda IMAGE01_XPOS
@@ -2136,10 +2393,24 @@ process_input
  jsr start_anim
  rts
 :not_punch2 cmp #'P'
- bne :no_key2
+ bne :not_invuln
  lda #<anim_punch2
  ldx #>anim_punch2
  jsr start_anim
+ rts
+:not_invuln cmp #'i'
+ bne :no_key2
+* Toggle invincibility
+ lda god_mode
+ eor #$01
+ sta god_mode
+ beq :god_off
+ lda #$0F              ; white border = invincible
+ bra :god_set
+:god_off
+ lda #$00              ; black border = normal
+:god_set
+ stal $E0C034
 :no_key2 rts
 
 *----------------------------------------------------------
@@ -2896,6 +3167,28 @@ init_level
 * Table order: IMAGE01, IMAGE02, IMAGE03, JUMP1-3, KICK1-2,
 * PUNCH11-12, PUNCH21-22, BPUNCHED, WILLIAM1, WPUNCHED, WFALL, WFALLEN
 
+* Read bounds pointer table offset from header field at $02/0014
+ lda #$0014
+ sta $F0
+ sep $20
+ lda #$02
+ sta $F2
+ rep $20
+ ldy #0
+ lda [$F0],y
+ sta bounds_base       ; bank $02 address of bounds_ptrs
+
+* Read ladder pointer table offset from header field at $02/0016
+ lda #$0016
+ sta $F0
+ sep $20
+ lda #$02
+ sta $F2
+ rep $20
+ ldy #0
+ lda [$F0],y
+ sta ladder_base       ; bank $02 address of ladder_ptrs
+
 * Read sprite address table offset from header field at $02/0012
  lda #$0012
  sta $F0
@@ -3273,6 +3566,10 @@ init_level
 
  sec
  xce                   ; back to emulation mode
+
+* Load initial screen's bounds table
+ lda #0                ; initial_screen = 0
+ jsr load_screen_bounds
  rts
 
 *-------------------------------
@@ -4399,6 +4696,15 @@ check_punch_hit
  bne :not_self
  jmp :advance
 :not_self
+* If target is player and god_mode active, skip
+ lda god_mode
+ beq :not_god
+ ldy #22
+ lda (info_ptr),y      ; controller
+ cmp #$01
+ bne :not_god
+ jmp :advance          ; player is invincible
+:not_god
 * Check if target is immune (fall_anim active)
  ldy #24
  lda (info_ptr),y     ; anim_ptr low

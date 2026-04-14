@@ -46,6 +46,8 @@ anim_desc_off  dw anim_descs   ; offset to animation descriptors
 level_scr_off  dw level_script  ; offset to level script
 npc_scr_off    dw $0000        ; offset to NPC script table (TBD)
 spr_addr_off   dw spr_addr_tbl ; offset to sprite address table
+bounds_ptr_off dw bounds_ptrs   ; offset to per-screen bounds pointer table
+ladder_ptr_off dw ladder_ptrs   ; offset to per-screen ladder pointer table
 
 *-------------------------------
 * Sprite pixel data address table (bank $02 addresses)
@@ -134,12 +136,12 @@ level_script
      db OP_SCRLOCK
      db OP_NPC           ; Linda Lash on ladder
      dw linda_sprite
-     db 160,$5f,$02      ; new orientation $02 = climbing
-     db OP_NPC           ; Linda Lash on ladder
-     dw linda_sprite
-     db 160,$3f,$02
-     db OP_WAITNPC,$01
-     db OP_NPC           ; Linda Lash on ladder
+     db $58,$5f,$01      ; new orientation $02 = climbing
+;     db OP_NPC           ; Linda Lash on ladder
+;     dw linda_sprite
+;     db 160,$3f,$02
+;     db OP_WAITNPC,$01
+;     db OP_NPC           ; Linda Lash on ladder
      db OP_END           ; placeholder until the rest of mission 1 is built
 ;    dw linda_sprite
 ;    db 160,$5f,$02
@@ -542,6 +544,84 @@ linda_sprite
  hex 2800             ; +46 idle_y
  hex 0000             ; +48 punch_count
  da anim_lfall        ; +50 fall_anim
+
+*==========================================================
+* Per-screen ladder definitions
+* Each screen: count byte, then per ladder:
+*   x_left, x_right, y_top, y_bottom (4 bytes)
+* Sprites within x_left..x_right can move between y_top..y_bottom
+* even if the bounds table would block them.
+*==========================================================
+ladder_ptrs
+ dw ladders_scr0
+ dw ladders_scr1
+ dw ladders_scr2
+ dw ladders_scr3
+ dw ladders_scr4
+
+ladders_scr0 dfb 0             ; no ladders
+ladders_scr1 dfb 0
+ladders_scr2 dfb 0
+ladders_scr3 dfb 1             ; one ladder
+ dfb 14,16,0,150               ; x_left=14, x_right=16, y_top=0, y_bottom=150
+ladders_scr4 dfb 0
+
+*==========================================================
+* Per-screen Y bounds tables
+* 200 entries x 2 bytes (min_x, max_x) per screen.
+* max_x=0 means the row is blocked.
+*==========================================================
+bounds_ptrs
+ dw bounds_scr0
+ dw bounds_scr1
+ dw bounds_scr2
+ dw bounds_scr3
+ dw bounds_scr4
+
+* Screen 0: y<80 blocked, y=80-199 full playfield
+bounds_scr0
+ LUP 80
+ dfb 0,0
+ --^
+ LUP 120
+ dfb 0,109
+ --^
+
+* Screen 1: same as screen 0
+bounds_scr1
+ LUP 80
+ dfb 0,0
+ --^
+ LUP 120
+ dfb 0,109
+ --^
+
+* Screen 2: same as screen 0
+bounds_scr2
+ LUP 80
+ dfb 0,0
+ --^
+ LUP 120
+ dfb 0,109
+ --^
+
+* Screen 3: same as screen 0
+bounds_scr3
+ LUP 80
+ dfb 0,0
+ --^
+ LUP 120
+ dfb 0,109
+ --^
+
+* Screen 4: same as screen 0
+bounds_scr4
+ LUP 80
+ dfb 0,0
+ --^
+ LUP 120
+ dfb 0,109
+ --^
 
 *==========================================================
 * Sprite pixel data
