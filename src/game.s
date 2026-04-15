@@ -780,48 +780,73 @@ bounds_tbl_hi                  ; max_x per scanline (0=blocked)
 * Output: C=1 blocked, C=0 allowed. Trashes A/X.
 *----------------------------------------------------------
 check_y_bounds
+ stz via_ladder
  cmp #200
  bcs :blocked          ; off-screen Y
  sta :proposed
-* Compute table index = Y * 2. Must handle Y >= 128
-* without 8-bit overflow: put Y in X, then use 16-bit add.
  tax
- lda bounds_tbl_lo,x   ; min_x for this Y
+ lda bounds_tbl_lo,x
  sta :bmin
- lda bounds_tbl_hi,x   ; max_x for this Y
- beq :try_ladder       ; 0 = row blocked, but check ladders
+ lda bounds_tbl_hi,x
+ beq :try_ladder       ; row blocked, check ladders
  sta :bmax
  lda chk_xpos
  cmp :bmin
- bcc :try_ladder       ; X < min_x, check ladders
+ bcc :try_ladder
  cmp :bmax
- beq :ok               ; X == max_x, allowed
- bcs :try_ladder       ; X > max_x, check ladders
+ beq :ok
+ bcs :try_ladder
 :ok clc
  rts
 :try_ladder
  lda :proposed
- jsr check_ladder      ; C=0 if on ladder, C=1 if not
+ jsr check_ladder      ; C=0 if on ladder
+ bcs :blocked
+ lda #1
+ sta via_ladder
+ clc
  rts
 :blocked sec
  rts
 :proposed dfb 0
 :bmin dfb 0
+via_ladder dfb 0
 :bmax dfb 0
 chk_xpos dfb 0
 bounds_base ds 2              ; bank $02 address of bounds_ptrs
-ladder_base ds 2              ; bank $02 address of ladder_ptrs
+ladder_base ds 2              ; bank $02 address of global ladder list
 
-* Ladder buffer (bank $00). Max 4 ladders per screen.
-* Format: count, then (x_left, x_right, y_top, y_bottom) × count
+* Global ladder buffer (bank $00). Up to 4 ladders.
+* Each entry is 6 bytes: x_left(w), x_right(w), y_top(b), y_bottom(b)
+* x_left/x_right are world-absolute byte coordinates.
 ladder_count dfb 0
-ladder_buf   ds 16             ; 4 ladders × 4 bytes
+ladder_buf   ds 24             ; 4 ladders × 6 bytes
+
+* World byte offset of the playfield's left edge.
+* Increases by 4 per scroll_right call.
+world_offset dw 0
 
 *----------------------------------------------------------
 * load_screen_bounds - Copy bounds table (400 bytes) and
 * ladder data from bank $02 to bank $00 for the given screen.
 * A = screen index (0-4). Called in emulation mode.
 *----------------------------------------------------------
+*----------------------------------------------------------
+* sync_current_screen - After scrolling, derive the player's
+* current screen index from scroll_src_bank and reload bounds
+* if it changed. Mapping: current_screen = scroll_src_bank - $51.
+* Called in emulation mode.
+*----------------------------------------------------------
+sync_current_screen
+ lda scroll_src_bank
+ sec
+ sbc #$51
+ cmp current_screen
+ beq :no_change
+ sta current_screen
+ jsr load_screen_bounds
+:no_change rts
+
 load_screen_bounds
  sta :scr_idx
  clc
@@ -862,35 +887,44 @@ load_screen_bounds
  cpx #200
  bcc :bcopy
 
-* --- Copy ladder data ---
- lda :scr_idx
- and #$00FF
- asl
+ sec
+ xce                   ; back to emulation mode
+ rts
+:scr_idx ds 2
+
+*----------------------------------------------------------
+* load_ladders - Copy the global ladder list from bank $02
+* into ladder_buf. Called once at init_level.
+*----------------------------------------------------------
+load_ladders
  clc
- adc ladder_base
+ xce                   ; native mode
+ rep $30
+ mx %00
+ lda ladder_base
  sta $F0
  sep $20
  lda #$02
  sta $F2
  rep $20
- ldy #0
- lda [$F0],y           ; read screen's ladder list address
- sta $F0
  sep $20
  mx %10
  ldy #0
  lda [$F0],y           ; count byte
  sta ladder_count
- beq :no_ladders
+ beq :ll_done
  rep $20
  mx %00
  lda ladder_count
  and #$00FF
+ sta :tmp              ; A = count
  asl
- asl                   ; count × 4
+ clc
+ adc :tmp              ; A = count * 3
+ asl                   ; A = count * 6
  sta :llen
- ldy #1                ; source offset (past count byte)
- ldx #0                ; dest offset into ladder_buf
+ ldy #1                ; source offset past count byte
+ ldx #0                ; dest offset
 :lcopy sep $20
  lda [$F0],y
  sta ladder_buf,x
@@ -899,11 +933,11 @@ load_screen_bounds
  inx
  cpx :llen
  bcc :lcopy
-:no_ladders
+:ll_done
  sec
  xce                   ; back to emulation mode
  rts
-:scr_idx ds 2
+:tmp ds 2
 :llen ds 2
 
 *----------------------------------------------------------
@@ -915,26 +949,47 @@ check_ladder
  sta :prop_y
  lda ladder_count
  beq :cl_no
+* Compute sprite_world_x = world_offset + chk_xpos (16-bit)
+ lda chk_xpos
+ sta :swx
+ stz :swx+1
+ lda :swx
+ clc
+ adc world_offset
+ sta :swx
+ lda :swx+1
+ adc world_offset+1
+ sta :swx+1
  lda #0
  sta :cl_idx
 :cl_scan
  ldx :cl_idx
-* x_left <= chk_xpos?
- lda chk_xpos
- cmp ladder_buf,x      ; x_left
- bcc :cl_next           ; X < x_left
-* chk_xpos <= x_right?
- lda ladder_buf+1,x    ; x_right
- cmp chk_xpos
- bcc :cl_next           ; x_right < X
-* y_top <= proposed_y?
+* sprite_world_x >= x_left?
+* Compare 16-bit: :swx vs ladder_buf[x..x+1] (low,high)
+ lda :swx+1
+ cmp ladder_buf+1,x    ; x_left high
+ bcc :cl_next          ; swx_hi < xl_hi → too far left
+ bne :ge_left          ; swx_hi > xl_hi → ge
+ lda :swx
+ cmp ladder_buf,x      ; x_left low
+ bcc :cl_next          ; swx_lo < xl_lo → too far left
+:ge_left
+* sprite_world_x <= x_right?
+ lda ladder_buf+3,x    ; x_right high
+ cmp :swx+1
+ bcc :cl_next          ; xr_hi < swx_hi → too far right
+ bne :le_right
+ lda ladder_buf+2,x    ; x_right low
+ cmp :swx
+ bcc :cl_next          ; xr_lo < swx_lo → too far right
+:le_right
+* y_top <= proposed_y <= y_bottom?
  lda :prop_y
- cmp ladder_buf+2,x    ; y_top
- bcc :cl_next           ; Y < y_top
-* proposed_y <= y_bottom?
- lda ladder_buf+3,x    ; y_bottom
+ cmp ladder_buf+4,x    ; y_top
+ bcc :cl_next
+ lda ladder_buf+5,x    ; y_bottom
  cmp :prop_y
- bcc :cl_next           ; y_bottom < Y
+ bcc :cl_next
 * On ladder
  lda :prop_y
  clc
@@ -942,18 +997,26 @@ check_ladder
 :cl_next
  lda :cl_idx
  clc
- adc #4
+ adc #6                ; 6 bytes per ladder entry
  sta :cl_idx
- lsr
- lsr                   ; /4 = ladders checked
- cmp ladder_count
- bcc :cl_scan
+* compare /6 to ladder_count: easier to compare to count*6
+ lda ladder_count
+ sta :tmp
+ asl
+ clc
+ adc :tmp              ; A = count * 3
+ asl                   ; A = count * 6
+ cmp :cl_idx
+ beq :cl_no
+ bcs :cl_scan
 :cl_no
  lda :prop_y
  sec
  rts
 :prop_y dfb 0
 :cl_idx dfb 0
+:swx    ds 2
+:tmp    dfb 0
 
 * Overlay state (POINT_RIGHT arrow shown on OP_RIGHT)
 overlay_timer  dfb 0          ; frames remaining (0 = inactive)
@@ -1060,6 +1123,153 @@ draw_overlay
  pla
  sta IMAGE01_YPOS
 :done rts
+
+*----------------------------------------------------------
+* draw_ladder_debug - For each ladder in ladder_buf, draw
+* vertical lines in color 0 at x_left and x_right from
+* y_top to y_bottom. Visualizes ladder bounds for debugging.
+*----------------------------------------------------------
+draw_ladder_debug
+ lda ladder_count
+ bne :have
+ rts
+:have
+ clc
+ xce                   ; native mode
+ rep $20               ; 16-bit A
+ sep $10               ; 8-bit X/Y
+ mx %01
+* Bank byte for [$F0] = $01
+ sep $20
+ mx %11
+ lda #$01
+ sta $F2
+ rep $20
+ mx %01
+ ldx #0
+ stx :ld_idx
+:next_ladder
+ ldx :ld_idx
+* Compute screen byte = ladder_x_left (16-bit) - world_offset
+ lda ladder_buf,x      ; 16-bit read of x_left
+ sec
+ sbc world_offset
+ sta :sxl
+ lda ladder_buf+2,x    ; 16-bit read of x_right
+ sec
+ sbc world_offset
+ sta :sxr
+ sep $20
+ mx %11
+ lda ladder_buf+4,x
+ sta :yt
+ lda ladder_buf+5,x
+ sta :yb
+ rep $20
+ mx %01
+
+* If both endpoints are off-screen on the same side, skip
+ lda :sxl
+ bmi :ld_skip          ; sxl negative (>=$8000)
+ cmp #110
+ bcs :try_xr_only      ; sxl off right; check x_right
+ jmp :draw_loop
+:try_xr_only
+ lda :sxr
+ bmi :ld_skip
+ cmp #110
+ bcs :ld_skip          ; both off-screen
+:draw_loop
+ ldx :yt
+:row
+ stx :yc
+* base = $2000 + y * 160
+ txa
+ and #$00FF
+ sta :tmp
+ asl
+ asl                   ; y*4
+ clc
+ adc :tmp              ; y*5
+ asl
+ asl
+ asl
+ asl
+ asl                   ; y*160
+ clc
+ adc #$2000
+ sta :base
+* Draw at sxl if visible
+ lda :sxl
+ bmi :skip_xl
+ cmp #110
+ bcs :skip_xl
+ clc
+ adc :base
+ sta $F0
+ sep $20
+ mx %11
+ lda #$F0
+ sta [$F0]
+ rep $20
+ mx %01
+:skip_xl
+* Draw at sxr if visible
+ lda :sxr
+ bmi :skip_xr
+ cmp #110
+ bcs :skip_xr
+ clc
+ adc :base
+ sta $F0
+ sep $20
+ mx %11
+ lda #$F0
+ sta [$F0]
+ rep $20
+ mx %01
+:skip_xr
+* Next scanline
+ ldx :yc
+ inx
+ cpx :yb
+ bcc :row
+ beq :row
+:ld_skip
+* Advance ladder index by 6 bytes
+ sep $20
+ mx %11
+ lda :ld_idx
+ clc
+ adc #6
+ sta :ld_idx
+* compare /6 to ladder_count
+ lda ladder_count
+ sta :tmp
+ asl
+ clc
+ adc :tmp              ; *3
+ asl                   ; *6
+ cmp :ld_idx
+ rep $20
+ mx %01
+ bcc :ld_done
+ beq :ld_done
+ jmp :next_ladder
+:ld_done
+ rep $30
+ sec
+ xce
+ rts
+:ld_idx dfb 0
+:sxl    ds 2          ; signed 16-bit screen byte position (left edge)
+:sxr    ds 2          ; signed 16-bit screen byte position (right edge)
+:yt    dfb 0
+:yb    dfb 0
+:yc    dfb 0
+:tmp   dfb 0
+:base  ds 2
+
 
 * NPC sprite block buffers
 npc_buffers ds 448           ; 8 slots x 56 bytes
@@ -2282,6 +2492,15 @@ process_input
  jsr save_sprite
  jsr scroll_right
  jsr load_sprite
+ jsr sync_current_screen
+* world_offset += 4 (4 bytes scrolled into the world)
+ lda world_offset
+ clc
+ adc #4
+ sta world_offset
+ lda world_offset+1
+ adc #0
+ sta world_offset+1
 * Player advanced 4 bytes (8 pixels) through the world
  lda abs_x
  clc
@@ -2302,6 +2521,10 @@ process_input
  jsr check_y_bounds
  bcs :skip_up         ; blocked
  dec IMAGE01_YPOS
+ lda via_ladder
+ beq :up_no_climb
+ jsr advance_climb
+:up_no_climb
  jsr save_sprite
  jsr resort_sprite_table
 :skip_up rts
@@ -2315,6 +2538,10 @@ process_input
  jsr check_y_bounds
  bcs :skip_down       ; blocked
  inc IMAGE01_YPOS
+ lda via_ladder
+ beq :down_no_climb
+ jsr advance_climb
+:down_no_climb
  jsr save_sprite
  jsr resort_sprite_table
 :skip_down rts
@@ -2349,6 +2576,15 @@ process_input
  jsr save_sprite
  jsr scroll_right
  jsr load_sprite
+ jsr sync_current_screen
+* world_offset += 4 (4 bytes scrolled into the world)
+ lda world_offset
+ clc
+ adc #4
+ sta world_offset
+ lda world_offset+1
+ adc #0
+ sta world_offset+1
 * abs_x advances by 8 pixels through the world
  lda abs_x
  clc
@@ -2448,6 +2684,34 @@ advance_walk
 
 walk_step dfb 0
 walk_toggle dfb 0
+
+*----------------------------------------------------------
+* advance_climb - Set climbing frame (BCLIMB1/BCLIMB2),
+* alternating each call. Sets FRAME_X/Y/ADDR globals.
+*----------------------------------------------------------
+advance_climb
+ lda climb_toggle
+ eor #$01
+ sta climb_toggle
+ lda #$08              ; BCLIMB1/2 width
+ sta FRAME_X
+ lda #$28              ; height
+ sta FRAME_Y
+ lda climb_toggle
+ beq :use_b1
+ lda spr_bclimb2
+ sta FRAME_ADDR
+ lda spr_bclimb2+1
+ sta FRAME_ADDR+1
+ rts
+:use_b1
+ lda spr_bclimb1
+ sta FRAME_ADDR
+ lda spr_bclimb1+1
+ sta FRAME_ADDR+1
+ rts
+climb_toggle dfb 0
+
 walk_x_tbl dfb $09,$08,$0B,$08
 walk_y_tbl dfb $28,$28,$28,$28
 walk_addr_tbl ds 8         ; patched by init_level (IMAGE01,IMAGE02,IMAGE03,IMAGE02)
@@ -3365,6 +3629,16 @@ init_level
  lda [$F0],y
  sta spr_pointright
 
+* BCLIMB1 (offset +76)
+ ldy #76
+ lda [$F0],y
+ sta spr_bclimb1
+
+* BCLIMB2 (offset +78)
+ ldy #78
+ lda [$F0],y
+ sta spr_bclimb2
+
 * Now patch all DA references in animation descriptors
 * and sprite info blocks with bank $02 addresses.
 * Each anim frame has: dfb x,y,dur, DA addr (5 bytes per frame)
@@ -3570,6 +3844,11 @@ init_level
 * Load initial screen's bounds table
  lda #0                ; initial_screen = 0
  jsr load_screen_bounds
+* Load global ladder list (once)
+ jsr load_ladders
+* Reset world scroll offset
+ stz world_offset
+ stz world_offset+1
  rts
 
 *-------------------------------
@@ -3615,6 +3894,8 @@ spr_lpunched ds 2
 spr_lfall1   ds 2
 spr_lfall2   ds 2
 spr_pointright ds 2
+spr_bclimb1    ds 2
+spr_bclimb2    ds 2
 
 *----------------------------------------------------------
 * Set ntp_open pathname pointer and ntp_bank before calling.

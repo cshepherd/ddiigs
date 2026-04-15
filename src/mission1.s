@@ -47,7 +47,7 @@ level_scr_off  dw level_script  ; offset to level script
 npc_scr_off    dw $0000        ; offset to NPC script table (TBD)
 spr_addr_off   dw spr_addr_tbl ; offset to sprite address table
 bounds_ptr_off dw bounds_ptrs   ; offset to per-screen bounds pointer table
-ladder_ptr_off dw ladder_ptrs   ; offset to per-screen ladder pointer table
+ladder_ptr_off dw ladders       ; offset to global ladder list
 
 *-------------------------------
 * Sprite pixel data address table (bank $02 addresses)
@@ -95,6 +95,9 @@ spr_lfall1     dw LFALL1
 spr_lfall2     dw LFALL2
 ; HUD overlays
 spr_pointright dw POINT_RIGHT
+; Billy climb frames
+spr_bclimb1    dw BCLIMB1
+spr_bclimb2    dw BCLIMB2
 
 ; Level 1 script
 level_script
@@ -132,7 +135,7 @@ level_script
 
 ; screen 3
      db OP_WAITX
-     dw 600              ; wait for player abs X >= 600
+     dw 640              ; wait for player abs X >= 600
      db OP_SCRLOCK
      db OP_NPC           ; Linda Lash on ladder
      dw linda_sprite
@@ -546,25 +549,16 @@ linda_sprite
  da anim_lfall        ; +50 fall_anim
 
 *==========================================================
-* Per-screen ladder definitions
-* Each screen: count byte, then per ladder:
-*   x_left, x_right, y_top, y_bottom (4 bytes)
-* Sprites within x_left..x_right can move between y_top..y_bottom
-* even if the bounds table would block them.
+* Ladder definitions (world-absolute byte coordinates)
+* count byte, then per ladder:
+*   x_left (2 bytes, world byte), x_right (2 bytes, world byte),
+*   y_top (1 byte), y_bottom (1 byte) = 6 bytes per ladder
+* World byte 1 = 2 pixels in 320 mode, so abs pixel 640 = byte 320.
 *==========================================================
-ladder_ptrs
- dw ladders_scr0
- dw ladders_scr1
- dw ladders_scr2
- dw ladders_scr3
- dw ladders_scr4
-
-ladders_scr0 dfb 0             ; no ladders
-ladders_scr1 dfb 0
-ladders_scr2 dfb 0
-ladders_scr3 dfb 1             ; one ladder
- dfb 14,16,0,150               ; x_left=14, x_right=16, y_top=0, y_bottom=150
-ladders_scr4 dfb 0
+ladders dfb 1                   ; ladder count
+ dw 348                         ; x_left (world byte 234 = pixel 468)
+ dw 355                         ; x_right
+ dfb 0,120                      ; y_top, y_bottom
 
 *==========================================================
 * Per-screen Y bounds tables
