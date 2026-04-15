@@ -1869,6 +1869,18 @@ behav_ladder
  rts
 
 :ld_descend
+* Step counter at info+8: only descend every 4th frame
+* (4 px/16 frames at 60Hz ≈ 15 px/sec). Bit 2 of counter
+* selects LCLIMB1 vs LCLIMB2 → frame swaps every 8 frames.
+ ldy #8
+ lda (info_ptr),y
+ clc
+ adc #1
+ sta (info_ptr),y
+ and #$03
+ beq :do_step
+ rts
+:do_step
 * Snapshot prev fields before mutating
  ldy #0
  lda (info_ptr),y
@@ -1890,14 +1902,14 @@ behav_ladder
  ldy #0
  lda (info_ptr),y
  ldy #9
- cmp (info_ptr),y       ; vs y_bottom
+ cmp (info_ptr),y
  bcc :step
 * Reached bottom — convert behavior to FACEOFF
  ldy #6
  lda #BEHAV_FACEOFF
  sta (info_ptr),y
  ldy #7
- lda #0                 ; FO_APPROACH
+ lda #0
  sta (info_ptr),y
  rts
 :step
@@ -1906,11 +1918,6 @@ behav_ladder
  lda (info_ptr),y
  clc
  adc #1
- sta (info_ptr),y
-* Toggle climb frame and write it
- ldy #8
- lda (info_ptr),y
- eor #$01
  sta (info_ptr),y
  jsr ld_set_frame
  ldy #30
@@ -1929,8 +1936,10 @@ ld_set_frame
  ldy #12
  lda #$27               ; frame_y
  sta (info_ptr),y
+* Frame select: bit 2 of step counter (info+8)
  ldy #8
  lda (info_ptr),y
+ and #$04
  beq :use_l1
  lda spr_lclimb2
  ldy #14

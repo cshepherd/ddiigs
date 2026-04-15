@@ -57,6 +57,24 @@ $(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.sh
 	python3 tools/packbytes.py pack --length 32000 assets/mission15.shr out/MISSION15.PAK\#C00000
 	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/MISSION15.PAK\#C00000 --quiet
 	rm out/MISSION15.PAK\#C00000
+	python3 tools/packbytes.py pack --length 32000 assets/mission16.shr out/MISSION16.PAK\#C00000
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/MISSION16.PAK\#C00000 --quiet
+	rm out/MISSION16.PAK\#C00000
+	python3 tools/packbytes.py pack --length 32000 assets/mission17.shr out/MISSION17.PAK\#C00000
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/MISSION17.PAK\#C00000 --quiet
+	rm out/MISSION17.PAK\#C00000
+	python3 tools/packbytes.py pack --length 32000 assets/mission18.shr out/MISSION18.PAK\#C00000
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/MISSION18.PAK\#C00000 --quiet
+	rm out/MISSION18.PAK\#C00000
+	python3 tools/packbytes.py pack --length 32000 assets/mission19.shr out/MISSION19.PAK\#C00000
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/MISSION19.PAK\#C00000 --quiet
+	rm out/MISSION19.PAK\#C00000
+	python3 tools/packbytes.py pack --length 32000 assets/mission110.shr out/MISSION110.PAK\#C00000
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/MISSION110.PAK\#C00000 --quiet
+	rm out/MISSION110.PAK\#C00000
+	python3 tools/packbytes.py pack --length 32000 assets/mission111.shr out/MISSION111.PAK\#C00000
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/MISSION111.PAK\#C00000 --quiet
+	rm out/MISSION111.PAK\#C00000
 	cp out/mission1 out/MISSION1\#060000
 	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/MISSION1\#060000 --quiet
 	rm out/MISSION1\#060000
