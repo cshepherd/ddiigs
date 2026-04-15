@@ -1308,6 +1308,11 @@ update_npcs
  jsr behav_flank
  bra :skip
 :nbfl
+ cmp #BEHAV_LADDER
+ bne :nbld
+ jsr behav_ladder
+ bra :skip
+:nbld
 * BEHAV_NONE or unknown — do nothing
 :skip
  lda spr_ptr
@@ -1789,6 +1794,159 @@ behav_flank
  jmp fl_punch
 :st_cd
  jmp fl_cooldown
+
+*----------------------------------------------------------
+* behav_ladder - NPC descends the first ladder, then
+* converts itself to BEHAV_FACEOFF on reaching the bottom.
+*
+* States (at info+7):
+*   LD_INIT     - snap NPC X/Y to ladder top, init climb_tog
+*   LD_DESCEND  - step Y by 1 each frame, alternate climb frames
+*
+* Stash:
+*   info+8 = climb_tog (0/1)
+*   info+9 = ladder y_bottom (cached)
+*----------------------------------------------------------
+behav_ladder
+ ldy #7
+ lda (info_ptr),y
+ cmp #LD_DESCEND
+ beq :ld_descend
+* LD_INIT: snap to ladder top
+ lda ladder_count
+ bne :have_ladder
+ rts
+:have_ladder
+* Snapshot current (spawn) pos/size to prev before changing
+ ldy #0
+ lda (info_ptr),y
+ ldy #32
+ sta (info_ptr),y       ; prev_ypos = old ypos
+ ldy #2
+ lda (info_ptr),y
+ ldy #34
+ sta (info_ptr),y       ; prev_xpos = old xpos
+ ldy #10
+ lda (info_ptr),y
+ ldy #36
+ sta (info_ptr),y       ; prev_frame_x
+ ldy #12
+ lda (info_ptr),y
+ ldy #38
+ sta (info_ptr),y       ; prev_frame_y
+* New X: ladder.x_left (low byte) - world_offset
+ lda ladder_buf
+ sec
+ sbc world_offset
+ ldy #2
+ sta (info_ptr),y
+* New Y: ladder.y_top
+ lda ladder_buf+4
+ ldy #0
+ sta (info_ptr),y
+* Cache y_bottom at +9
+ ldy #9
+ lda ladder_buf+5
+ sta (info_ptr),y
+* Mirror = 0
+ ldy #4
+ lda #$00
+ sta (info_ptr),y
+* Reset climb toggle at +8
+ ldy #8
+ lda #0
+ sta (info_ptr),y
+* Frame: LCLIMB1 (9 wide × 39 tall)
+ jsr ld_set_frame
+* Mark dirty (erase + draw)
+ ldy #30
+ lda #$03
+ sta (info_ptr),y
+* Transition to LD_DESCEND
+ ldy #7
+ lda #LD_DESCEND
+ sta (info_ptr),y
+ rts
+
+:ld_descend
+* Snapshot prev fields before mutating
+ ldy #0
+ lda (info_ptr),y
+ ldy #32
+ sta (info_ptr),y       ; prev_ypos
+ ldy #2
+ lda (info_ptr),y
+ ldy #34
+ sta (info_ptr),y       ; prev_xpos
+ ldy #10
+ lda (info_ptr),y
+ ldy #36
+ sta (info_ptr),y
+ ldy #12
+ lda (info_ptr),y
+ ldy #38
+ sta (info_ptr),y
+* Have we reached y_bottom?
+ ldy #0
+ lda (info_ptr),y
+ ldy #9
+ cmp (info_ptr),y       ; vs y_bottom
+ bcc :step
+* Reached bottom — convert behavior to FACEOFF
+ ldy #6
+ lda #BEHAV_FACEOFF
+ sta (info_ptr),y
+ ldy #7
+ lda #0                 ; FO_APPROACH
+ sta (info_ptr),y
+ rts
+:step
+* Increment Y by 1
+ ldy #0
+ lda (info_ptr),y
+ clc
+ adc #1
+ sta (info_ptr),y
+* Toggle climb frame and write it
+ ldy #8
+ lda (info_ptr),y
+ eor #$01
+ sta (info_ptr),y
+ jsr ld_set_frame
+ ldy #30
+ lda #$03
+ sta (info_ptr),y
+ rts
+
+*----------------------------------------------------------
+* ld_set_frame - Write LCLIMB1 or LCLIMB2 frame data into
+* the NPC's info block based on info+8 toggle.
+*----------------------------------------------------------
+ld_set_frame
+ ldy #10
+ lda #$09               ; frame_x
+ sta (info_ptr),y
+ ldy #12
+ lda #$27               ; frame_y
+ sta (info_ptr),y
+ ldy #8
+ lda (info_ptr),y
+ beq :use_l1
+ lda spr_lclimb2
+ ldy #14
+ sta (info_ptr),y
+ lda spr_lclimb2+1
+ ldy #15
+ sta (info_ptr),y
+ rts
+:use_l1
+ lda spr_lclimb1
+ ldy #14
+ sta (info_ptr),y
+ lda spr_lclimb1+1
+ ldy #15
+ sta (info_ptr),y
+ rts
 
 *----------------------------------------------------------
 * fl_compute_target - Sets fo_target_x to the back-side
@@ -2424,6 +2582,11 @@ BEHAV_NONE    = 0
 BEHAV_FACEOFF = 1
 BEHAV_FLANK   = 2
 BEHAV_LURK    = 3
+BEHAV_LADDER  = 4
+
+* Ladder sub-states (stored at info_block+7)
+LD_INIT      = 0      ; first frame: snap to ladder top
+LD_DESCEND   = 1      ; climbing down
 
 * Face-off sub-states (stored at info_block+7)
 FO_APPROACH = 0       ; walking toward player
@@ -3639,6 +3802,16 @@ init_level
  lda [$F0],y
  sta spr_bclimb2
 
+* LCLIMB1 (offset +80)
+ ldy #80
+ lda [$F0],y
+ sta spr_lclimb1
+
+* LCLIMB2 (offset +82)
+ ldy #82
+ lda [$F0],y
+ sta spr_lclimb2
+
 * Now patch all DA references in animation descriptors
 * and sprite info blocks with bank $02 addresses.
 * Each anim frame has: dfb x,y,dur, DA addr (5 bytes per frame)
@@ -3896,6 +4069,8 @@ spr_lfall2   ds 2
 spr_pointright ds 2
 spr_bclimb1    ds 2
 spr_bclimb2    ds 2
+spr_lclimb1    ds 2
+spr_lclimb2    ds 2
 
 *----------------------------------------------------------
 * Set ntp_open pathname pointer and ntp_bank before calling.

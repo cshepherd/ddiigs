@@ -29,6 +29,7 @@ BEHAV_NONE    EQU 0 ; just stand there
 BEHAV_FACEOFF EQU 1 ; approach player to 5px and punch
 BEHAV_FLANK   EQU 2 ; approach player from behind (TBD)
 BEHAV_LURK    EQU 3 ; stay on opposite side of screen (TBD)
+BEHAV_LADDER  EQU 4 ; descend ladder, then face off
 
 *==========================================================
 * Level header
@@ -98,6 +99,9 @@ spr_pointright dw POINT_RIGHT
 ; Billy climb frames
 spr_bclimb1    dw BCLIMB1
 spr_bclimb2    dw BCLIMB2
+; Linda climb frames
+spr_lclimb1    dw LCLIMB1
+spr_lclimb2    dw LCLIMB2
 
 ; Level 1 script
 level_script
@@ -137,9 +141,9 @@ level_script
      db OP_WAITX
      dw 640              ; wait for player abs X >= 600
      db OP_SCRLOCK
-     db OP_NPC           ; Linda Lash on ladder
+     db OP_NPC           ; Linda Lash descending ladder
      dw linda_sprite
-     db $58,$5f,$01      ; new orientation $02 = climbing
+     db $00,$00,$01,BEHAV_LADDER  ; xpos/ypos snapped by behavior
 ;     db OP_NPC           ; Linda Lash on ladder
 ;     dw linda_sprite
 ;     db 160,$3f,$02
