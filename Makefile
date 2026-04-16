@@ -31,7 +31,7 @@ out/cutscene1: src/cutscene1.s
 	cd src && merlin32 cutscene1.s
 	mv src/cutscene1 out/cutscene1
 
-$(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.shr assets/mission13.shr assets/mission14.shr assets/mission15.shr out/game out/title out/mission1 out/cutscene out/cutscene1
+$(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.shr assets/mission13.shr assets/mission14.shr assets/mission15.shr assets/mission16.shr assets/mission17.shr assets/mission18.shr assets/mission19.shr assets/mission110.shr assets/mission111.shr assets/mission112.shr assets/mission113.shr assets/mission114.shr out/game out/title out/mission1 out/cutscene out/cutscene1
 	mkdir -p out
 	rm -f $(IMGFILE)
 	cadius CREATEVOLUME $(IMGFILE) $(VOLNAME) 800KB --quiet
@@ -75,6 +75,15 @@ $(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.sh
 	python3 tools/packbytes.py pack --length 32000 assets/mission111.shr out/MISSION111.PAK\#C00000
 	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/MISSION111.PAK\#C00000 --quiet
 	rm out/MISSION111.PAK\#C00000
+	python3 tools/packbytes.py pack --length 32000 assets/mission112.shr out/MISSION112.PAK\#C00000
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/MISSION112.PAK\#C00000 --quiet
+	rm out/MISSION112.PAK\#C00000
+	python3 tools/packbytes.py pack --length 32000 assets/mission113.shr out/MISSION113.PAK\#C00000
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/MISSION113.PAK\#C00000 --quiet
+	rm out/MISSION113.PAK\#C00000
+	python3 tools/packbytes.py pack --length 32000 assets/mission114.shr out/MISSION114.PAK\#C00000
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/MISSION114.PAK\#C00000 --quiet
+	rm out/MISSION114.PAK\#C00000
 	cp out/mission1 out/MISSION1\#060000
 	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/MISSION1\#060000 --quiet
 	rm out/MISSION1\#060000

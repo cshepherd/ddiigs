@@ -13,7 +13,7 @@ OP_WAITX    EQU 2 ; wait for player to cross X threshold (params: X position)
 OP_NPC      EQU 3 ; add NPC to screen (params: sprite ptr, xpos, ypos, orientation)
 OP_RIGHT    EQU 4 ; connect screen to the right and permit scrolling (params: screen index)
 OP_LEFT     EQU 5 ; connect screen to the left and permit scrolling (params: screen index)
-OP_UP       EQU 6 ; connect screen above and permit scrolling (params: screen index)
+OP_UP       EQU 6 ; scroll up (params: target screen, left-neighbor screen)
 OP_DOWN     EQU 7 ; connect screen below and permit scrolling (params: screen index)
 OP_SCRLOCK  EQU 8 ; lock scrolling in current screen (no params)
 OP_END      EQU 9 ; end of level (no params)
@@ -149,7 +149,7 @@ level_script
 ;     db 160,$3f,$02
 ;     db OP_WAITNPC,$01
 ;     db OP_NPC           ; Linda Lash on ladder
-     db OP_END           ; placeholder until the rest of mission 1 is built
+;     db OP_END           ; placeholder until the rest of mission 1 is built
 ;    dw linda_sprite
 ;    db 160,$5f,$02
 ;    db OP_WAITCLR
@@ -163,7 +163,7 @@ level_script
 ;    db OP_NPC           ; William from right
 ;    dw william_sprite
 ;    db $58,$5f,$01
-;    db OP_UP,5          ; Up the ladder to screen 5
+    db OP_UP,5,6,7      ; Up to screen 5, left=screen 6, right=screen 7
 
     db OP_END           ; end of level
 
@@ -248,16 +248,82 @@ screen3
  dfb 17              ; bg filename length
  asc '/DDIIGS/MISSION14.PAK'
 
-* Screen 4 (MISSION15) - end of level
+* Screen 4 (MISSION15)
 screen4
  dfb $05             ; bg_bank
  dfb $00             ; bg_half (low half of bank $05)
  dw $FFFF            ; right -> none (end of level)
  dw $0003            ; left -> screen 3
- dw $FFFF            ; up -> none
+ dw $0005            ; up -> screen 5
  dw $FFFF            ; down -> none
  dfb 17              ; bg filename length
  asc '/DDIIGS/MISSION15.PAK'
+
+* Screen 5 (MISSION16)
+screen5
+ dfb $05             ; bg_bank
+ dfb $80             ; bg_half (high half of bank $05)
+ dw $0007            ; right -> none
+ dw $0006            ; left -> none
+ dw $FFFF            ; up -> none
+ dw $FFFF            ; down -> none
+ dfb 17              ; bg filename length
+ asc '/DDIIGS/MISSION16.PAK'
+
+* Screen 6 (MISSION17)
+screen6
+ dfb $06             ; bg_bank
+ dfb $00             ; bg_half (low half of bank $06)
+ dw $0005            ; right -> screen 5
+ dw $FFFF            ; left -> none
+ dw $0009            ; up -> none
+ dw $FFFF            ; down -> none
+ dfb 17              ; bg filename length
+ asc '/DDIIGS/MISSION17.PAK'
+
+* Screen 7 (MISSION18)
+screen7
+ dfb $06             ; bg_bank
+ dfb $80             ; bg_half (high half of bank $06)
+ dw $FFFF            ; right -> none
+ dw $0005            ; left -> screen 5
+ dw $000A            ; up -> screen 10
+ dw $FFFF            ; down -> none
+ dfb 17              ; bg filename length
+ asc '/DDIIGS/MISSION18.PAK'
+
+* Screen 8 (MISSION19)
+screen8
+ dfb $07             ; bg_bank
+ dfb $00             ; bg_half (low half of bank $07)
+ dw $FFFF            ; right -> none
+ dw $FFFF            ; left -> none
+ dw $FFFF            ; up -> none
+ dw $0005            ; down -> screen 5
+ dfb 17              ; bg filename length
+ asc '/DDIIGS/MISSION19.PAK'
+
+* Screen 9 (MISSION110)
+screen9
+ dfb $07             ; bg_bank
+ dfb $80             ; bg_half (high half of bank $07)
+ dw $0008            ; right -> screen 8
+ dw $FFFF            ; left -> none
+ dw $0004            ; up -> screen 4
+ dw $0006            ; down -> screen 6
+ dfb 17              ; bg filename length
+ asc '/DDIIGS/MISSION110.PAK'
+
+* Screen 10 (MISSION111)
+screen10
+ dfb $08             ; bg_bank
+ dfb $00             ; bg_half (low half of bank $08)
+ dw $FFFF            ; right -> none
+ dw $0009            ; left -> screen 9
+ dw $FFFF            ; up -> none
+ dw $0007            ; down -> none
+ dfb 17              ; bg filename length
+ asc '/DDIIGS/MISSION111.PAK'
 
 *==========================================================
 * Sprite table - null-terminated list of pointers to

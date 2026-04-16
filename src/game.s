@@ -64,45 +64,101 @@ NTPstreamsound          =   NinjaTrackerPlus+24
  sta ntp_bank
  jsr load_ntp_file
 
-* Load MISSION11.PAK -> $4F, unpack to $50, copy $50 -> $01
- lda #$50
+* Load MISSION11.PAK -> $4F, unpack to $03 (screen 0)
+ lda #$03
  sta unpack_bank
  jsr load_and_unpack
+* Copy $03/2000 -> $50/2000 (playfield shadow), then $50 -> $01
+ jsr copy_03_to_50
  jsr copy_50_to_01
 
-* Load MISSION12.PAK -> $4F, unpack to $51
+* Load MISSION12.PAK -> $04 (screen 1)
  lda #<path12
  sta p_open+1
  lda #>path12
  sta p_open+2
- lda #$51
+ lda #$04
  sta unpack_bank
  jsr load_and_unpack
 
-* Load MISSION13.PAK -> $4F, unpack to $52
+* Load MISSION13.PAK -> $05 (screen 2)
  lda #<path13
  sta p_open+1
  lda #>path13
  sta p_open+2
- lda #$52
+ lda #$05
  sta unpack_bank
  jsr load_and_unpack
 
-* Load MISSION14.PAK -> $4F, unpack to $53
+* Load MISSION14.PAK -> $06 (screen 3)
  lda #<path14
  sta p_open+1
  lda #>path14
  sta p_open+2
- lda #$53
+ lda #$06
  sta unpack_bank
  jsr load_and_unpack
 
-* Load MISSION15.PAK -> $4F, unpack to $54
+* Load MISSION15.PAK -> $07 (screen 4)
  lda #<path15
  sta p_open+1
  lda #>path15
  sta p_open+2
- lda #$54
+ lda #$07
+ sta unpack_bank
+ jsr load_and_unpack
+
+* Load MISSION16.PAK -> $08 (screen 5)
+ lda #<path16
+ sta p_open+1
+ lda #>path16
+ sta p_open+2
+ lda #$08
+ sta unpack_bank
+ jsr load_and_unpack
+
+* Load MISSION17.PAK -> $09 (screen 6)
+ lda #<path17
+ sta p_open+1
+ lda #>path17
+ sta p_open+2
+ lda #$09
+ sta unpack_bank
+ jsr load_and_unpack
+
+* Load MISSION18.PAK -> $0A (screen 7)
+ lda #<path18
+ sta p_open+1
+ lda #>path18
+ sta p_open+2
+ lda #$0A
+ sta unpack_bank
+ jsr load_and_unpack
+
+* Load MISSION19.PAK -> $0B (screen 8)
+ lda #<path19
+ sta p_open+1
+ lda #>path19
+ sta p_open+2
+ lda #$0B
+ sta unpack_bank
+ jsr load_and_unpack
+
+* Load MISSION110.PAK -> $0C (screen 9)
+ lda #<path110
+ sta p_open+1
+ lda #>path110
+ sta p_open+2
+ lda #$0C
+ sta unpack_bank
+ jsr load_and_unpack
+
+* Load MISSION111.PAK -> $0D (screen 10)
+ lda #<path111
+ sta p_open+1
+ lda #>path111
+ sta p_open+2
+ lda #$0D
  sta unpack_bank
  jsr load_and_unpack
 
@@ -334,10 +390,41 @@ run_script
  jmp :exec_loop
 
 :not_left
+ cmp #OP_UP
+ bne :not_up_op
+* OP_UP: param1=target, param2=left-neighbor, param3=right-neighbor
+ ldy #1
+ lda [script_pc],y     ; target screen index
+ sta scroll_up_screen
+ clc
+ adc #$03
+ sta scroll_up_bank
+ ldy #2
+ lda [script_pc],y     ; left-neighbor screen index
+ clc
+ adc #$03
+ sta scroll_up_lbank
+ ldy #3
+ lda [script_pc],y     ; right-neighbor screen index
+ clc
+ adc #$03
+ sta scroll_up_rbank
+ lda #182
+ sta scroll_up_off
+ lda #1
+ sta scroll_up_enabled
+ lda script_pc
+ clc
+ adc #4                ; opcode + 3 params
+ sta script_pc
+ jmp :exec_loop
+
+:not_up_op
  cmp #OP_SCRLOCK
  bne :not_scrlock
  stz scroll_right_enabled
  stz scroll_left_enabled
+ stz scroll_up_enabled
  inc script_pc          ; opcode only, no params
  jmp :exec_loop
 
@@ -743,8 +830,14 @@ sc_npc_behavior dfb 0
 current_screen dfb 0
 scroll_right_enabled dfb 0
 scroll_left_enabled dfb 0
+scroll_up_enabled    dfb 0
 scroll_right_screen dfb 0
 scroll_left_screen dfb 0
+scroll_up_screen     dfb 0
+scroll_up_bank       dfb $03
+scroll_up_off        dfb 0
+scroll_up_lbank      dfb $03     ; bank of upper screen's left neighbor
+scroll_up_rbank      dfb $03     ; bank of upper screen's right neighbor
 npc_buf_next dw npc_buffers   ; next free NPC buffer address
 
 * Cheat: invincibility toggle
@@ -838,14 +931,59 @@ world_offset dw 0
 * Called in emulation mode.
 *----------------------------------------------------------
 sync_current_screen
+* Compute desired current_screen from scroll_src_bank.
+* Mapping: scroll_src_bank = $04 + current_screen
+* (i.e., bank of the screen TO THE RIGHT of current).
  lda scroll_src_bank
  sec
- sbc #$51
+ sbc #$04
  cmp current_screen
  beq :no_change
  sta current_screen
+:apply
+* Update scroll_lsrc_bank = bank of left-neighbor screen
+* = $03 + (current_screen - 1) = $02 + current_screen.
+ lda current_screen
+ beq :no_left
+ clc
+ adc #$02              ; $03 + (current_screen - 1)
+ sta scroll_lsrc_bank
+ lda #109
+ sta scroll_lsrc_off
+ bra :loaded
+:no_left
+ lda #$03
+ sta scroll_lsrc_bank
+ stz scroll_lsrc_off
+:loaded
+ lda current_screen    ; reload before calling — A had been clobbered
  jsr load_screen_bounds
 :no_change rts
+
+*----------------------------------------------------------
+* sync_current_screen_left - Variant called after a LEFT
+* scroll. When scroll_lsrc_bank decrements past a boundary,
+* current_screen-- and re-derive scroll_src_bank/off.
+*----------------------------------------------------------
+sync_current_screen_left
+* No left source on screen 0
+ lda current_screen
+ beq :scl_done
+* Desired current_screen = scroll_lsrc_bank - $03 + 1 = scroll_lsrc_bank - $02
+ lda scroll_lsrc_bank
+ sec
+ sbc #$02
+ cmp current_screen
+ beq :scl_done
+ sta current_screen
+* Re-derive scroll_src_bank = $04 + current_screen
+ clc
+ adc #$04
+ sta scroll_src_bank
+ stz scroll_src_off
+ lda current_screen    ; reload before calling
+ jsr load_screen_bounds
+:scl_done rts
 
 load_screen_bounds
  sta :scr_idx
@@ -1335,8 +1473,18 @@ update_npcs
 *   FO_COOLDOWN - wait N frames after punch finishes
 *----------------------------------------------------------
 * xpos byte-units; 100 bytes = 200 pixels in 320 mode.
-SCROLL_THRESH = 80    ; player xpos at/over which walking scrolls
+SCROLL_THRESH = 80    ; player xpos at/over which walking scrolls right
+LEFT_SCROLL_THRESH = 30 ; player xpos at/under which walking scrolls left
+UP_SCROLL_THRESH = 90 ; player ypos at/under which walking-up scrolls
 PLAYFIELD_EDGE = 109   ; rightmost byte position in the 110-byte playfield
+* Upper screen alignment: world byte position of screen 5's
+* leftmost pixel. Originally screen 5 was placed at world
+* byte 4*110 = 440 (above screen 4); the user's art has it
+* offset +18 from there → 458. Adjust if the upper screen
+* needs to slide left or right relative to the lower world.
+UP_X_ANCHOR = 330       ; world byte position of upper-screen left edge
+UP_LEFT_FILL = 20       ; bytes to always fill from left neighbor on upper screen
+UP_LEFT_WIDTH = 52      ; screen 6's content width in bytes (104 pixels)
 FO_RANGE   = 4         ; pixels — engage punching at this distance
 FO_CD_TIME = 90        ; cooldown frames after a punch
 
@@ -2685,6 +2833,18 @@ process_input
 :not_scroll
  cmp #'8'
  bne :not_up
+* If at top with scroll_up enabled, scroll the world up
+ lda scroll_up_enabled
+ beq :up_walk
+ lda IMAGE01_YPOS
+ cmp #UP_SCROLL_THRESH
+ bcs :up_walk
+* Scroll world up by 4 rows
+ jsr save_sprite
+ jsr scroll_up
+ jsr load_sprite
+ rts
+:up_walk
  lda IMAGE01_XPOS
  sta chk_xpos
  lda IMAGE01_YPOS
@@ -2719,6 +2879,38 @@ process_input
 :skip_down rts
 :not_down cmp #'4'
  bne :not_left
+* If at left scroll threshold AND scroll_left enabled AND
+* there's a screen to the left, scroll. Otherwise walk.
+ lda scroll_left_enabled
+ beq :left_walk
+ lda current_screen
+ beq :left_walk        ; on screen 0, no left source
+ lda IMAGE01_XPOS
+ cmp #LEFT_SCROLL_THRESH
+ bcs :left_walk        ; xpos > threshold, walk
+* Scroll world LEFT by 4 bytes
+ jsr save_sprite
+ jsr scroll_left
+ jsr load_sprite
+ jsr sync_current_screen_left
+* abs_x retreats by 8 pixels through the world
+ lda abs_x
+ sec
+ sbc #8
+ sta abs_x
+ lda abs_x+1
+ sbc #0
+ sta abs_x+1
+* world_offset retreats by 4 bytes
+ lda world_offset
+ sec
+ sbc #4
+ sta world_offset
+ lda world_offset+1
+ sbc #0
+ sta world_offset+1
+ bra :finish_left
+:left_walk
  lda IMAGE01_XPOS
  cmp #2
  bcc :skip_left        ; already at minimum (1)
@@ -2730,6 +2922,7 @@ process_input
 :dec_lo
  dec abs_x
 :skip_left
+:finish_left
  lda #$01
  sta IMAGE01_MIRROR
  jsr advance_walk
@@ -3583,6 +3776,35 @@ copy_50_to_01
  rts
 
 *----------------------------------------------------------
+* copy_03_to_50 - Copy 32KB from $03/2000 (screen 0 bg)
+* to $50/2000 (playfield shadow).
+*----------------------------------------------------------
+copy_03_to_50
+ clc
+ xce
+ rep $30
+ lda #$2000
+ sta $F0
+ sta $F3
+ sep $20
+ lda #$03
+ sta $F2
+ lda #$50
+ sta $F5
+ rep $30
+ ldy #$0000
+ ldx #$4000
+:loop lda [$F0],y
+ sta [$F3],y
+ iny
+ iny
+ dex
+ bne :loop
+ sec
+ xce
+ rts
+
+*----------------------------------------------------------
 * load_ntp_file - Load a file to ntp_bank+ via ProDOS 8
 * in 4KB chunks. Bank increments when address wraps.
 *----------------------------------------------------------
@@ -4400,8 +4622,6 @@ scroll_right
  sta draw_bank+1
 * Brief delay after stack blit's CLI so pending sound
 * interrupts (NTP) can fire before we return to the caller.
-* 256 iterations ≈ 500 cycles — enough for the DOC IRQ
-* to service without noticeably stalling the scroll.
  ldx #0
 :irq_wait
  nop
@@ -4413,6 +4633,777 @@ scroll_right
  dex
  bne :irq_wait2
  rts
+
+*----------------------------------------------------------
+* scroll_left - Mirror of scroll_right.
+* Shift each scanline 4 bytes RIGHT in bank $50, then fill
+* the leftmost 4 bytes (offsets 0-3) from the previous
+* screen's source bank.
+*----------------------------------------------------------
+scroll_left
+ clc
+ xce
+ rep $30
+ mx %00
+
+* Step 1: Shift each scanline 4 bytes right in bank $50.
+* Copy 53 words from offset 0..104 to offset 4..108.
+* Iterate from RIGHT to LEFT to avoid overwriting source.
+ lda #$2068             ; src = line_start + 104 (last word src)
+ sta $F0
+ lda #$206C             ; dst = line_start + 108 (last word dst)
+ sta $F3
+ sep $20
+ lda #$50
+ sta $F2
+ sta $F5
+ rep $20
+
+ ldx #183
+:lshift_line
+ ldy #0
+:lshift_word
+* Move word from [F0+y] to [F3+y], then step y back by 2
+ lda [$F0],y
+ sta [$F3],y
+ dey
+ dey
+ cpy #$FFFE             ; reached negative? (cpy #-2 in 16-bit signed)
+ bne :lshift_word
+
+ lda $F0
+ clc
+ adc #$00A0
+ sta $F0
+ lda $F3
+ clc
+ adc #$00A0
+ sta $F3
+ dex
+ bne :lshift_line
+
+* Step 2: Fill leftmost 4 bytes (offsets 0-3) from the
+* previous screen's source. Save old lsrc_off so state
+* update at end can use it.
+ sep $20
+ mx %10
+ lda scroll_lsrc_off
+ sta :old_lo
+ cmp #3
+ bcc :lfill_split_jmp
+ jmp :lfill_normal
+:lfill_split_jmp
+
+* ----- SPLIT FILL: old lsrc_off in {0, 1, 2} -----
+* bytes_from_prev = 3 - old   (3, 2, 1)
+* bytes_from_curr = 1 + old   (1, 2, 3)
+* prev offset start = 110 - bytes_from_prev (107, 108, 109)
+ lda #3
+ sec
+ sbc :old_lo
+ sta :nfp
+ lda #1
+ clc
+ adc :old_lo
+ sta :nfc
+ lda #110
+ sec
+ sbc :nfp
+ sta :prev_start
+
+* --- Split pass 1: copy nfp bytes from (lsrc_bank-1) ---
+ rep $20
+ mx %00
+ lda :prev_start
+ and #$00FF
+ clc
+ adc #$2000
+ sta $F0
+ lda #$2000
+ sta $F3
+ sep $30
+ mx %11
+ lda scroll_lsrc_bank
+ sec
+ sbc #1
+ sta $F2
+ lda #$50
+ sta $F5
+ ldx #183
+:lspl_p_line
+ ldy #0
+:lspl_p_byte
+ lda [$F0],y
+ sta [$F3],y
+ iny
+ cpy :nfp
+ bcc :lspl_p_byte
+ rep $20
+ mx %01
+ lda $F0
+ clc
+ adc #$00A0
+ sta $F0
+ lda $F3
+ clc
+ adc #$00A0
+ sta $F3
+ sep $20
+ mx %11
+ dex
+ bne :lspl_p_line
+
+* --- Split pass 2: copy nfc bytes from lsrc_bank to dest+nfp ---
+ rep $20
+ mx %01
+ lda #$2000
+ sta $F0
+ lda :nfp
+ and #$00FF
+ clc
+ adc #$2000
+ sta $F3
+ sep $20
+ mx %11
+ lda scroll_lsrc_bank
+ sta $F2
+ lda #$50
+ sta $F5
+ ldx #183
+:lspl_c_line
+ ldy #0
+:lspl_c_byte
+ lda [$F0],y
+ sta [$F3],y
+ iny
+ cpy :nfc
+ bcc :lspl_c_byte
+ rep $20
+ mx %01
+ lda $F0
+ clc
+ adc #$00A0
+ sta $F0
+ lda $F3
+ clc
+ adc #$00A0
+ sta $F3
+ sep $20
+ mx %11
+ dex
+ bne :lspl_c_line
+
+* State after split: lsrc_bank--, lsrc_off = old + 106
+ dec scroll_lsrc_bank
+ lda :old_lo
+ clc
+ adc #106
+ sta scroll_lsrc_off
+ rep $30
+ mx %00
+ jmp :lfill_done
+
+* ----- NORMAL FILL: 4 bytes all in one bank -----
+:lfill_normal
+ rep $20
+ mx %00
+ lda scroll_lsrc_off
+ and #$00FF
+ sec
+ sbc #3
+ clc
+ adc #$2000
+ sta $F0
+ lda #$2000
+ sta $F3
+ sep $20
+ lda scroll_lsrc_bank
+ sta $F2
+ lda #$50
+ sta $F5
+ rep $20
+ ldy #0
+ ldx #183
+:lfill_line
+ lda [$F0],y
+ sta [$F3],y
+ iny
+ iny
+ lda [$F0],y
+ sta [$F3],y
+ ldy #0
+ lda $F0
+ clc
+ adc #$00A0
+ sta $F0
+ lda $F3
+ clc
+ adc #$00A0
+ sta $F3
+ dex
+ bne :lfill_line
+
+* State update: lsrc_off -= 4. Borrow → was 3 → set off=109, bank--
+ sep $20
+ mx %10
+ lda scroll_lsrc_off
+ sec
+ sbc #4
+ bcs :lno_under
+ lda #109
+ sta scroll_lsrc_off
+ dec scroll_lsrc_bank
+ bra :lfill_done
+:lno_under
+ sta scroll_lsrc_off
+
+:lfill_done
+ rep $30
+ mx %00
+
+* Steps 3-5: same blit/draw/blit pipeline as scroll_right
+ jsr fast_blit_50_55
+ sec
+ xce
+ lda #$55
+ sta draw_bank
+ lda #$00
+ sta draw_bank+1
+ jsr draw_sprite
+ clc
+ xce
+ rep $30
+ jsr stack_blit_55_e1
+ sec
+ xce
+ lda #$01
+ sta draw_bank
+ lda #$00
+ sta draw_bank+1
+ ldx #0
+:lirq_wait
+ nop
+ dex
+ bne :lirq_wait
+ ldx #0
+:lirq_wait2
+ nop
+ dex
+ bne :lirq_wait2
+ rts
+
+* scroll_left scratch
+:old_lo     dfb 0
+:nfp        dfb 0
+:nfc        dfb 0
+:prev_start dfb 0
+
+*----------------------------------------------------------
+* scroll_up - Vertical scroll: shift all rows DOWN by 4 in
+* bank $50, then fill the top 4 rows from scroll_up_bank
+* (the screen ABOVE) at scroll_up_off (counts down from 182).
+* When scroll_up_off would go below 3, snap-transition: copy
+* the entire source bank to $50 and update current_screen.
+*----------------------------------------------------------
+scroll_up
+ lda scroll_up_off
+ cmp #3
+ bcs :su_normal
+ jmp :snap_transition
+:su_normal
+ clc
+ xce
+ rep $30
+ mx %00
+
+* Step 1: shift rows down by 4 in $50.
+* Iterate from row 178 down to row 0, copying to row+4.
+* Source addr starts at row 178: $2000 + 178*$A0 = $8F40
+* Dest addr starts at row 182: $2000 + 182*$A0 = $91C0
+ lda #$8F40
+ sta $F0
+ lda #$91C0
+ sta $F3
+ sep $20
+ lda #$50
+ sta $F2
+ sta $F5
+ rep $20
+
+ ldx #179               ; row count: 179 rows to shift
+:ushift_row
+ ldy #0
+:ushift_word
+ lda [$F0],y
+ sta [$F3],y
+ iny
+ iny
+ cpy #110
+ bcc :ushift_word
+
+ lda $F0
+ sec
+ sbc #$00A0
+ sta $F0
+ lda $F3
+ sec
+ sbc #$00A0
+ sta $F3
+ dex
+ bne :ushift_row
+
+* Step 2: fill rows 0-3 from source (above) screen at off-3..off
+ sep $20
+ mx %10
+ lda scroll_up_off
+ sec
+ sbc #3
+ sta :ufill_top
+ rep $20
+ mx %00
+
+* Compute src addr = $2000 + ufill_top * $A0
+ lda :ufill_top
+ and #$00FF
+ sta :utmp
+ asl
+ asl                    ; *4
+ clc
+ adc :utmp              ; *5
+ asl
+ asl
+ asl
+ asl
+ asl                    ; *160 = $A0
+ clc
+ adc #$2000
+ sta $F0                ; F0 = scroll_up_bank/(2000 + (off-3)*$A0)
+* Dynamic align: compute per-row offsets from world_offset
+ jsr compute_up_align
+ lda up_count
+ beq :ufill_skip        ; no overlap — skip fill entirely
+* Add up_src_start to F0
+ lda $F0
+ clc
+ adc up_src_start
+ sta $F0
+* Set F3 = $50/(2000 + up_dst_start)
+ lda #$2000
+ clc
+ adc up_dst_start
+ sta $F3
+ sep $20
+ lda scroll_up_bank
+ sta $F2
+ lda #$50
+ sta $F5
+ rep $20
+
+ ldx #4
+:ufill_row
+ ldy #0
+:ufill_word
+ lda [$F0],y
+ sta [$F3],y
+ iny
+ iny
+ cpy up_count
+ bcc :ufill_word
+
+ lda $F0
+ clc
+ adc #$00A0
+ sta $F0
+ lda $F3
+ clc
+ adc #$00A0
+ sta $F3
+ dex
+ bne :ufill_row
+:ufill_skip
+
+* Always overwrite leftmost UP_LEFT_FILL bytes with screen 6's
+* rightmost content. Screen 6 is UP_LEFT_WIDTH bytes wide, so
+* read from (UP_LEFT_WIDTH - UP_LEFT_FILL)..(UP_LEFT_WIDTH-1).
+* Source row = :ufill_top (same as main fill), dest row = 0-3.
+ lda :ufill_top
+ and #$00FF
+ sta :utmp
+ asl
+ asl
+ clc
+ adc :utmp
+ asl
+ asl
+ asl
+ asl
+ asl                    ; row * 160
+ clc
+ adc #$2000+UP_LEFT_WIDTH-UP_LEFT_FILL
+ sta $F0                ; src = lbank/(2000 + ufill_top*$A0 + width-fill)
+ lda #$2000
+ sta $F3                ; dst = $50/$2000 (playfield row 0, byte 0)
+ sep $20
+ lda scroll_up_lbank
+ sta $F2
+ lda #$50
+ sta $F5
+ rep $20
+
+ ldx #4
+:lgap_row
+ ldy #0
+:lgap_word
+ lda [$F0],y
+ sta [$F3],y
+ iny
+ iny
+ cpy #UP_LEFT_FILL
+ bcc :lgap_word
+ lda $F0
+ clc
+ adc #$00A0
+ sta $F0
+ lda $F3
+ clc
+ adc #$00A0
+ sta $F3
+ dex
+ bne :lgap_row
+
+* Fill right gap from upper screen's right neighbor.
+* If up_dst_start + up_count < 110, fill the remaining bytes
+* from scroll_up_rbank's leftmost columns.
+ lda up_dst_start
+ clc
+ adc up_count
+ sta :rgap_start        ; first unfilled byte on right
+ cmp #110
+ bcs :rgap_done         ; no gap (filled to edge)
+ lda #110
+ sec
+ sbc :rgap_start
+ sta :rgap_count        ; bytes to fill from right neighbor
+* Source: rbank/(2000 + (off-3)*$A0 + 0) — leftmost bytes
+ lda :ufill_top
+ and #$00FF
+ sta :utmp
+ asl
+ asl
+ clc
+ adc :utmp
+ asl
+ asl
+ asl
+ asl
+ asl
+ clc
+ adc #$2000
+ sta $F0                ; src = rbank/(2000 + row*$A0)
+* Dest: $50/(2000 + rgap_start)
+ lda #$2000
+ clc
+ adc :rgap_start
+ sta $F3
+ sep $20
+ lda scroll_up_rbank
+ sta $F2
+ lda #$50
+ sta $F5
+ rep $20
+ ldx #4
+:rgap_row
+ ldy #0
+:rgap_word
+ lda [$F0],y
+ sta [$F3],y
+ iny
+ iny
+ cpy :rgap_count
+ bcc :rgap_word
+ lda $F0
+ clc
+ adc #$00A0
+ sta $F0
+ lda $F3
+ clc
+ adc #$00A0
+ sta $F3
+ dex
+ bne :rgap_row
+:rgap_done
+
+* Decrement scroll_up_off by 4
+ sep $20
+ mx %10
+ lda scroll_up_off
+ sec
+ sbc #4
+ sta scroll_up_off
+ rep $30
+ mx %00
+
+* Pipeline: blit, draw, blit
+ jsr fast_blit_50_55
+ sec
+ xce
+ lda #$55
+ sta draw_bank
+ lda #$00
+ sta draw_bank+1
+ jsr draw_sprite
+ clc
+ xce
+ rep $30
+ jsr stack_blit_55_e1
+ sec
+ xce
+ lda #$01
+ sta draw_bank
+ lda #$00
+ sta draw_bank+1
+ ldx #0
+:uirq_wait
+ nop
+ dex
+ bne :uirq_wait
+ ldx #0
+:uirq_wait2
+ nop
+ dex
+ bne :uirq_wait2
+ rts
+
+*----------------------------------------------------------
+* :snap_transition - End of vertical scroll: copy source
+* screen entirely to $50 and update current_screen.
+*----------------------------------------------------------
+:snap_transition
+ clc
+ xce
+ rep $30
+ mx %00
+* Copy source screen to $50 row-by-row with dynamic horizontal
+* align (computed from world_offset vs UP_X_ANCHOR).
+ jsr compute_up_align
+ lda up_count
+ beq :snap_skip_copy
+* Setup pointers (apply offsets)
+ lda #$2000
+ clc
+ adc up_src_start
+ sta $F0                ; src = scroll_up_bank/(2000 + up_src_start)
+ lda #$2000
+ clc
+ adc up_dst_start
+ sta $F3                ; dst = $50/(2000 + up_dst_start)
+ sep $20
+ lda scroll_up_bank
+ sta $F2
+ lda #$50
+ sta $F5
+ rep $20
+ ldx #183
+:srow ldy #0
+:swrd lda [$F0],y
+ sta [$F3],y
+ iny
+ iny
+ cpy up_count
+ bcc :swrd
+ lda $F0
+ clc
+ adc #$00A0
+ sta $F0
+ lda $F3
+ clc
+ adc #$00A0
+ sta $F3
+ dex
+ bne :srow
+:snap_skip_copy
+
+* Always overwrite leftmost UP_LEFT_FILL bytes in snap
+ lda #$2000+UP_LEFT_WIDTH-UP_LEFT_FILL
+ sta $F0                ; src = lbank/(2000 + width-fill)
+ lda #$2000
+ sta $F3                ; dst = $50/2000
+ sep $20
+ lda scroll_up_lbank
+ sta $F2
+ lda #$50
+ sta $F5
+ rep $20
+ ldx #183
+:snap_lgrow ldy #0
+:snap_lgwrd lda [$F0],y
+ sta [$F3],y
+ iny
+ iny
+ cpy #UP_LEFT_FILL
+ bcc :snap_lgwrd
+ lda $F0
+ clc
+ adc #$00A0
+ sta $F0
+ lda $F3
+ clc
+ adc #$00A0
+ sta $F3
+ dex
+ bne :snap_lgrow
+
+* Fill right gap in snap from upper screen's right neighbor
+ lda up_dst_start
+ clc
+ adc up_count
+ sta :rgap_start
+ cmp #110
+ bcs :snap_rgap_done
+ lda #110
+ sec
+ sbc :rgap_start
+ sta :rgap_count
+ lda #$2000
+ sta $F0                ; src = rbank/(2000) — leftmost bytes
+ lda #$2000
+ clc
+ adc :rgap_start
+ sta $F3
+ sep $20
+ lda scroll_up_rbank
+ sta $F2
+ lda #$50
+ sta $F5
+ rep $20
+ ldx #183
+:snap_rgrow ldy #0
+:snap_rgwrd lda [$F0],y
+ sta [$F3],y
+ iny
+ iny
+ cpy :rgap_count
+ bcc :snap_rgwrd
+ lda $F0
+ clc
+ adc #$00A0
+ sta $F0
+ lda $F3
+ clc
+ adc #$00A0
+ sta $F3
+ dex
+ bne :snap_rgrow
+:snap_rgap_done
+
+ sec
+ xce
+* Update current_screen and bank state
+ lda scroll_up_screen
+ sta current_screen
+ stz scroll_up_enabled
+ jsr load_screen_bounds
+ lda current_screen
+ clc
+ adc #$04
+ sta scroll_src_bank
+ stz scroll_src_off
+ lda current_screen
+ beq :snap_no_left
+ clc
+ adc #$02              ; lsrc = $03 + (cs-1) = $02 + cs
+ sta scroll_lsrc_bank
+ lda #109
+ sta scroll_lsrc_off
+ bra :snap_loaded
+:snap_no_left
+ lda #$03
+ sta scroll_lsrc_bank
+ stz scroll_lsrc_off
+:snap_loaded
+* Blit the new playfield to screen
+ clc
+ xce
+ rep $30
+ mx %00
+ jsr fast_blit_50_55
+ sec
+ xce
+ lda #$55
+ sta draw_bank
+ lda #$00
+ sta draw_bank+1
+ jsr draw_sprite
+ clc
+ xce
+ rep $30
+ jsr stack_blit_55_e1
+ sec
+ xce
+ lda #$01
+ sta draw_bank
+ lda #$00
+ sta draw_bank+1
+ rts
+
+* scroll_up scratch — must be 2 bytes since 16-bit stores
+* land here.
+:ufill_top ds 2
+:utmp      ds 2
+:rgap_start ds 2
+:rgap_count ds 2
+:lgap_base  ds 2
+
+up_src_start ds 2       ; source byte offset within upper screen scanline
+up_dst_start ds 2       ; dest byte offset within playfield scanline
+up_count     ds 2       ; bytes per row to copy (0 = skip)
+
+*----------------------------------------------------------
+* compute_up_align - Compute src/dst/count for upper-screen
+* fill based on world_offset. Sets up_src_start, up_dst_start,
+* up_count. Call in native mode 16-bit A.
+*
+*   src_byte(P) = world_offset + P - UP_X_ANCHOR
+*
+* If src_byte < 0 at P=0:  src_start=0, dst_start=-src_byte
+* If src_byte > 109 at P=0: count=0 (off the right edge)
+* Else: src_start=src_byte, dst_start=0
+* count = min(110-src_start, 110-dst_start)
+*----------------------------------------------------------
+compute_up_align
+ mx %00                 ; tell Merlin: 16-bit A on entry
+ lda world_offset
+ sec
+ sbc #UP_X_ANCHOR
+ sta up_src_start       ; signed 16-bit
+ bpl :pos
+* Negative src_start: dst_start = -src_start, src_start = 0
+ eor #$FFFF
+ inc                    ; A = -A
+ sta up_dst_start
+ cmp #110
+ bcs :no_overlap        ; player too far left of screen 5
+ stz up_src_start
+* count = 110 - dst_start
+ lda #110
+ sec
+ sbc up_dst_start
+ sta up_count
+ rts
+:pos
+* src_start >= 0
+ cmp #110
+ bcs :no_overlap        ; player too far right of screen 5
+ stz up_dst_start
+ lda #110
+ sec
+ sbc up_src_start
+ sta up_count
+ rts
+:no_overlap
+ stz up_count
+ rts
+ mx %11                 ; restore default for following code
 
 *----------------------------------------------------------
 * fast_blit_50_55 - Unrolled blit from bank $50 to bank $55
@@ -5717,6 +6708,24 @@ path14 dfb 21
 path15 dfb 21
  asc '/DDIIGS/MISSION15.PAK'
 
+path16 dfb 21
+ asc '/DDIIGS/MISSION16.PAK'
+
+path17 dfb 21
+ asc '/DDIIGS/MISSION17.PAK'
+
+path18 dfb 21
+ asc '/DDIIGS/MISSION18.PAK'
+
+path19 dfb 21
+ asc '/DDIIGS/MISSION19.PAK'
+
+path110 dfb 22
+ asc '/DDIIGS/MISSION110.PAK'
+
+path111 dfb 22
+ asc '/DDIIGS/MISSION111.PAK'
+
 * master sprite table
 sprite_table
   dw billy_sprite       ; player (always first)
@@ -5786,7 +6795,9 @@ IMAGE01_XPOS HEX 0100
 IMAGE01_YPOS HEX 6400
 IMAGE01_MIRROR HEX 0000
 x_scroll_idx HEX 0000
-scroll_src_bank dfb $51    ; current source bank for scroll fill
+scroll_src_bank dfb $04    ; current source bank for right scroll (= $03 + current_screen + 1)
+scroll_lsrc_bank dfb $03   ; current source bank for left scroll (= $03 + current_screen - 1, invalid until cs>0)
+scroll_lsrc_off dfb 0      ; offset (counts down from 109 toward 0)
 draw_bank da $0001         ; bank for draw_sprite destination (default $01, shadowed to $E1)
 sprite_bank da $0002       ; bank where sprite pixel data lives (16-bit for REP $20 load)
 scroll_src_off HEX 0000   ; byte offset within source bank scanline
