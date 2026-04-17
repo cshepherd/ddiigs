@@ -165,6 +165,23 @@ level_script
 ;    db $58,$5f,$01
     db OP_UP,5,6,7      ; Up to screen 5, left=screen 6, right=screen 7
 
+; upper level (screen 5)
+    db OP_SCRLOCK       ; lock scrolling on upper level
+    db OP_NPC           ; William on upper level
+    dw william_sprite
+    db $58,$32,$01,BEHAV_FACEOFF  ; y=$32 (50) within walkable band
+    db OP_WAITCLR       ; wait for enemies defeated
+
+    db OP_RIGHT,7      ; connect screen 5 to screen 7 on the right
+
+;    db OP_WAITX
+;    dw 450              ; wait for player abs X >= 450
+;    db OP_SCRLOCK       ; stuck here
+;    db OP_NPC           ; Roper near right edge
+;    dw roper_sprite
+;    db $58,$5f,$01,BEHAV_FACEOFF  ; xpos, ypos, orientation, behavior
+
+    db OP_WAITCLR
     db OP_END           ; end of level
 
 sfx_table
@@ -628,7 +645,7 @@ linda_sprite
 ladders dfb 1                   ; ladder count
  dw 348                         ; x_left (world byte 234 = pixel 468)
  dw 355                         ; x_right
- dfb 0,120                      ; y_top, y_bottom
+ dfb 0,59                      ; y_top=0 (top of lower screen), y_bottom=59 (top of upper walkable)
 
 *==========================================================
 * Per-screen Y bounds tables
@@ -641,6 +658,12 @@ bounds_ptrs
  dw bounds_scr2
  dw bounds_scr3
  dw bounds_scr4
+ dw bounds_scr5
+ dw bounds_scr6
+ dw bounds_scr7
+ dw bounds_scr8
+ dw bounds_scr9
+ dw bounds_scr10
 
 * Screen 0: y<80 blocked, y=80-199 full playfield
 bounds_scr0
@@ -660,12 +683,12 @@ bounds_scr1
  dfb 0,109
  --^
 
-* Screen 2: same as screen 0
+* Screen 2: walkable y=60-199 (extends to y=60 to connect with ladder y_bottom=59)
 bounds_scr2
- LUP 80
+ LUP 60
  dfb 0,0
  --^
- LUP 120
+ LUP 140
  dfb 0,109
  --^
 
@@ -678,8 +701,67 @@ bounds_scr3
  dfb 0,109
  --^
 
-* Screen 4: same as screen 0
+* Screen 4: walkable y=60-199 (extends to y=60 to connect with ladder y_bottom=59)
 bounds_scr4
+ LUP 60
+ dfb 0,0
+ --^
+ LUP 140
+ dfb 0,109
+ --^
+
+* Screen 5 (upper level): walkable band for the road surface.
+* Billy is ~40px tall, so ypos=45 puts his feet at y=85
+* which should be about road level. Tune to match artwork.
+bounds_scr5
+ LUP 40
+ dfb 0,0
+ --^
+ LUP 20
+ dfb 0,109
+ --^
+ LUP 140
+ dfb 0,0
+ --^
+
+* Screen 6: same default
+bounds_scr6
+ LUP 80
+ dfb 0,0
+ --^
+ LUP 120
+ dfb 0,109
+ --^
+
+* Screen 7: same default
+bounds_scr7
+ LUP 80
+ dfb 0,0
+ --^
+ LUP 120
+ dfb 0,109
+ --^
+
+* Screen 8: same default
+bounds_scr8
+ LUP 80
+ dfb 0,0
+ --^
+ LUP 120
+ dfb 0,109
+ --^
+
+* Screen 9: same default
+bounds_scr9
+ LUP 80
+ dfb 0,0
+ --^
+ LUP 120
+ dfb 0,109
+ --^
+
+* Screen 10: same default
+bounds_scr10
  LUP 80
  dfb 0,0
  --^

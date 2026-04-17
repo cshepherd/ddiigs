@@ -301,7 +301,10 @@ run_script
 :nwc cmp #SCRIPT_WAITNPC
  bne :nwn
  jmp :check_waitnpc
-:nwn
+:nwn cmp #SCRIPT_WAITUP
+ bne :nwu
+ jmp :check_waitup
+:nwu
 
 * SCRIPT_RUN — execute opcodes
 :exec_loop
@@ -364,6 +367,20 @@ run_script
  ldy #1
  lda [script_pc],y
  sta scroll_right_screen
+* Each screen N is loaded into bank $03 + N. If scroll_src_bank
+* already points at the target bank, the previous scroll wrap
+* (or initial state) naturally left us pointed at the right
+* screen — don't disturb scroll_src_off, or we'd rewind past
+* content already revealed and cause visible repeats. Only
+* override when the target differs (non-linear jumps, e.g.
+* OP_RIGHT,7 from screen 5 where linear would point at $09).
+ clc
+ adc #$03
+ cmp scroll_src_bank
+ beq :rt_same_bank
+ sta scroll_src_bank
+ stz scroll_src_off
+:rt_same_bank
  lda #1
  sta scroll_right_enabled
 * Show POINT_RIGHT overlay for 180 frames
@@ -413,11 +430,13 @@ run_script
  sta scroll_up_off
  lda #1
  sta scroll_up_enabled
+ lda #SCRIPT_WAITUP
+ sta script_state
  lda script_pc
  clc
  adc #4                ; opcode + 3 params
  sta script_pc
- jmp :exec_loop
+ rts                   ; yield — wait for scroll to complete
 
 :not_up_op
  cmp #OP_SCRLOCK
@@ -594,6 +613,15 @@ run_script
  jmp :exec_loop
 :npc_count dfb 0
 
+:check_waitup
+* Wait for scroll_up_enabled to return to 0 (snap completed)
+ lda scroll_up_enabled
+ bne :wu_rts            ; still scrolling, wait
+ lda #SCRIPT_RUN
+ sta script_state
+ jmp :exec_loop         ; scroll done, resume script
+:wu_rts rts
+
 *--- Script helper: set screen ---
 script_set_screen
 * A = screen index. Update current screen and load its bounds.
@@ -627,6 +655,20 @@ script_spawn_npc
  inc spr_ptr+1
  bra :find_slot
 :found_slot
+* Bounds-check npc_buf_next before allocating. If it has reached
+* npc_buffers_end, the buffer is exhausted — silently drop the
+* spawn rather than corrupt code that follows npc_buffers in the
+* binary. (Increase NPC_BUFFER_SLOTS if levels need more.)
+ lda npc_buf_next+1
+ cmp #>npc_buffers_end
+ bcc :buf_ok
+ bne :buf_full
+ lda npc_buf_next
+ cmp #<npc_buffers_end
+ bcc :buf_ok
+:buf_full
+ rts
+:buf_ok
 * Allocate next NPC buffer
  lda npc_buf_next
  sta info_ptr
@@ -931,18 +973,22 @@ world_offset dw 0
 * Called in emulation mode.
 *----------------------------------------------------------
 sync_current_screen
-* Compute desired current_screen from scroll_src_bank.
-* Mapping: scroll_src_bank = $04 + current_screen
-* (i.e., bank of the screen TO THE RIGHT of current).
- lda scroll_src_bank
- sec
- sbc #$04
+* A right-scroll wrap sets transition_pending. Consume it here:
+* current_screen becomes whatever OP_RIGHT last targeted
+* (scroll_right_screen), not a linear derivation from
+* scroll_src_bank — which would be wrong whenever the script
+* skips screens (e.g. screen 5 -> 7).
+ lda transition_pending
+ beq :no_change
+ stz transition_pending
+ lda scroll_right_screen
  cmp current_screen
  beq :no_change
  sta current_screen
 :apply
-* Update scroll_lsrc_bank = bank of left-neighbor screen
-* = $03 + (current_screen - 1) = $02 + current_screen.
+* Update scroll_lsrc_bank = bank of left-neighbor screen.
+* Linear assumption ($03 + (current_screen - 1)); OP_LEFT
+* should override this when screens are skipped going back.
  lda current_screen
  beq :no_left
  clc
@@ -1410,7 +1456,15 @@ draw_ladder_debug
 
 
 * NPC sprite block buffers
-npc_buffers ds 448           ; 8 slots x 56 bytes
+* IMPORTANT: script_spawn_npc does NOT bounds-check npc_buf_next,
+* so overflowing this buffer silently corrupts whatever follows
+* it in the binary — typically code. Each slot is 56 bytes.
+* Ensure size covers the maximum total NPCs spawned over the
+* level's lifetime (not just concurrent), since npc_buf_next
+* only advances, never reuses slots of defeated NPCs.
+NPC_BUFFER_SLOTS = 16
+npc_buffers ds NPC_BUFFER_SLOTS*56
+npc_buffers_end
 
 *----------------------------------------------------------
 * update_npcs - Iterate sprite_table, dispatch each NPC's
@@ -1992,10 +2046,15 @@ behav_ladder
  lda ladder_buf+4
  ldy #0
  sta (info_ptr),y
-* Cache y_bottom at +9
- ldy #9
+* Descent target: one row below the ladder's y_bottom, so
+* Linda lands on the first walkable row beneath the ladder
+* (ladder y_bottom is the last on-ladder row; y_bottom+1 is
+* the first row where she can walk freely).
  lda ladder_buf+5
- sta (info_ptr),y
+ clc
+ adc #1
+ ldy #9
+ sta (info_ptr),y      ; cache target Y at +9
 * Mirror = 0
  ldy #4
  lda #$00
@@ -2520,6 +2579,11 @@ erase_all
  lda (info_ptr),y
  sta FRAME_Y
  jsr erase
+* Mark any still-living sprites whose drawn area overlaps the
+* just-erased rect as needs_draw — otherwise if the dying
+* enemy was drawn on top of (later Y than) the player, the
+* erase wipes part of the player and no one redraws it.
+ jsr mark_overlapping
  jsr remove_from_sprite_table
  bra :loop            ; don't advance spr_ptr — entries shifted down
 :not_dead
@@ -2541,22 +2605,12 @@ erase_all
  ldy #38
  lda (info_ptr),y     ; prev_frame_y
  sta FRAME_Y
-* If animation active, use max_width for erase
- ldy #24
- lda (info_ptr),y     ; anim_ptr low
- iny
- ora (info_ptr),y     ; anim_ptr high
- beq :no_anim
- ldy #24
- lda (info_ptr),y
- sta anim_ptr
- ldy #25
- lda (info_ptr),y
- sta anim_ptr+1
- ldy #1
- lda (anim_ptr),y     ; max_width from descriptor
- sta FRAME_X
-:no_anim
+* Use prev_frame_x (already loaded) for erase width. Don't
+* override with the current anim's max_width: when an animation
+* has just switched (walk -> punch -> fall, etc.) the new anim's
+* max_width can be narrower than the width of the frame that
+* was actually drawn last, leaving a sliver un-erased.
+* prev_frame_x is the exact width draw_all used last frame.
  jsr erase
 * Check if erased area overlaps other sprites
  jsr mark_overlapping
@@ -2706,6 +2760,46 @@ save_sprite
  sta (info_ptr),y
  rts
 
+*----------------------------------------------------------
+* save_anim_state - Save only frame-related fields back to
+* sprite info block. Used by update_anims so we don't clobber
+* prev_xpos/prev_ypos that NPC behaviors (fo_approach etc.)
+* set before update_anims runs. Those behaviors write the new
+* xpos/ypos directly into the block AFTER correctly snapshotting
+* prev_*; if save_sprite runs here, it would re-snapshot prev
+* from the now-modified block, copying the NEW position into
+* prev and leaving last frame's position un-erased (artifacts).
+* info_ptr must already be set (by load_sprite).
+*----------------------------------------------------------
+save_anim_state
+* Snapshot prev_frame_x/prev_frame_y from current block fields
+ ldy #10
+ lda (info_ptr),y     ; current frame_x
+ ldy #36
+ sta (info_ptr),y     ; -> prev_frame_x
+ ldy #12
+ lda (info_ptr),y     ; current frame_y
+ ldy #38
+ sta (info_ptr),y     ; -> prev_frame_y
+* Write new frame values from globals
+ ldy #10
+ lda FRAME_X
+ sta (info_ptr),y
+ ldy #12
+ lda FRAME_Y
+ sta (info_ptr),y
+ ldy #14
+ lda FRAME_ADDR
+ sta (info_ptr),y
+ iny
+ lda FRAME_ADDR+1
+ sta (info_ptr),y
+* Mark dirty (bit0=needs_draw, bit1=needs_erase)
+ ldy #30
+ lda #$03
+ sta (info_ptr),y
+ rts
+
 spr_ptr = $E0         ; ZP pointer into sprite_table
 info_ptr = $E2        ; ZP pointer to current sprite info block
 anim_ptr = $E4        ; ZP pointer to animation descriptor (3 bytes: addr + bank at $E6)
@@ -2733,6 +2827,7 @@ SCRIPT_WAITY = 2      ; waiting for player Y threshold
 SCRIPT_WAITCLR = 3    ; waiting for all NPCs defeated
 SCRIPT_DONE = 4       ; level ended
 SCRIPT_WAITNPC = 5    ; waiting for NPC count <= threshold
+SCRIPT_WAITUP  = 6    ; waiting for vertical scroll to complete
 
 * NPC behaviors (must match mission1.s definitions)
 BEHAV_NONE    = 0
@@ -2833,13 +2928,20 @@ process_input
 :not_scroll
  cmp #'8'
  bne :not_up
-* If at top with scroll_up enabled, scroll the world up
+* If scroll_up enabled AND on a ladder AND near top, scroll up
  lda scroll_up_enabled
  beq :up_walk
  lda IMAGE01_YPOS
  cmp #UP_SCROLL_THRESH
  bcs :up_walk
-* Scroll world up by 4 rows
+* Check if player is on a ladder
+ lda IMAGE01_XPOS
+ sta chk_xpos
+ lda IMAGE01_YPOS
+ jsr check_ladder
+ bcs :up_walk           ; not on ladder — normal walk
+* Scroll world up by 4 rows with climbing animation
+ jsr advance_climb
  jsr save_sprite
  jsr scroll_up
  jsr load_sprite
@@ -2852,6 +2954,16 @@ process_input
  sbc #1               ; proposed Y
  jsr check_y_bounds
  bcs :skip_up         ; blocked
+* If this upward step is only permitted by the ladder (proposed
+* row is blocked but falls within ladder Y range), also require
+* scroll_up to be enabled. Otherwise Billy would "climb" off the
+* top of a walkable surface via phantom ladder rows when there's
+* no screen above to scroll to.
+ lda via_ladder
+ beq :up_do_move
+ lda scroll_up_enabled
+ beq :skip_up
+:up_do_move
  dec IMAGE01_YPOS
  lda via_ladder
  beq :up_no_climb
@@ -3332,6 +3444,33 @@ update_anims
  lda (anim_ptr),y     ; flags
  and #$01
  beq :no_advance
+* Snapshot current xpos/ypos/frame_x/frame_y into prev_* BEFORE
+* modifying xpos. Without this, each VBL the advance-position
+* code clobbers xpos but leaves prev_xpos stale at the pre-
+* animation value, so the NEXT frame's erase_all erases at the
+* wrong spot (typically a no-op on clean background) and the
+* previous frame's drawing stays on screen as an artifact trail.
+* This mirrors what save_sprite does for walk: walk goes through
+* save_sprite inside process_input, which snapshots prev from
+* the old block values before writing new ones. The position-
+* advance path here bypasses save_sprite entirely, so it has to
+* do the snapshot itself.
+ ldy #2
+ lda (info_ptr),y
+ ldy #34
+ sta (info_ptr),y     ; prev_xpos <- current xpos
+ ldy #0
+ lda (info_ptr),y
+ ldy #32
+ sta (info_ptr),y     ; prev_ypos <- current ypos
+ ldy #10
+ lda (info_ptr),y
+ ldy #36
+ sta (info_ptr),y     ; prev_frame_x <- current frame_x
+ ldy #12
+ lda (info_ptr),y
+ ldy #38
+ sta (info_ptr),y     ; prev_frame_y <- current frame_y
  lda IMAGE01_MIRROR
  bne :adv_left
  inc IMAGE01_XPOS
@@ -3422,7 +3561,7 @@ update_anims
  ldy #46
  lda (info_ptr),y     ; idle_y
  sta FRAME_Y
- jsr save_sprite
+ jsr save_anim_state
  jmp :next
 
 :load_frame
@@ -3500,7 +3639,7 @@ update_anims
 :do_hit_now
  jsr check_punch_hit
 :no_punch_hit
- jsr save_sprite
+ jsr save_anim_state
 
 :next
  lda spr_ptr
@@ -4419,6 +4558,17 @@ scroll_right
 * Scroll playfield 4 bytes (2 words, 8 pixels) to the left.
 * Coarse NES-style scroll: shift in 16-bit mode, then fill
 * the rightmost 4 bytes from the next screen's background.
+*
+* Flicker-cover: erase_all at top of the frame has already
+* wiped the player sprite off $01/$E1. The scroll composite
+* pipeline (fast_blit_50_55 / draw on $55 / stack_blit to $E1)
+* takes several ms and races the video beam, so the sprite
+* would be visibly absent until the stack_blit catches up.
+* Redraw the sprite on $01 now (shadowed to $E1) so it stays
+* visible at its current screen position while we work. The
+* final stack_blit replaces everything atomically at the end.
+ jsr draw_sprite
+
  lda x_scroll_idx
  clc
  adc #4
@@ -4520,10 +4670,16 @@ scroll_right
  adc #4
  sta scroll_src_off
  cmp #110
- bcc :fill_done
+* :fill_done is now out of range for a short branch, so invert
+* the branch and use JMP for both paths.
+ bcs :fn_wrap
+ jmp :fill_done
+:fn_wrap
  stz scroll_src_off
  inc scroll_src_bank
- bra :fill_done
+ lda #1
+ sta transition_pending     ; signal sync_current_screen
+ jmp :fill_done
 
 * Split fill: 2 bytes from current bank (offset 108-109),
 * 2 bytes from next bank (offset 0-1).
@@ -4563,6 +4719,8 @@ scroll_right
  sta $F3
  sep $20
  inc scroll_src_bank
+ lda #1
+ sta transition_pending     ; signal sync_current_screen
  lda scroll_src_bank
  sta $F2
  lda #$50
@@ -4641,6 +4799,12 @@ scroll_right
 * screen's source bank.
 *----------------------------------------------------------
 scroll_left
+* Flicker-cover: see scroll_right for rationale. Re-draw the
+* player on $01 (shadowed to $E1) before the scroll composite
+* pipeline, so the sprite doesn't visibly vanish in the gap
+* between erase_all and the final stack_blit.
+ jsr draw_sprite
+
  clc
  xce
  rep $30
@@ -4906,6 +5070,12 @@ scroll_left
 * the entire source bank to $50 and update current_screen.
 *----------------------------------------------------------
 scroll_up
+* Flicker-cover: see scroll_right for rationale. Re-draw the
+* player on $01 (shadowed to $E1) before the scroll composite
+* pipeline. Covers both the incremental (:su_normal) path and
+* the :snap_transition path.
+ jsr draw_sprite
+
  lda scroll_up_off
  cmp #3
  bcs :su_normal
@@ -5022,10 +5192,11 @@ scroll_up
  bne :ufill_row
 :ufill_skip
 
-* Always overwrite leftmost UP_LEFT_FILL bytes with screen 6's
-* rightmost content. Screen 6 is UP_LEFT_WIDTH bytes wide, so
-* read from (UP_LEFT_WIDTH - UP_LEFT_FILL)..(UP_LEFT_WIDTH-1).
-* Source row = :ufill_top (same as main fill), dest row = 0-3.
+* Only fill the left gap if up_dst_start > 0 (screen 5 doesn't
+* cover the leftmost bytes). Fill exactly up_dst_start bytes
+* from screen 6's rightmost content (width UP_LEFT_WIDTH).
+ lda up_dst_start
+ beq :lgap_done
  lda :ufill_top
  and #$00FF
  sta :utmp
@@ -5039,8 +5210,12 @@ scroll_up
  asl
  asl                    ; row * 160
  clc
- adc #$2000+UP_LEFT_WIDTH-UP_LEFT_FILL
- sta $F0                ; src = lbank/(2000 + ufill_top*$A0 + width-fill)
+ adc #$2000
+ clc
+ adc #UP_LEFT_WIDTH
+ sec
+ sbc up_dst_start
+ sta $F0                ; src = lbank/(2000 + row*$A0 + width - gap)
  lda #$2000
  sta $F3                ; dst = $50/$2000 (playfield row 0, byte 0)
  sep $20
@@ -5058,7 +5233,7 @@ scroll_up
  sta [$F3],y
  iny
  iny
- cpy #UP_LEFT_FILL
+ cpy up_dst_start
  bcc :lgap_word
  lda $F0
  clc
@@ -5070,6 +5245,7 @@ scroll_up
  sta $F3
  dex
  bne :lgap_row
+:lgap_done
 
 * Fill right gap from upper screen's right neighbor.
 * If up_dst_start + up_count < 110, fill the remaining bytes
@@ -5223,9 +5399,15 @@ scroll_up
  bne :srow
 :snap_skip_copy
 
-* Always overwrite leftmost UP_LEFT_FILL bytes in snap
- lda #$2000+UP_LEFT_WIDTH-UP_LEFT_FILL
- sta $F0                ; src = lbank/(2000 + width-fill)
+* Only fill left gap in snap if up_dst_start > 0
+ lda up_dst_start
+ beq :snap_lgap_done
+ lda #$2000
+ clc
+ adc #UP_LEFT_WIDTH
+ sec
+ sbc up_dst_start       ; src = lbank/(2000 + width - gap)
+ sta $F0
  lda #$2000
  sta $F3                ; dst = $50/2000
  sep $20
@@ -5240,7 +5422,7 @@ scroll_up
  sta [$F3],y
  iny
  iny
- cpy #UP_LEFT_FILL
+ cpy up_dst_start
  bcc :snap_lgwrd
  lda $F0
  clc
@@ -5252,6 +5434,7 @@ scroll_up
  sta $F3
  dex
  bne :snap_lgrow
+:snap_lgap_done
 
 * Fill right gap in snap from upper screen's right neighbor
  lda up_dst_start
@@ -5298,16 +5481,28 @@ scroll_up
 
  sec
  xce
-* Update current_screen and bank state
+* Update current_screen and bank state.
+* IMPORTANT: scroll_src must use the actual right-neighbor bank
+* specified by OP_UP (scroll_up_rbank), not a linear
+* current_screen+1 assumption — OP_UP can connect non-linear
+* screens (e.g. OP_UP,5,6,7 from screen 3, where right-neighbor
+* is screen 7, not screen 6). The snap right-gap fill deposited
+* the leftmost bytes of scroll_up_rbank into the playfield; the
+* number of those bytes equals up_src_start in the compute_up_
+* align :pos case (up_dst_start=0, up_count=110-up_src_start, so
+* rgap_count = 110-(0+up_count) = up_src_start). In the :neg case
+* up_src_start=0 and no right-gap was filled — off=0 is correct.
+* Setting scroll_src_off = up_src_start makes the next right-scroll
+* pull scroll_up_rbank byte up_src_start next, continuing smoothly
+* from the right-gap (no duplicated bytes).
  lda scroll_up_screen
  sta current_screen
  stz scroll_up_enabled
  jsr load_screen_bounds
- lda current_screen
- clc
- adc #$04
+ lda scroll_up_rbank
  sta scroll_src_bank
- stz scroll_src_off
+ lda up_src_start
+ sta scroll_src_off
  lda current_screen
  beq :snap_no_left
  clc
@@ -5321,6 +5516,27 @@ scroll_up
  sta scroll_lsrc_bank
  stz scroll_lsrc_off
 :snap_loaded
+* Reposition player to the upper screen's walkable area.
+* Scan bounds_tbl_hi from the bottom up to find the lowest
+* walkable row, then place the player there.
+ ldx #199
+:find_floor
+ lda bounds_tbl_hi,x   ; max_x for row X
+ bne :found_floor       ; non-zero = walkable
+ dex
+ bne :find_floor
+:found_floor
+ txa
+ sta IMAGE01_YPOS       ; update global for draw_sprite
+* Also write to sprite info block so it persists after load_sprite
+ ldy #0
+ sta (info_ptr),y       ; +0 ypos
+ ldy #32
+ sta (info_ptr),y       ; +32 prev_ypos
+ ldy #30
+ lda #$03
+ sta (info_ptr),y       ; dirty = erase+draw
+
 * Blit the new playfield to screen
  clc
  xce
@@ -6795,7 +7011,8 @@ IMAGE01_XPOS HEX 0100
 IMAGE01_YPOS HEX 6400
 IMAGE01_MIRROR HEX 0000
 x_scroll_idx HEX 0000
-scroll_src_bank dfb $04    ; current source bank for right scroll (= $03 + current_screen + 1)
+scroll_src_bank dfb $04    ; current source bank for right scroll (= $03 + scroll_right_screen after OP_RIGHT)
+transition_pending dfb 0   ; set by scroll_right on wrap, consumed by sync_current_screen
 scroll_lsrc_bank dfb $03   ; current source bank for left scroll (= $03 + current_screen - 1, invalid until cs>0)
 scroll_lsrc_off dfb 0      ; offset (counts down from 109 toward 0)
 draw_bank da $0001         ; bank for draw_sprite destination (default $01, shadowed to $E1)
