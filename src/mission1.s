@@ -181,7 +181,10 @@ level_script
 ;    dw roper_sprite
 ;    db $58,$5f,$01,BEHAV_FACEOFF  ; xpos, ypos, orientation, behavior
 
-    db OP_WAITCLR
+    db OP_WAITX
+    dw 450
+    db OP_UP,10,8,$ff     ; Up to screen 8, left=screen 9, right=none
+
     db OP_END           ; end of level
 
 sfx_table
@@ -742,13 +745,20 @@ bounds_scr6
  dfb 0,109
  --^
 
-* Screen 7: same default
+* Screen 7 (upper level): walkable band matches screen 5's
+* upper road (y=40-59). Player transitions in from screen 5
+* at this y band. Ladder at world byte 530..537 extends from
+* y=0..59 (overlaps walkable) so up-climb moves out of the
+* band once scroll_up is enabled.
 bounds_scr7
- LUP 80
+ LUP 40
  dfb 0,0
  --^
- LUP 120
+ LUP 20
  dfb 0,109
+ --^
+ LUP 140
+ dfb 0,0
  --^
 
 * Screen 8: same default

@@ -431,8 +431,11 @@ run_script
 
 :not_left
  cmp #OP_UP
- bne :not_up_op
-* OP_UP: param1=target, param2=left-neighbor, param3=right-neighbor
+ beq :do_op_up
+ jmp :not_up_op        ; inverted — target moved out of branch range
+:do_op_up
+* OP_UP: param1=target, param2=left-neighbor, param3=right-neighbor.
+* $FF in any neighbor slot = no fill on that side.
  ldy #1
  lda [script_pc],y     ; target screen index
  sta scroll_up_screen
@@ -441,14 +444,77 @@ run_script
  sta scroll_up_bank
  ldy #2
  lda [script_pc],y     ; left-neighbor screen index
+ cmp #$FF
+ beq :op_up_no_lbank
  clc
  adc #$03
  sta scroll_up_lbank
+ bra :op_up_lbank_done
+:op_up_no_lbank
+ stz scroll_up_lbank   ; sentinel: skip left-gap fill
+:op_up_lbank_done
  ldy #3
  lda [script_pc],y     ; right-neighbor screen index
+ cmp #$FF
+ beq :op_up_no_rbank
  clc
  adc #$03
  sta scroll_up_rbank
+ bra :op_up_rbank_done
+:op_up_no_rbank
+ stz scroll_up_rbank   ; sentinel: skip right-gap fill
+:op_up_rbank_done
+* Per-target anchor and content width. scroll_up_anchor is
+* the target's left-edge world byte, which compute_up_align
+* subtracts from world_offset. scroll_up_twidth is the target
+* content width (for narrow upper screens). Default is screen
+* 5 over screen 3 (anchor=330, full width 110).
+ stz scroll_up_twidth+1
+ lda scroll_up_screen
+ cmp #10
+ bne :op_up_anchor_default
+* Screen 10 is 135px (67 bytes) wide. Its content is left-
+* aligned in the bank (bytes 0..66 per scanline) with the
+* ladder art near its left edge. Only the leftmost ~26 bytes
+* of screen 10 are placed in the playfield's rightmost area
+* so the ladder lines up with screen 7's ladder at playfield
+* byte ~90. With world_offset=440 and anchor=524:
+*   delta = 440-524 = -84 (:neg case)
+*   up_dst_start = 84, up_src_start = 0
+*   up_count = min(twidth=67, 110-84=26) = 26
+* screen 10 bytes 0..25 appear at playfield 84..109, screen 8
+* fills 0..83 via lgap, no rgap.
+ lda #<524
+ sta scroll_up_anchor
+ lda #>524
+ sta scroll_up_anchor+1
+ lda #67
+ sta scroll_up_twidth
+ bra :op_up_anchor_done
+:op_up_anchor_default
+ lda #<330
+ sta scroll_up_anchor
+ lda #>330
+ sta scroll_up_anchor+1
+ lda #110
+ sta scroll_up_twidth
+:op_up_anchor_done
+* Per-left-neighbor width: how wide the left neighbor's
+* content is (used by the lgap fill to read its rightmost
+* bytes into the playfield left gap). 16-bit store so the
+* 16-bit adc in the fill math reads a clean value.
+ stz scroll_up_lwidth+1
+ ldy #2
+ lda [script_pc],y     ; raw left-neighbor index (pre-wrap)
+ cmp #6
+ bne :op_up_lw_default
+ lda #52               ; screen 6 is 104px (52 bytes) wide
+ sta scroll_up_lwidth
+ bra :op_up_lw_done
+:op_up_lw_default
+ lda #110              ; full-width default
+ sta scroll_up_lwidth
+:op_up_lw_done
  lda #182
  sta scroll_up_off
  lda #1
@@ -902,7 +968,19 @@ scroll_up_screen     dfb 0
 scroll_up_bank       dfb $03
 scroll_up_off        dfb 0
 scroll_up_lbank      dfb $03     ; bank of upper screen's left neighbor
+                                  ; (0 = sentinel, skip left-gap fill)
 scroll_up_rbank      dfb $03     ; bank of upper screen's right neighbor
+                                  ; (0 = sentinel, skip right-gap fill)
+scroll_up_anchor     dw 330       ; world byte position of target's left edge
+                                  ; (= UP_X_ANCHOR default for screen 5)
+scroll_up_lwidth     dw 52        ; left-neighbor content width in bytes
+                                  ; (declared 16-bit for use with adc in
+                                  ; the lgap fill's row-address math)
+scroll_up_twidth     dw 110       ; target content width in bytes (full-
+                                  ; width default). compute_up_align
+                                  ; clamps up_count against this so the
+                                  ; fill never reads past the target's
+                                  ; real content.
 npc_buf_next dw npc_buffers   ; next free NPC buffer address
 
 * Cheat: invincibility toggle
@@ -5450,9 +5528,13 @@ scroll_up
  bne :ufill_row
 :ufill_skip
 
-* Only fill the left gap if up_dst_start > 0 (screen 5 doesn't
-* cover the leftmost bytes). Fill exactly up_dst_start bytes
-* from screen 6's rightmost content (width UP_LEFT_WIDTH).
+* Only fill the left gap if up_dst_start > 0 (target doesn't
+* cover the leftmost bytes) AND a left-neighbor bank is set
+* (scroll_up_lbank=0 is the sentinel for "$FF in OP_UP" =
+* skip left fill).
+ lda scroll_up_lbank
+ and #$00FF
+ beq :lgap_done
  lda up_dst_start
  beq :lgap_done
  lda :ufill_top
@@ -5470,7 +5552,7 @@ scroll_up
  clc
  adc #$2000
  clc
- adc #UP_LEFT_WIDTH
+ adc scroll_up_lwidth
  sec
  sbc up_dst_start
  sta $F0                ; src = lbank/(2000 + row*$A0 + width - gap)
@@ -5507,7 +5589,11 @@ scroll_up
 
 * Fill right gap from upper screen's right neighbor.
 * If up_dst_start + up_count < 110, fill the remaining bytes
-* from scroll_up_rbank's leftmost columns.
+* from scroll_up_rbank's leftmost columns. Skip entirely if
+* scroll_up_rbank=0 ($FF sentinel from OP_UP = no right fill).
+ lda scroll_up_rbank
+ and #$00FF
+ beq :rgap_done
  lda up_dst_start
  clc
  adc up_count
@@ -5658,12 +5744,16 @@ scroll_up
  bne :srow
 :snap_skip_copy
 
-* Only fill left gap in snap if up_dst_start > 0
+* Only fill left gap in snap if up_dst_start > 0 AND an lbank
+* is set (scroll_up_lbank=0 sentinel skips).
+ lda scroll_up_lbank
+ and #$00FF
+ beq :snap_lgap_done
  lda up_dst_start
  beq :snap_lgap_done
  lda #$2000
  clc
- adc #UP_LEFT_WIDTH
+ adc scroll_up_lwidth
  sec
  sbc up_dst_start       ; src = lbank/(2000 + width - gap)
  sta $F0
@@ -5695,7 +5785,11 @@ scroll_up
  bne :snap_lgrow
 :snap_lgap_done
 
-* Fill right gap in snap from upper screen's right neighbor
+* Fill right gap in snap from upper screen's right neighbor.
+* Skip entirely if scroll_up_rbank=0 ($FF sentinel).
+ lda scroll_up_rbank
+ and #$00FF
+ beq :snap_rgap_done
  lda up_dst_start
  clc
  adc up_count
@@ -5862,9 +5956,36 @@ up_count     ds 2       ; bytes per row to copy (0 = skip)
 *----------------------------------------------------------
 compute_up_align
  mx %00                 ; tell Merlin: 16-bit A on entry
+* Per-target override: screen 10 uses a fixed placement so a
+* specific region of the playfield always shows screen 10's
+* content (lined up with screen 7's ladder) regardless of where
+* the player is standing when OP_UP fires.
+*
+* up_dst_start moves WHERE in the playfield screen 10 sits —
+* decreasing it shifts the screen-10 window (and the screen-8
+* boundary) to the left in the playfield. The lgap fill reads
+* from lbank at offset (lwidth - dst_start), so screen 8's
+* visible slice shifts automatically to match.
+*
+* up_src_start selects WHICH slice of screen 10 is shown —
+* changing it only swaps bytes within the same playfield area
+* (doesn't move the boundary).
+ sep $20
+ lda scroll_up_screen
+ cmp #10
+ rep $20
+ bne :cua_compute
+ lda #00
+ sta up_src_start
+ lda #64
+ sta up_dst_start
+ lda #26
+ sta up_count
+ rts
+:cua_compute
  lda world_offset
  sec
- sbc #UP_X_ANCHOR
+ sbc scroll_up_anchor
  sta up_src_start       ; signed 16-bit
  bpl :pos
 * Negative src_start: dst_start = -src_start, src_start = 0
@@ -5872,20 +5993,27 @@ compute_up_align
  inc                    ; A = -A
  sta up_dst_start
  cmp #110
- bcs :no_overlap        ; player too far left of screen 5
+ bcs :no_overlap        ; player too far left of target
  stz up_src_start
-* count = 110 - dst_start
+* count = min(twidth, 110 - dst_start): fill to playfield's
+* right edge, but no further than the target's real width.
  lda #110
  sec
  sbc up_dst_start
+ cmp scroll_up_twidth
+ bcc :neg_set           ; 110-dst_start < twidth
+ lda scroll_up_twidth
+:neg_set
  sta up_count
  rts
 :pos
-* src_start >= 0
- cmp #110
- bcs :no_overlap        ; player too far right of screen 5
+* src_start >= 0. cmp twidth: if src_start >= twidth, we've
+* scrolled past the target's content entirely.
+ cmp scroll_up_twidth
+ bcs :no_overlap
  stz up_dst_start
- lda #110
+* count = twidth - src_start (= remaining target bytes).
+ lda scroll_up_twidth
  sec
  sbc up_src_start
  sta up_count
