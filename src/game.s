@@ -280,7 +280,7 @@ game_loop
  jsr erase_all
  jsr draw_all
  jsr draw_overlay
- jsr draw_ladder_debug  ; comment out to hide ladder outline
+* jsr draw_ladder_debug  ; uncomment to outline ladders for debug
  bra game_loop
 
 *----------------------------------------------------------
@@ -3179,9 +3179,12 @@ process_input
 :up_do_move
  dec IMAGE01_YPOS
  lda via_ladder
- beq :up_no_climb
+ beq :up_walkframe
  jsr advance_climb
-:up_no_climb
+ bra :up_after_anim
+:up_walkframe
+ jsr advance_walk        ; vertical walk — cycle walk frames
+:up_after_anim
  jsr save_sprite
  jsr resort_sprite_table
 :skip_up rts
@@ -3196,9 +3199,12 @@ process_input
  bcs :skip_down       ; blocked
  inc IMAGE01_YPOS
  lda via_ladder
- beq :down_no_climb
+ beq :down_walkframe
  jsr advance_climb
-:down_no_climb
+ bra :down_after_anim
+:down_walkframe
+ jsr advance_walk       ; vertical walk — cycle walk frames
+:down_after_anim
  jsr save_sprite
  jsr resort_sprite_table
 :skip_down rts
@@ -5979,8 +5985,10 @@ compute_up_align
  sta up_src_start
  lda #64
  sta up_dst_start
- lda #26
- sta up_count
+ lda #46
+ sta up_count         ; covers playfield 64..109 entirely so the
+                      ; rgap region (no right neighbor) doesn't
+                      ; leak old $50 content on the right
  rts
 :cua_compute
  lda world_offset
