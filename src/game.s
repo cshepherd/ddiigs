@@ -267,12 +267,17 @@ over1
 *==========================================================
 game_loop
  jsr wait_for_vbl
- jsr erase_all
  jsr update_overlay
  jsr process_input
  jsr run_script
  jsr update_npcs       ; runs behavior state machines
  jsr update_anims
+* erase and draw run back-to-back at the end of the frame so
+* sprites are never left in an "erased but not yet redrawn"
+* state while the CPU is doing per-frame work. With SHR
+* shadowing continuously enabled, any gap here is visible on
+* screen as flicker — especially on moving enemies.
+ jsr erase_all
  jsr draw_all
  jsr draw_overlay
  bra game_loop
@@ -884,6 +889,9 @@ npc_buf_next dw npc_buffers   ; next free NPC buffer address
 
 * Cheat: invincibility toggle
 god_mode       dfb 0          ; 0 = normal, 1 = invincible
+
+* Alternates between punch1 and punch2 each time 'p' is pressed
+punch_toggle   dfb 0
 
 *----------------------------------------------------------
 * Y-axis movement bounds table. 200 entries (one per
@@ -3094,19 +3102,23 @@ process_input
  jsr start_anim
  rts
 :not_kick cmp #'k'
- bne :not_punch1
+ bne :not_punch
  lda #<anim_kick
  ldx #>anim_kick
  jsr start_anim
  rts
-:not_punch1 cmp #'p'
- bne :not_punch2
+:not_punch cmp #'p'
+ bne :not_invuln
+* Alternate between punch1 and punch2 each press
+ lda punch_toggle
+ eor #$01
+ sta punch_toggle
+ bne :use_punch2
  lda #<anim_punch1
  ldx #>anim_punch1
  jsr start_anim
  rts
-:not_punch2 cmp #'P'
- bne :not_invuln
+:use_punch2
  lda #<anim_punch2
  ldx #>anim_punch2
  jsr start_anim
@@ -3415,6 +3427,13 @@ start_anim
  jsr save_sprite
  rts
 
+* Fallen-pose vertical offset. The frame 1 ("fallen") pose of
+* the enemy fall animations is much shorter than their standing
+* pose, so drawn at the same ypos the body appears up where the
+* head used to be. We bump ypos by this amount on entry to the
+* fallen frame and un-bump on animation end / death.
+FALL_Y_OFFSET = 24
+
 *----------------------------------------------------------
 * update_anims - Iterate sprite_table, advance animation
 * timers, update frames.
@@ -3503,7 +3522,9 @@ update_anims
 * Compare with num_frames
  ldy #0
  cmp (anim_ptr),y     ; num_frames
- bcc :load_frame      ; frame < num_frames, load it
+ bcs :past_last_frame ; inverted — :load_frame is now out of range
+ jmp :load_frame
+:past_last_frame
 * Animation complete — check for loop
  ldy #2
  lda (anim_ptr),y     ; flags
@@ -3513,7 +3534,7 @@ update_anims
  ldy #26
  lda #0
  sta (info_ptr),y     ; anim_frame = 0
- bra :load_frame
+ jmp :load_frame
 :anim_done
 * Check if this was a fall_anim and punch_count >= 6 (death)
  ldy #50
@@ -3528,7 +3549,26 @@ update_anims
  lda (info_ptr),y     ; punch_count
  cmp #6
  bcc :normal_end
-* Death: set $FFFF sentinel, mark dirty for erase+removal
+* Death: set $FFFF sentinel, mark dirty for erase+removal.
+* Snapshot current pos/size to prev_* so erase_all clears the
+* fallen sprite at its actually-drawn (possibly bumped) rect
+* instead of the stale frame-0 values.
+ ldy #0
+ lda (info_ptr),y
+ ldy #32
+ sta (info_ptr),y     ; prev_ypos <- current ypos
+ ldy #2
+ lda (info_ptr),y
+ ldy #34
+ sta (info_ptr),y     ; prev_xpos <- current xpos
+ ldy #10
+ lda (info_ptr),y
+ ldy #36
+ sta (info_ptr),y     ; prev_frame_x <- current frame_x
+ ldy #12
+ lda (info_ptr),y
+ ldy #38
+ sta (info_ptr),y     ; prev_frame_y <- current frame_y
  ldy #24
  lda #$FF
  sta (info_ptr),y     ; anim_ptr = $FFFF
@@ -3540,6 +3580,34 @@ update_anims
  jmp :next
 
 :normal_end
+* If the anim that just ended was a multi-frame fall_anim (so
+* we bumped ypos on entry to the fallen frame), un-bump now:
+* snapshot prev_ypos from the bumped current so erase_all clears
+* the fallen sprite at its drawn position, then subtract the
+* offset so the restored idle frame draws at the logical height.
+* anim_bfall is a 1-frame placeholder, so num_frames<2 skips.
+ ldy #50
+ lda (info_ptr),y
+ cmp anim_ptr
+ bne :ne_no_unbump
+ ldy #51
+ lda (info_ptr),y
+ cmp anim_ptr+1
+ bne :ne_no_unbump
+ ldy #0
+ lda (anim_ptr),y     ; num_frames
+ cmp #2
+ bcc :ne_no_unbump
+ ldy #0
+ lda (info_ptr),y     ; current ypos (bumped)
+ ldy #32
+ sta (info_ptr),y     ; prev_ypos <- bumped
+ ldy #0
+ lda (info_ptr),y
+ sec
+ sbc #FALL_Y_OFFSET
+ sta (info_ptr),y     ; ypos -= FALL_Y_OFFSET
+:ne_no_unbump
 * Terminate animation, restore idle frame
  ldy #24
  lda #0
@@ -3640,6 +3708,29 @@ update_anims
  jsr check_punch_hit
 :no_punch_hit
  jsr save_anim_state
+* If this was the 0→1 transition of the sprite's fall_anim, bump
+* ypos by FALL_Y_OFFSET so the shorter "fallen" frame draws at
+* feet level instead of the standing sprite's head level.
+* prev_ypos is intentionally left alone — erase_all needs it to
+* clear the previous (standing-height) frame this same VBL.
+ ldy #26
+ lda (info_ptr),y
+ cmp #1
+ bne :no_fall_bump
+ ldy #50
+ lda (info_ptr),y
+ cmp anim_ptr
+ bne :no_fall_bump
+ ldy #51
+ lda (info_ptr),y
+ cmp anim_ptr+1
+ bne :no_fall_bump
+ ldy #0
+ lda (info_ptr),y
+ clc
+ adc #FALL_Y_OFFSET
+ sta (info_ptr),y
+:no_fall_bump
 
 :next
  lda spr_ptr
@@ -5779,7 +5870,7 @@ anim_wfall
  dfb $00             ; flags: none (one-shot)
  dfb $14,$23,3       ; WFALL: 20 wide, 35 tall, 3 VBLs
   hex 0000             ; patched: WFALL
- dfb $12,$1F,60      ; WFALLEN: 18 wide, 15 tall, 60 VBLs
+ dfb $12,$0F,60      ; WFALLEN: 18 wide, 15 tall, 60 VBLs
   hex 0000             ; patched: WFALLEN
 
 anim_bfall

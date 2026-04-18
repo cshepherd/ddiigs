@@ -282,7 +282,7 @@ def format_block(block: SpriteBlock) -> str:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("input")
+    ap.add_argument("input", help="input file path, or '-' for stdin")
     ap.add_argument("-o", "--output")
     ap.add_argument("--transparent", default="4")
     ap.add_argument("--replace-mask")
@@ -299,7 +299,10 @@ def main():
         if len(replace_mask) != 1:
             sys.exit("replace-mask must be 1 hex digit")
 
-    text = Path(args.input).read_text()
+    if args.input == "-":
+        text = sys.stdin.read()
+    else:
+        text = Path(args.input).read_text()
 
     block, ltrim, ttrim = optimize_block(
         text,
