@@ -372,17 +372,34 @@ run_script
  ldy #1
  lda [script_pc],y
  sta scroll_right_screen
-* Each screen N is loaded into bank $03 + N. If scroll_src_bank
-* already points at the target bank, the previous scroll wrap
-* (or initial state) naturally left us pointed at the right
-* screen — don't disturb scroll_src_off, or we'd rewind past
-* content already revealed and cause visible repeats. Only
-* override when the target differs (non-linear jumps, e.g.
-* OP_RIGHT,7 from screen 5 where linear would point at $09).
+* scroll_src_bank represents "next content to bring in on right
+* scroll". Each screen N is loaded into bank $03+N.
+*
+* Three cases for scroll_src_bank at this point:
+*   a) Already = target bank → previous wrap left us here; keep
+*      scroll_src_off so no revealed content is repeated.
+*   b) Pointing at current_screen's bank → still have unseen
+*      bytes of the current screen to scroll through (typical
+*      after OP_UP in :neg alignment); leave scroll_src alone
+*      so we finish the current screen first. The wrap at
+*      scroll_src_off=110 will transition to target via the
+*      scroll_right_screen+3 logic in :fn_wrap.
+*   c) Stale (pointing at unrelated bank) → override with
+*      target and restart at off=0.
  clc
  adc #$03
  cmp scroll_src_bank
  beq :rt_same_bank
+ pha                   ; save target bank
+ lda current_screen
+ clc
+ adc #$03
+ cmp scroll_src_bank
+ bne :rt_override
+ pla                   ; scroll_src on current screen — discard
+ bra :rt_same_bank     ;   target, don't touch off
+:rt_override
+ pla                   ; retrieve target bank
  sta scroll_src_bank
  stz scroll_src_off
 :rt_same_bank
@@ -1539,6 +1556,9 @@ SCROLL_THRESH = 80    ; player xpos at/over which walking scrolls right
 LEFT_SCROLL_THRESH = 30 ; player xpos at/under which walking scrolls left
 UP_SCROLL_THRESH = 90 ; player ypos at/under which walking-up scrolls
 PLAYFIELD_EDGE = 109   ; rightmost byte position in the 110-byte playfield
+PLAYER_MAX_X = 98      ; rightmost xpos the player can walk to — ~22px inset
+                       ; from PLAYFIELD_EDGE so Billy doesn't walk into the
+                       ; black area past the playable background.
 * Upper screen alignment: world byte position of screen 5's
 * leftmost pixel. Originally screen 5 was placed at world
 * byte 4*110 = 440 (above screen 4); the user's art has it
@@ -1712,32 +1732,64 @@ fo_approach
  ldy #38
  sta (info_ptr),y      ; -> prev_frame_y
 
-* Compare NPC X to target X. Move 1 pixel toward target.
-* Set mirror to match motion direction (left = mirror=1).
+* Compare NPC X to target X. Move 1 pixel toward target, but
+* only commit if the proposed X is still inside the row's
+* walkable bounds (keeps NPCs from walking off the playfield).
+* Mirror is updated unconditionally so the NPC still faces the
+* player when blocked.
  ldy #2
  lda (info_ptr),y      ; current xpos
  cmp fo_target_x
  beq :x_at_target
  bcs :x_decrement
-* xpos < target, increment (moving right)
- clc
- adc #1
- sta (info_ptr),y
+* xpos < target, try xpos + 1. Check the RIGHT edge
+* (xpos + frame_x) against bounds so wider frames can't
+* extend past bmax.
  ldy #4
  lda #$00
  sta (info_ptr),y      ; mirror = 0 (facing right)
+ ldy #2
+ lda (info_ptr),y      ; current xpos
+ ldy #10
+ clc
+ adc (info_ptr),y      ; + frame_x = new right edge
+ sta chk_xpos
+ ldy #0
+ lda (info_ptr),y      ; current ypos
+ jsr check_y_bounds
+ bcs :x_at_target      ; blocked by row bounds
+ ldy #2
+ lda (info_ptr),y
+ clc
+ adc #1
+ sta (info_ptr),y
  bra :move_y
 :x_decrement
- sec
- sbc #1
- sta (info_ptr),y
+* Try xpos - 1. Left-edge check is sufficient since the
+* sprite extends only to the right of xpos.
  ldy #4
  lda #$01
  sta (info_ptr),y      ; mirror = 1 (facing left)
+ ldy #2
+ lda (info_ptr),y
+ sec
+ sbc #1
+ sta chk_xpos
+ ldy #0
+ lda (info_ptr),y      ; current ypos
+ jsr check_y_bounds
+ bcs :x_at_target
+ ldy #2
+ lda chk_xpos
+ sta (info_ptr),y
 :x_at_target
 
 :move_y
-* Move toward player Y at 1 pixel/frame (bounds-checked)
+* Move toward player Y at 1 pixel/frame (bounds-checked).
+* When moving down, check the BOTTOM of the sprite
+* (ypos + frame_y) so tall frames can't extend past the
+* bottom of the playfield. When moving up, top-edge check
+* is sufficient.
  ldy #2
  lda (info_ptr),y
  sta chk_xpos          ; NPC's current X
@@ -1746,9 +1798,10 @@ fo_approach
  cmp fo_plr_y
  beq :y_at_target
  bcs :y_decrement
-* Try Y + 1
+* Try Y + 1 — check new bottom row = ypos + frame_y
+ ldy #12
  clc
- adc #1
+ adc (info_ptr),y      ; A = ypos + frame_y = new bottom after move
  jsr check_y_bounds
  bcs :y_at_target      ; blocked, skip Y move
  ldy #0
@@ -2599,8 +2652,19 @@ erase_all
  ldy #30
  lda (info_ptr),y
  and #$02
- beq :skip_erase
-* Load previous position/size for erase
+ bne :do_erase
+ jmp :skip_erase
+:do_erase
+* Compute the erase rect. It must cover both the prev-drawn
+* pixels (so no ghost) and the area the new frame will draw
+* (so transparent pixels in a grown/shifted frame don't reveal
+* stale content). Full prev∪current rect is the correct bound.
+* mark_overlapping is called with the prev rect only, so we
+* don't force redundant redraws of adjacent sprites when the
+* rect merely grew by 1 byte — that was the flicker source in
+* the earlier full-union attempt.
+*
+* First, pass the prev rect to mark_overlapping.
  ldy #32
  lda (info_ptr),y     ; prev_ypos
  sta IMAGE01_YPOS
@@ -2613,15 +2677,75 @@ erase_all
  ldy #38
  lda (info_ptr),y     ; prev_frame_y
  sta FRAME_Y
-* Use prev_frame_x (already loaded) for erase width. Don't
-* override with the current anim's max_width: when an animation
-* has just switched (walk -> punch -> fall, etc.) the new anim's
-* max_width can be narrower than the width of the frame that
-* was actually drawn last, leaving a sliver un-erased.
-* prev_frame_x is the exact width draw_all used last frame.
- jsr erase
-* Check if erased area overlaps other sprites
  jsr mark_overlapping
+* Now compute the union rect for the actual erase.
+* left = min(prev_xpos, xpos)
+ ldy #34
+ lda (info_ptr),y     ; prev_xpos
+ ldy #2
+ cmp (info_ptr),y
+ bcc :left_prev
+ lda (info_ptr),y
+ bra :left_set
+:left_prev
+ ldy #34
+ lda (info_ptr),y
+:left_set
+ sta IMAGE01_XPOS
+* right = max(prev_xpos + prev_frame_x, xpos + frame_x)
+ ldy #34
+ lda (info_ptr),y
+ ldy #36
+ clc
+ adc (info_ptr),y
+ sta :ea_tmp
+ ldy #2
+ lda (info_ptr),y
+ ldy #10
+ clc
+ adc (info_ptr),y
+ cmp :ea_tmp
+ bcc :rkeep
+ sta :ea_tmp
+:rkeep
+ lda :ea_tmp
+ sec
+ sbc IMAGE01_XPOS
+ sta FRAME_X
+* top = min(prev_ypos, ypos)
+ ldy #32
+ lda (info_ptr),y
+ ldy #0
+ cmp (info_ptr),y
+ bcc :top_prev
+ lda (info_ptr),y
+ bra :top_set
+:top_prev
+ ldy #32
+ lda (info_ptr),y
+:top_set
+ sta IMAGE01_YPOS
+* bottom = max(prev_ypos + prev_frame_y, ypos + frame_y)
+ ldy #32
+ lda (info_ptr),y
+ ldy #38
+ clc
+ adc (info_ptr),y
+ sta :ea_tmp
+ ldy #0
+ lda (info_ptr),y
+ ldy #12
+ clc
+ adc (info_ptr),y
+ cmp :ea_tmp
+ bcc :bkeep
+ sta :ea_tmp
+:bkeep
+ lda :ea_tmp
+ sec
+ sbc IMAGE01_YPOS
+ sta FRAME_Y
+ jsr erase
 * Clear bit 1 (needs_erase), set bit 0 (needs_draw) so sprite is redrawn
  ldy #30
  lda (info_ptr),y
@@ -2637,6 +2761,8 @@ erase_all
  inc spr_ptr+1
 :jloop jmp :loop
 :done rts
+
+:ea_tmp dfb 0
 
 *----------------------------------------------------------
 * draw_all - Iterate sprite_table, load each sprite, draw.
@@ -3081,7 +3207,7 @@ process_input
  bra :finish_right
 :walk_right
  lda IMAGE01_XPOS
- cmp #PLAYFIELD_EDGE
+ cmp #PLAYER_MAX_X
  bcs :clamp_right      ; at right edge of playfield
  inc IMAGE01_XPOS
  inc abs_x
@@ -4767,7 +4893,26 @@ scroll_right
  jmp :fill_done
 :fn_wrap
  stz scroll_src_off
+* If scroll_src was pulling from the CURRENT screen's bank, we
+* were scrolling through the current screen itself (e.g. after
+* OP_UP :neg set scroll_src to the upper screen + up_count) and
+* now need to transition to scroll_right_screen's bank.
+* Otherwise we were already pulling from scroll_right_screen's
+* bank (typical linear scroll completing a transition), so the
+* next source is the linear successor — just inc.
+ lda current_screen
+ clc
+ adc #$03
+ cmp scroll_src_bank
+ bne :fw_linear
+ lda scroll_right_screen
+ clc
+ adc #$03
+ sta scroll_src_bank
+ bra :fw_wrap_done
+:fw_linear
  inc scroll_src_bank
+:fw_wrap_done
  lda #1
  sta transition_pending     ; signal sync_current_screen
  jmp :fill_done
@@ -4803,13 +4948,28 @@ scroll_right
  sta $F3
  dex
  bne :split_1
-* Second pass: fill bytes 108-109 from NEXT bank offset 0
+* Second pass: fill bytes 108-109 from NEXT bank offset 0.
+* Same conditional as :fn_wrap — if scroll_src was on the
+* current screen, transition to scroll_right_screen's bank;
+* otherwise linear inc to the next screen.
  lda #$2000
  sta $F0
  lda #$206C            ; dst = $50/(2000+108)
  sta $F3
  sep $20
+ lda current_screen
+ clc
+ adc #$03
+ cmp scroll_src_bank
+ bne :split_linear
+ lda scroll_right_screen
+ clc
+ adc #$03
+ sta scroll_src_bank
+ bra :split_bank_done
+:split_linear
  inc scroll_src_bank
+:split_bank_done
  lda #1
  sta transition_pending     ; signal sync_current_screen
  lda scroll_src_bank
@@ -4854,6 +5014,11 @@ scroll_right
  lda #$00
  sta draw_bank+1
  jsr draw_sprite
+* Composite the HUD overlay (if active) onto $55 too, so the
+* stack_blit preserves it. Otherwise the scrolled $55 overwrites
+* the overlay on $E1 and it flickers until draw_overlay redraws
+* it at the end of the frame.
+ jsr draw_overlay
 
 * Step 5: Stack-blit $55 -> $E1 (screen) for flicker-free update
  clc
@@ -5125,6 +5290,7 @@ scroll_left
  lda #$00
  sta draw_bank+1
  jsr draw_sprite
+ jsr draw_overlay      ; composite HUD onto $55
  clc
  xce
  rep $30
@@ -5419,6 +5585,7 @@ scroll_up
  lda #$00
  sta draw_bank+1
  jsr draw_sprite
+ jsr draw_overlay      ; composite HUD onto $55
  clc
  xce
  rep $30
@@ -5573,27 +5740,41 @@ scroll_up
  sec
  xce
 * Update current_screen and bank state.
-* IMPORTANT: scroll_src must use the actual right-neighbor bank
-* specified by OP_UP (scroll_up_rbank), not a linear
-* current_screen+1 assumption — OP_UP can connect non-linear
-* screens (e.g. OP_UP,5,6,7 from screen 3, where right-neighbor
-* is screen 7, not screen 6). The snap right-gap fill deposited
-* the leftmost bytes of scroll_up_rbank into the playfield; the
-* number of those bytes equals up_src_start in the compute_up_
-* align :pos case (up_dst_start=0, up_count=110-up_src_start, so
-* rgap_count = 110-(0+up_count) = up_src_start). In the :neg case
-* up_src_start=0 and no right-gap was filled — off=0 is correct.
-* Setting scroll_src_off = up_src_start makes the next right-scroll
-* pull scroll_up_rbank byte up_src_start next, continuing smoothly
-* from the right-gap (no duplicated bytes).
+* scroll_src must reflect what's NEXT to bring in on right-scroll:
+*
+* :pos case (up_dst_start=0, up_src_start>0): the snap already
+* filled the rightmost up_src_start bytes of the playfield with
+* scroll_up_rbank bytes 0..up_src_start-1 (rgap fill). The next
+* byte to pull is scroll_up_rbank[up_src_start] — so scroll_src
+* points at the right-neighbor bank continuing from where the
+* rgap left off.
+*
+* :neg case (up_dst_start>0, up_src_start=0): the playfield's
+* right portion shows scroll_up_bank bytes 0..up_count-1. There
+* are still (110 - up_count) unseen bytes of the current upper
+* screen to scroll through before we should transition to the
+* right neighbor. scroll_src must point at scroll_up_bank with
+* off=up_count so scroll_right continues revealing the upper
+* screen first. The wrap at scroll_src_off=110 will then pick
+* up scroll_right_screen's bank (via the scroll_right_screen+3
+* wrap logic) for the eventual transition to the right neighbor.
  lda scroll_up_screen
  sta current_screen
  stz scroll_up_enabled
  jsr load_screen_bounds
+ lda up_dst_start
+ beq :snap_pos_src       ; dst_start=0 means :pos or :no_overlap
+ lda scroll_up_bank
+ sta scroll_src_bank
+ lda up_count
+ sta scroll_src_off
+ bra :snap_src_done
+:snap_pos_src
  lda scroll_up_rbank
  sta scroll_src_bank
  lda up_src_start
  sta scroll_src_off
+:snap_src_done
  lda current_screen
  beq :snap_no_left
  clc
@@ -5641,6 +5822,7 @@ scroll_up
  lda #$00
  sta draw_bank+1
  jsr draw_sprite
+ jsr draw_overlay      ; composite HUD onto $55
  clc
  xce
  rep $30
