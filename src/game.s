@@ -280,6 +280,7 @@ game_loop
  jsr erase_all
  jsr draw_all
  jsr draw_overlay
+ jsr draw_ladder_debug  ; comment out to hide ladder outline
  bra game_loop
 
 *----------------------------------------------------------

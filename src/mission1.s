@@ -642,10 +642,19 @@ linda_sprite
 *   y_top (1 byte), y_bottom (1 byte) = 6 bytes per ladder
 * World byte 1 = 2 pixels in 320 mode, so abs pixel 640 = byte 320.
 *==========================================================
-ladders dfb 1                   ; ladder count
- dw 348                         ; x_left (world byte 234 = pixel 468)
+ladders dfb 2                   ; ladder count
+* Ladder 1: Linda descends to screen 3 (lower level).
+ dw 348                         ; x_left (world byte)
  dw 355                         ; x_right
- dfb 0,59                      ; y_top=0 (top of lower screen), y_bottom=59 (top of upper walkable)
+ dfb 0,59                       ; y_top=0, y_bottom=59
+* Ladder 2: screen 7 far right → screen 10 above.
+* Screen 7 spans world bytes 440..549 (UP_X_ANCHOR=330 + 110 for
+* screen 5, then +110 for its right neighbor screen 7). Best
+* guess for "far right" = screen 7 bytes ~90..97 = world 530..537.
+* Verify with draw_ladder_debug outline and adjust if needed.
+ dw 453                         ; x_left (screen 7 byte 90)
+ dw 460                         ; x_right
+ dfb 0,59                       ; y_top=0, y_bottom=59
 
 *==========================================================
 * Per-screen Y bounds tables
