@@ -5818,7 +5818,7 @@ anim_jump
  dfb $01             ; flags: advance position
  dfb $0A,$28,3       ; JUMP1
   hex 0000             ; patched: JUMP1
- dfb $0F,$2A,12      ; JUMP2
+ dfb $0F,$1E,12      ; JUMP2
   hex 0000             ; patched: JUMP2
  dfb $0D,$20,3       ; JUMP3
   hex 0000             ; patched: JUMP3
@@ -5866,11 +5866,11 @@ anim_wpunched
 
 anim_wfall
  dfb 2               ; num_frames
- dfb $14             ; max_width (WFALL is widest at $14)
+ dfb $13             ; max_width (WFALL is widest at $13)
  dfb $00             ; flags: none (one-shot)
- dfb $14,$23,3       ; WFALL: 20 wide, 35 tall, 3 VBLs
+ dfb $13,$21,3       ; WFALL: 19 wide, 33 tall, 3 VBLs
   hex 0000             ; patched: WFALL
- dfb $12,$0F,60      ; WFALLEN: 18 wide, 15 tall, 60 VBLs
+ dfb $10,$0D,60      ; WFALLEN: 16 wide, 13 tall, 60 VBLs
   hex 0000             ; patched: WFALLEN
 
 anim_bfall
