@@ -6148,7 +6148,7 @@ anim_kick
  dfb $00             ; flags: none
  dfb $09,$28,12      ; KICK1
   hex 0000             ; patched: KICK1
- dfb $14,$28,12      ; KICK2
+ dfb $14,$22,12      ; KICK2
   hex 0000             ; patched: KICK2
 
 anim_punch1
