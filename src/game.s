@@ -316,7 +316,7 @@ game_loop
  jsr erase_all
  jsr draw_all
  jsr draw_overlay
- jsr draw_ladder_debug  ; outline ladders for debug
+* jsr draw_ladder_debug  ; uncomment to outline ladders for debug
  bra game_loop
 
 *----------------------------------------------------------
@@ -435,13 +435,24 @@ run_script
  clc
  adc #$03
  cmp scroll_src_bank
- bne :rt_override
- pla                   ; scroll_src on current screen — discard
- bra :rt_same_bank     ;   target, don't touch off
-:rt_override
- pla                   ; retrieve target bank
+ bne :rt_check_midscroll
+ pla                   ; scroll_src on current screen — keep off
+ bra :rt_same_bank
+:rt_check_midscroll
+* scroll_src isn't on current or on target. If we're mid-scroll
+* (scroll_src_off != 0), keep scroll_src alone — this preserves
+* ongoing rneighbor content (e.g. scr11 after OP_UP,12,$FF,11)
+* so scrolling right finishes revealing it before the eventual
+* wrap jumps to scroll_right_screen. Only override if scr_src
+* is genuinely stale (off = 0).
+ lda scroll_src_off
+ bne :rt_keep_midscroll
+ pla                   ; off = 0 → truly stale, override
  sta scroll_src_bank
  stz scroll_src_off
+ bra :rt_same_bank
+:rt_keep_midscroll
+ pla                   ; discard target, keep scroll_src
 :rt_same_bank
  lda #1
  sta scroll_right_enabled
@@ -1116,6 +1127,9 @@ scroll_up_twidth     dw 110       ; target content width in bytes (full-
                                   ; clamps up_count against this so the
                                   ; fill never reads past the target's
                                   ; real content.
+op_up_align_delta    dw 0         ; OP_UP narrow-target: world_offset
+                                  ; delta from anchor, used to shift
+                                  ; Billy's xpos when pre-aligning.
 snap_copy_rows       dw 183       ; row count for snap_transition copies
                                   ; (source, lgap, rgap). 183 = default;
                                   ; narrow-height targets (scr11/12/13)
@@ -3426,6 +3440,40 @@ process_input
  lda IMAGE01_YPOS
  jsr dbg_print_hex8
  jsr dbg_print_nl
+* For narrow targets (scr11/12/13), pin world_offset to the
+* anchor so compute_up_align returns dst_start=0 / up_count=
+* twidth during every scroll iteration — scr12 stays flush at
+* the playfield's left edge throughout the scroll. Billy is on
+* the ladder here, so |delta| is at most the ladder's width and
+* the xpos shift stays inside the playfield.
+ lda scroll_up_screen
+ cmp #11
+ bcc :do_up_align_done
+ cmp #14
+ bcs :do_up_align_done
+ sec
+ lda world_offset
+ sbc scroll_up_anchor
+ sta op_up_align_delta
+ lda world_offset+1
+ sbc scroll_up_anchor+1
+ sta op_up_align_delta+1
+ lda op_up_align_delta
+ ora op_up_align_delta+1
+ beq :do_up_align_done
+ clc
+ lda op_up_align_delta
+ adc IMAGE01_XPOS
+ sta IMAGE01_XPOS
+ ldy #2
+ sta (info_ptr),y
+ ldy #34
+ sta (info_ptr),y
+ lda scroll_up_anchor
+ sta world_offset
+ lda scroll_up_anchor+1
+ sta world_offset+1
+:do_up_align_done
 * Scroll world up by 4 rows with climbing animation
  jsr advance_climb
  jsr save_sprite
@@ -5356,8 +5404,8 @@ scroll_right
  lda scroll_src_off
  cmp #108
  bcc :fill_normal
- beq :fill_split
-* src_off > 108 shouldn't happen, but treat as normal
+ bne :fill_normal       ; src_off > 108 shouldn't happen, treat as normal
+ jmp :fill_split        ; beq out of range; unconditional jmp
 :fill_normal
  rep $20
  mx %00
@@ -5410,18 +5458,33 @@ scroll_right
  jmp :fill_done
 :fn_wrap
  stz scroll_src_off
-* If scroll_src was pulling from the CURRENT screen's bank, we
-* were scrolling through the current screen itself (e.g. after
-* OP_UP :neg set scroll_src to the upper screen + up_count) and
-* now need to transition to scroll_right_screen's bank.
-* Otherwise we were already pulling from scroll_right_screen's
-* bank (typical linear scroll completing a transition), so the
-* next source is the linear successor — just inc.
+* Wrap cases:
+*   a) scroll_src == current's bank — finished scrolling through
+*      the current screen's own content; jump to scroll_right_
+*      screen's bank.
+*   b) scroll_src is some other bank (typically an rneighbor fill
+*      from OP_UP :pos) AND scroll_right_screen points at a non-
+*      adjacent screen — jump to scroll_right_screen's bank so
+*      the narrow-target flow (e.g. scr12+scr11 → scr13) reaches
+*      the intended next screen instead of falling into the bank
+*      that happens to come after scroll_src numerically.
+*   c) Otherwise (plain linear cascade) — inc scroll_src_bank.
  lda current_screen
  clc
  adc #$03
  cmp scroll_src_bank
- bne :fw_linear
+ beq :fw_to_right_screen       ; case a
+ lda scroll_right_screen
+ beq :fw_linear                 ; no explicit target
+ cmp current_screen
+ beq :fw_linear                 ; target = current (no transition)
+ clc
+ adc #$03
+ cmp scroll_src_bank
+ beq :fw_linear                 ; already at target bank
+ sta scroll_src_bank            ; case b: non-linear override
+ bra :fw_wrap_done
+:fw_to_right_screen
  lda scroll_right_screen
  clc
  adc #$03
@@ -6177,7 +6240,9 @@ scroll_up
  rep $30
  mx %00
 * Copy source screen to $50 row-by-row with dynamic horizontal
-* align (computed from world_offset vs UP_X_ANCHOR).
+* align (computed from world_offset vs UP_X_ANCHOR). Narrow-
+* target alignment is already handled at OP_UP time — world_offset
+* is pinned to the anchor there so compute gives dst_start=0.
  jsr compute_up_align
  lda up_count
  beq :snap_skip_copy
@@ -6410,9 +6475,14 @@ scroll_up
  sta scroll_src_off
  bra :snap_src_done
 :snap_pos_src
+* rgap just filled scroll_up_rbank bytes 0..(110-up_count-1) at
+* playfield's right. Next byte to pull on scroll_right is byte
+* (110 - up_count) of rbank.
  lda scroll_up_rbank
  sta scroll_src_bank
- lda up_src_start
+ lda #110
+ sec
+ sbc up_count
  sta scroll_src_off
 :snap_src_done
  lda current_screen
@@ -6564,6 +6634,7 @@ scroll_up
 :lgap_base  ds 2
 :dl_wx     ds 2         ; disable-ladder: Billy's world_x at snap
 :dl_cnt    ds 1         ; disable-ladder: iteration counter
+:snap_wo_delta ds 2     ; narrow-target snap: world_offset - anchor
 
 up_src_start ds 2       ; source byte offset within upper screen scanline
 up_dst_start ds 2       ; dest byte offset within playfield scanline
