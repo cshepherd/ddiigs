@@ -189,7 +189,7 @@ level_script
     db OP_WAITXREV
     dw $02E0              ; wait for player to descend back to abs_x <= 718
     db OP_LEFT,9          ; enable leftward scroll to screen 9 (narrow, 102px)
-    db OP_UP,10,$FF,11    ; enable climb on ladder 3 (scr12→scr10, scr11 rfill)
+    db OP_UP,12,$FF,11    ; enable climb on ladder 3 (scr12→scr10, scr11 rfill)
 
     db OP_WAITX
     dw 640              ; wait for player abs X >= 600
@@ -668,11 +668,11 @@ ladders dfb 3                   ; ladder count
  dw 460                         ; x_right
  dfb 0,59                       ; y_top=0, y_bottom=59
 * Ladder 3: screen 12 → screen 10 above.
-* Positioned at abs_x ≈ $277 (pixel 631 → world byte ≈ 315).
-* abs_x is half-byte granularity so $277/2 = 315.5; centered at
-* bytes 315..322 (8-byte ladder, same width as ladders 1 & 2).
- dw 625                         ; x_left
- dw 632                         ; x_right
+* Positioned at world byte 344..351 (spacebar showed world_x
+* $0158 = 344 at the visible ladder art). check_ladder compares
+* against world_offset+xpos, not abs_x.
+ dw 344                         ; x_left
+ dw 351                         ; x_right
  dfb 0,68                       ; y_top=0, y_bottom=68
 
 *==========================================================

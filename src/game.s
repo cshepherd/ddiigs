@@ -4,7 +4,7 @@
 *----------------------------------------------------------
     org $2000
 
-NinjaTrackerPlus        =   $0F0000
+NinjaTrackerPlus        =   $110000
 NTPprepare              =   NinjaTrackerPlus
 NTPplay                 =   NinjaTrackerPlus+3
 NTPstop                 =   NinjaTrackerPlus+6
@@ -49,21 +49,23 @@ NTPstreamsound          =   NinjaTrackerPlus+24
 * Initialize level from bank $02 data
  jsr init_level
 
-* Load NTPPLAYER to bank $0F starting at $0F/0000
+* Load NTPPLAYER to bank $11 starting at $11/0000 (moved from
+* $0F to make room for MISSION112/113/114 at $0E/$0F/$10).
  lda #<ntpp_path
  sta ntp_open+1
  lda #>ntpp_path
  sta ntp_open+2
- lda #$0F
+ lda #$11
  sta ntp_bank
  jsr load_ntp_file
 
-* Load MISSION1.NTP to banks $10+ starting at $10/0000
+* Load MISSION1.NTP to banks $12+ starting at $12/0000 (moved
+* from $10 to clear room for the new scr13 load).
  lda #<m1ntp_path
  sta ntp_open+1
  lda #>m1ntp_path
  sta ntp_open+2
- lda #$10
+ lda #$12
  sta ntp_bank
  jsr load_ntp_file
 
@@ -165,6 +167,33 @@ NTPstreamsound          =   NinjaTrackerPlus+24
  sta unpack_bank
  jsr load_and_unpack
 
+* Load MISSION112.PAK -> $0E (screen 11)
+ lda #<path112
+ sta p_open+1
+ lda #>path112
+ sta p_open+2
+ lda #$0E
+ sta unpack_bank
+ jsr load_and_unpack
+
+* Load MISSION113.PAK -> $0F (screen 12)
+ lda #<path113
+ sta p_open+1
+ lda #>path113
+ sta p_open+2
+ lda #$0F
+ sta unpack_bank
+ jsr load_and_unpack
+
+* Load MISSION114.PAK -> $10 (screen 13)
+ lda #<path114
+ sta p_open+1
+ lda #>path114
+ sta p_open+2
+ lda #$10
+ sta unpack_bank
+ jsr load_and_unpack
+
 * Enable SHR mode
  lda #$c1
  sta $e0c029
@@ -173,7 +202,7 @@ NTPstreamsound          =   NinjaTrackerPlus+24
  xce
  rep $30
 
-  ldy #$10
+  ldy #$12              ; music banks start at $12
   ldx #$00
   txa
   jsl NTPprepare
@@ -237,7 +266,7 @@ NTPstreamsound          =   NinjaTrackerPlus+24
  ldx #$A604
  jsl $E10000        ; DrawCString
 
- lda #2
+ lda #3
  pha
  lda #195
  pha
@@ -259,10 +288,10 @@ NTPstreamsound          =   NinjaTrackerPlus+24
 
  bra over1
 
-string1 ASC 'DDIIGS',00
-string2 ASC '2026 [cCc]',00
-string3 ASC 'Devel/Eval',00
-string4 ASC 'Purpose Only',00
+string1 ASC '   dd II GS',00
+string2 ASC '  2026 [cCc]',00
+string3 ASC '  Devel/Eval',00
+string4 ASC ' Purpose Only',00
 string5 ASC 'PLAYER 1: 0000000       PLAYER 2: 0000000',00
 
 over1
@@ -495,19 +524,34 @@ run_script
 * subtracts from world_offset. scroll_up_twidth is the target
 * content width (for narrow upper screens). Default is screen
 * 5 over screen 3 (anchor=330, full width 110).
+*
+* scr10 anchor differs by source:
+*   rneighbor=$FF (ladder 2 from scr7): anchor=440, scr10 shares
+*     scr7's world range.
+*   rneighbor=11   (ladder 3 from scr12): anchor=302, placing
+*     scr10 so its ladder art lines up with ladder[2] at world 315.
  stz scroll_up_twidth+1
  lda scroll_up_screen
  cmp #10
  bne :op_up_anchor_default
-* Screen 10 is 135px (67 bytes) wide. anchor=440 places scr10's
-* left edge at world 440 — same as scr7's left edge. With dynamic
-* compute, scr10 byte X lines up with scr7 byte X on the playfield
-* at any world_offset, so whatever scr10 byte carries the ladder
-* art will align with scr7's ladder.
+* scr10 target — pick anchor by rneighbor (pre-wrap raw param):
+*   $FF (ladder 2 from scr7)  → anchor=440
+*   11   (ladder 3 from scr12) → anchor=302
+ ldy #3
+ lda [script_pc],y
+ cmp #$FF
+ bne :op_up_anchor_scr12
  lda #<440
  sta scroll_up_anchor
  lda #>440
  sta scroll_up_anchor+1
+ bra :op_up_anchor_width
+:op_up_anchor_scr12
+ lda #<302
+ sta scroll_up_anchor
+ lda #>302
+ sta scroll_up_anchor+1
+:op_up_anchor_width
  lda #67
  sta scroll_up_twidth
  bra :op_up_anchor_done
@@ -1168,22 +1212,21 @@ sync_current_screen
 * current_screen-- and re-derive scroll_src_bank/off.
 *----------------------------------------------------------
 sync_current_screen_left
-* No left source on screen 0
+* After a left scroll, transition current_screen to whatever
+* OP_LEFT explicitly targeted (scroll_left_screen). OP_LEFT is
+* required to enable left-scroll at all, so scroll_left_screen
+* always holds the intended destination.
  lda current_screen
  beq :scl_done
-* Desired current_screen = scroll_lsrc_bank - $03 + 1 = scroll_lsrc_bank - $02
- lda scroll_lsrc_bank
- sec
- sbc #$02
+ lda scroll_left_screen
  cmp current_screen
  beq :scl_done
  sta current_screen
-* Re-derive scroll_src_bank = $04 + current_screen
  clc
- adc #$04
- sta scroll_src_bank
+ adc #$03              ; scroll_src_bank = $03 + new current_screen
+ sta scroll_src_bank   ; so scroll_right starts by re-showing us
  stz scroll_src_off
- lda current_screen    ; reload before calling
+ lda current_screen
  jsr load_screen_bounds
 :scl_done rts
 
@@ -3286,7 +3329,7 @@ process_input
  beq :do_up
  cmp #' '
  bne :ns_not_space
-* Debug: print absolute world x (abs_x) as hex to text screen.
+* Debug: print abs_x and Billy's world-byte x (world_offset+xpos).
  lda #$D8              ; 'X' (high bit set for text screen)
  jsr dbg_print_char
  lda #$BA              ; ':'
@@ -3295,8 +3338,25 @@ process_input
  jsr dbg_print_hex8
  lda abs_x
  jsr dbg_print_hex8
+ lda #$A0              ; ' '
+ jsr dbg_print_char
+ lda #$D7              ; 'W'
+ jsr dbg_print_char
+ lda #$BA              ; ':'
+ jsr dbg_print_char
+* world_x = world_offset + IMAGE01_XPOS (both bytes)
+ lda IMAGE01_XPOS
+ clc
+ adc world_offset
+ sta :dbg_wx
+ lda #0
+ adc world_offset+1
+ jsr dbg_print_hex8
+ lda :dbg_wx
+ jsr dbg_print_hex8
  jsr dbg_print_nl
  rts
+:dbg_wx dfb 0
 :ns_not_space
  jmp :not_up              ; inverted — :not_up moved out of range
 :do_up
@@ -5130,7 +5190,7 @@ ntp_copy_chunk
 * NTP loader ProDOS 8 parameter blocks
 *----------------------------------------------------------
 ntp_dest ds 2
-ntp_bank dfb $0F       ; default bank (NTPPLAYER)
+ntp_bank dfb $11       ; default bank (NTPPLAYER)
 
 ntp_open dfb 3
  da ntpp_path          ; default pathname (NTPPLAYER)
@@ -7797,6 +7857,15 @@ path110 dfb 22
 
 path111 dfb 22
  asc '/DDIIGS/MISSION111.PAK'
+
+path112 dfb 22
+ asc '/DDIIGS/MISSION112.PAK'
+
+path113 dfb 22
+ asc '/DDIIGS/MISSION113.PAK'
+
+path114 dfb 22
+ asc '/DDIIGS/MISSION114.PAK'
 
 * master sprite table
 sprite_table
