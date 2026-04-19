@@ -533,7 +533,7 @@ run_script
  stz scroll_up_twidth+1
  lda scroll_up_screen
  cmp #10
- bne :op_up_anchor_default
+ bne :op_up_notscr10
 * scr10 target — pick anchor by rneighbor (pre-wrap raw param):
 *   $FF (ladder 2 from scr7)  → anchor=440
 *   11   (ladder 3 from scr12) → anchor=302
@@ -545,14 +545,28 @@ run_script
  sta scroll_up_anchor
  lda #>440
  sta scroll_up_anchor+1
- bra :op_up_anchor_width
+ bra :op_up_anchor_width10
 :op_up_anchor_scr12
  lda #<302
  sta scroll_up_anchor
  lda #>302
  sta scroll_up_anchor+1
-:op_up_anchor_width
+:op_up_anchor_width10
  lda #67
+ sta scroll_up_twidth
+ bra :op_up_anchor_done
+:op_up_notscr10
+ cmp #11
+ bcc :op_up_anchor_default
+ cmp #14
+ bcs :op_up_anchor_default
+* scr11/12/13: 103px wide (52 bytes). anchor=307 places scr12's
+* ladder art (at scr12 byte 37) at world 344 — matching ladder[2].
+ lda #<307
+ sta scroll_up_anchor
+ lda #>307
+ sta scroll_up_anchor+1
+ lda #52
  sta scroll_up_twidth
  bra :op_up_anchor_done
 :op_up_anchor_default
@@ -579,8 +593,33 @@ run_script
  lda #110              ; full-width default
  sta scroll_up_lwidth
 :op_up_lw_done
+* Initial scroll_up_off. Default 182 covers the full 183-row
+* playfield. Targets scr11/12/13 are only 113 lines tall (their
+* bank has content in rows 0..112 and empty rows 113..199). Start
+* scroll with ufill_top=112 so the fill pulls valid content from
+* the first iteration. scroll_up_off = ufill_top + 3 = 115.
+* Also set snap_copy_rows so snap_transition only copies the 113
+* valid rows, leaving rows 113..182 as the pre-scroll content that
+* shifted down during the incremental scroll.
+ ldy #1
+ lda [script_pc],y     ; target
+ cmp #11
+ bcc :op_up_off_std    ; target < 11 → full-height
+ cmp #14
+ bcs :op_up_off_std    ; target >= 14 → full-height
+ lda #115
+ sta scroll_up_off
+ lda #113
+ sta snap_copy_rows
+ stz snap_copy_rows+1
+ bra :op_up_off_done
+:op_up_off_std
  lda #182
  sta scroll_up_off
+ lda #183
+ sta snap_copy_rows
+ stz snap_copy_rows+1
+:op_up_off_done
  lda #1
  sta scroll_up_enabled
  lda #SCRIPT_WAITUP
@@ -1077,6 +1116,11 @@ scroll_up_twidth     dw 110       ; target content width in bytes (full-
                                   ; clamps up_count against this so the
                                   ; fill never reads past the target's
                                   ; real content.
+snap_copy_rows       dw 183       ; row count for snap_transition copies
+                                  ; (source, lgap, rgap). 183 = default;
+                                  ; narrow-height targets (scr11/12/13)
+                                  ; set it to 113 so the bottom 70 rows
+                                  ; keep their pre-scroll shifted content.
 npc_buf_next dw npc_buffers   ; next free NPC buffer address
 
 * Cheat: invincibility toggle
@@ -4174,6 +4218,27 @@ update_anims
  sbc #FALL_Y_OFFSET
  sta (info_ptr),y     ; ypos -= FALL_Y_OFFSET
 :ne_no_unbump
+* Clamp ypos so the sprite's bottom stays on-screen
+* (ypos + frame_y <= 200). NPCs drift below the walkable floor
+* after repeated hit-reactions when the un-bump above misses —
+* this keeps them inside the playfield and hittable by Billy.
+ ldy #12
+ lda (info_ptr),y     ; frame_y
+ sta :ne_tmp
+ lda #200
+ sec
+ sbc :ne_tmp          ; A = 200 - frame_y = max ypos
+ sta :ne_tmp
+ ldy #0
+ lda (info_ptr),y     ; current ypos
+ cmp :ne_tmp
+ bcc :ne_no_clamp
+ beq :ne_no_clamp
+ lda :ne_tmp
+ sta (info_ptr),y     ; ypos = max ypos
+ ldy #32
+ sta (info_ptr),y     ; prev_ypos = clamped (erase anchor)
+:ne_no_clamp
 * Terminate animation, restore idle frame
  ldy #24
  lda #0
@@ -4320,6 +4385,7 @@ update_anims
 :done rts
 
 :frm dfb 0
+:ne_tmp dfb 0
 
 *----------------------------------------------------------
 * toolbox_init - Start IIgs Toolbox tools
@@ -5506,6 +5572,26 @@ scroll_right
 * screen's source bank.
 *----------------------------------------------------------
 scroll_left
+* Entry gate for narrow scr9:
+*  - If current_screen=9 AND lsrc_off<4: Billy's already at scr9's
+*    left edge, block further scroll (no loop, no bank-$0B pull).
+*  - If current_screen != 9 AND lsrc_off<4: Billy just re-entered
+*    scr9-left-scroll range (e.g. from scr8). Reset lsrc_off to 50
+*    so the scroll pulls scr9's right edge again.
+ lda scroll_left_screen
+ cmp #9
+ bne :sl_proceed
+ lda scroll_lsrc_off
+ cmp #4
+ bcs :sl_proceed
+ lda current_screen
+ cmp #9
+ bne :sl_reset_off
+ rts
+:sl_reset_off
+ lda #50
+ sta scroll_lsrc_off
+:sl_proceed
 * Flicker-cover: see scroll_right for rationale. Re-draw the
 * player on $01 (shadowed to $E1) before the scroll composite
 * pipeline, so the sprite doesn't visibly vanish in the gap
@@ -5728,7 +5814,10 @@ scroll_left
  lda scroll_left_screen
  cmp #9
  bne :lunder_wide
- stz scroll_left_enabled
+* Narrow scr9 underflow: clamp off at 0 but leave
+* scroll_left_enabled=1 so left-scroll from adjacent screens
+* (e.g. scr8 → scr9) still works. The entry gate in scroll_left
+* skips the shift when off<4, so no visual corruption.
  stz scroll_lsrc_off
  bra :lfill_done
 :lunder_wide
@@ -6107,7 +6196,7 @@ scroll_up
  lda #$50
  sta $F5
  rep $20
- ldx #183
+ ldx snap_copy_rows   ; 183 default, 113 for narrow targets
 :srow ldy #0
 :swrd lda [$F0],y
  sta [$F3],y
@@ -6148,7 +6237,7 @@ scroll_up
  lda #$50
  sta $F5
  rep $20
- ldx #183
+ ldx snap_copy_rows
 :snap_lgrow ldy #0
 :snap_lgwrd lda [$F0],y
  sta [$F3],y
@@ -6195,7 +6284,7 @@ scroll_up
  lda #$50
  sta $F5
  rep $20
- ldx #183
+ ldx snap_copy_rows
 :snap_rgrow ldy #0
 :snap_rgwrd lda [$F0],y
  sta [$F3],y
@@ -6214,6 +6303,79 @@ scroll_up
  dex
  bne :snap_rgrow
 :snap_rgap_done
+
+* Lower-screen fill: after a narrow-height target (scr11/12/13)
+* copy, fill the remaining 70 playfield rows (113..182) from the
+* lower screens. Their horizontal placement is independent of
+* the target's: scr9 is left-aligned (playfield 0..51, 52 bytes),
+* scr8 fills the rest to the right (playfield 52..109, 58 bytes).
+* Pull rows 0..69 so the top of each lower screen lines up with
+* playfield row 113.
+ lda scroll_up_screen
+ and #$00FF
+ cmp #12
+ beq :snap_lower_go
+ jmp :snap_lower_done
+:snap_lower_go
+* scr9 fill — playfield bytes 0..51, rows 113..182.
+ lda #$2000
+ sta $F0               ; src = scr9/$2000 (row 0, byte 0)
+ lda #$66A0            ; dst = $50/$66A0 (row 113, byte 0)
+ sta $F3
+ sep $20
+ lda #$0C              ; scr9 bank
+ sta $F2
+ lda #$50
+ sta $F5
+ rep $20
+ ldx #70
+:snap_drow ldy #0
+:snap_dwrd lda [$F0],y
+ sta [$F3],y
+ iny
+ iny
+ cpy #52               ; scr9 content width
+ bcc :snap_dwrd
+ lda $F0
+ clc
+ adc #$00A0
+ sta $F0
+ lda $F3
+ clc
+ adc #$00A0
+ sta $F3
+ dex
+ bne :snap_drow
+* scr8 fill — playfield bytes 52..109 (58 bytes), rows 113..182.
+ lda #$2000
+ sta $F0               ; src = scr8/$2000 (row 0, byte 0)
+ lda #$66D4            ; dst = $50/$66A0 + 52 (row 113, byte 52)
+ sta $F3
+ sep $20
+ lda #$0B              ; scr8 bank
+ sta $F2
+ lda #$50
+ sta $F5
+ rep $20
+ ldx #70
+:snap_dr_row ldy #0
+:snap_dr_wrd lda [$F0],y
+ sta [$F3],y
+ iny
+ iny
+ cpy #58               ; playfield bytes 52..109 = 58 bytes
+ bcc :snap_dr_wrd
+ lda $F0
+ clc
+ adc #$00A0
+ sta $F0
+ lda $F3
+ clc
+ adc #$00A0
+ sta $F3
+ dex
+ bne :snap_dr_row
+:snap_lower_done
 
  sec
  xce

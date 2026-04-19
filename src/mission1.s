@@ -192,7 +192,9 @@ level_script
     db OP_UP,12,$FF,11    ; enable climb on ladder 3 (scr12→scr10, scr11 rfill)
 
     db OP_WAITX
-    dw 640              ; wait for player abs X >= 600
+    dw 660              ; wait for player abs X >= 600
+
+    db OP_RIGHT,13,11,$FF ; connect screen 11 to screen 13 on the right, left=screen 11, up=none
 
     db OP_END           ; end of level
 
@@ -671,8 +673,8 @@ ladders dfb 3                   ; ladder count
 * Positioned at world byte 344..351 (spacebar showed world_x
 * $0158 = 344 at the visible ladder art). check_ladder compares
 * against world_offset+xpos, not abs_x.
- dw 344                         ; x_left
- dw 351                         ; x_right
+ dw 367                         ; x_left
+ dw 374                         ; x_right
  dfb 0,68                       ; y_top=0, y_bottom=68
 
 *==========================================================
