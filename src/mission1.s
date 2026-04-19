@@ -781,13 +781,18 @@ bounds_scr9
  dfb 0,109
  --^
 
-* Screen 10: same default
+* Screen 10: narrow upper-level platform at top of second ladder.
+* Walkable ypos=27..47 (21 rows). snap_transition's fallback scan
+* places Billy at ypos=47 (landing at the platform).
 bounds_scr10
- LUP 80
+ LUP 27
  dfb 0,0
  --^
- LUP 120
+ LUP 21
  dfb 0,109
+ --^
+ LUP 152
+ dfb 0,0
  --^
 
 *==========================================================

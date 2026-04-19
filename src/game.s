@@ -480,20 +480,14 @@ run_script
  lda scroll_up_screen
  cmp #10
  bne :op_up_anchor_default
-* Screen 10 is 135px (67 bytes) wide. Its content is left-
-* aligned in the bank (bytes 0..66 per scanline) with the
-* ladder art near its left edge. Only the leftmost ~26 bytes
-* of screen 10 are placed in the playfield's rightmost area
-* so the ladder lines up with screen 7's ladder at playfield
-* byte ~90. With world_offset=440 and anchor=524:
-*   delta = 440-524 = -84 (:neg case)
-*   up_dst_start = 84, up_src_start = 0
-*   up_count = min(twidth=67, 110-84=26) = 26
-* screen 10 bytes 0..25 appear at playfield 84..109, screen 8
-* fills 0..83 via lgap, no rgap.
- lda #<524
+* Screen 10 is 135px (67 bytes) wide. anchor=440 places scr10's
+* left edge at world 440 — same as scr7's left edge. With dynamic
+* compute, scr10 byte X lines up with scr7 byte X on the playfield
+* at any world_offset, so whatever scr10 byte carries the ladder
+* art will align with scr7's ladder.
+ lda #<440
  sta scroll_up_anchor
- lda #>524
+ lda #>440
  sta scroll_up_anchor+1
  lda #67
  sta scroll_up_twidth
@@ -6136,13 +6130,21 @@ scroll_up
 :snap_loaded
 * Reposition player to the upper screen's walkable area.
 * Prefer Billy's current ypos (his climb-end position during
-* scroll) so there's no visible teleport when snap fires.
-* Fall back to scanning from the bottom only if that row is
-* blocked on the new screen.
+* scroll); bump by 16 to compensate for the BCLIMB→IMAGE01
+* anchor shift. Only apply the bump if both the original ypos
+* and the bumped ypos land in walkable rows on the new screen.
+* Otherwise fall back to scanning from the bottom without a bump.
  lda IMAGE01_YPOS
  tax
  lda bounds_tbl_hi,x
- bne :found_floor       ; current ypos is walkable → keep it
+ beq :sl_scan           ; current ypos blocked → scan
+ txa
+ clc
+ adc #16                ; tentative bumped ypos
+ tax
+ lda bounds_tbl_hi,x
+ bne :found_floor       ; bumped ypos still walkable → use it
+:sl_scan
  ldx #199
 :find_floor
  lda bounds_tbl_hi,x   ; max_x for row X
@@ -6151,11 +6153,6 @@ scroll_up
  bne :find_floor
 :found_floor
  txa
- clc
- adc #16                ; bump ypos to compensate for the BCLIMB→
-                        ; IMAGE01 anchor shift (idle sits ~16 rows
-                        ; higher within the same 40-row frame, so
-                        ; without this bump Billy jumps up on snap)
  sta IMAGE01_YPOS       ; update global for draw_sprite
 * Also write to sprite info block so it persists after load_sprite
  ldy #0
@@ -6286,34 +6283,10 @@ up_count     ds 2       ; bytes per row to copy (0 = skip)
 *----------------------------------------------------------
 compute_up_align
  mx %00                 ; tell Merlin: 16-bit A on entry
-* Per-target override: screen 10 uses a fixed placement so a
-* specific region of the playfield always shows screen 10's
-* content (lined up with screen 7's ladder) regardless of where
-* the player is standing when OP_UP fires.
-*
-* up_dst_start moves WHERE in the playfield screen 10 sits —
-* decreasing it shifts the screen-10 window (and the screen-8
-* boundary) to the left in the playfield. The lgap fill reads
-* from lbank at offset (lwidth - dst_start), so screen 8's
-* visible slice shifts automatically to match.
-*
-* up_src_start selects WHICH slice of screen 10 is shown —
-* changing it only swaps bytes within the same playfield area
-* (doesn't move the boundary).
- sep $20
- lda scroll_up_screen
- cmp #10
- rep $20
- bne :cua_compute
- lda #00
- sta up_src_start
- lda #64
- sta up_dst_start
- lda #46
- sta up_count         ; covers playfield 64..109 entirely so the
-                      ; rgap region (no right neighbor) doesn't
-                      ; leak old $50 content on the right
- rts
+* Dynamic placement: compute src/dst/count from world_offset vs
+* scroll_up_anchor so the target screen (incl. scr10) tracks
+* horizontal scroll and keeps its ladder art aligned with the
+* source screen's ladder regardless of world_offset.
 :cua_compute
  lda world_offset
  sec
