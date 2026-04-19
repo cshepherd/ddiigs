@@ -18,6 +18,9 @@ NTPstreamsound          =   NinjaTrackerPlus+24
 ]IOBUF = $6C00        ; 1024-byte ProDOS I/O buffer (page-aligned)
 ]RDBUF = $7000         ; 4KB read buffer
 
+* Clear text screen so diagnostic prints start on a fresh page.
+ jsr $FC58
+
 * Initialize IIgs Toolbox
  jsr toolbox_init
 
@@ -1865,10 +1868,13 @@ fo_approach
 
 :move_y
 * Move toward player Y at 1 pixel/frame (bounds-checked).
-* When moving down, check the BOTTOM of the sprite
-* (ypos + frame_y) so tall frames can't extend past the
-* bottom of the playfield. When moving up, top-edge check
-* is sufficient.
+* The row-bounds table encodes where the sprite's TOP can sit
+* (so the same table works for both lower-level bands like
+* y=80-199 and narrow upper-level bands like y=40-59), so we
+* check the proposed top row. We also bail if the proposed
+* bottom (top + frame_y) would exceed 200 — that stops tall
+* sprites from walking their feet off the bottom of the screen
+* in the wide lower-level bands.
  ldy #2
  lda (info_ptr),y
  sta chk_xpos          ; NPC's current X
@@ -1877,10 +1883,17 @@ fo_approach
  cmp fo_plr_y
  beq :y_at_target
  bcs :y_decrement
-* Try Y + 1 — check new bottom row = ypos + frame_y
+* Try Y + 1 — proposed top = ypos+1
+ clc
+ adc #1
+* Also check proposed bottom < 200 so feet stay on-screen.
+ sta :yp_proposed
  ldy #12
  clc
- adc (info_ptr),y      ; A = ypos + frame_y = new bottom after move
+ adc (info_ptr),y      ; A = proposed_top + frame_y = proposed_bottom
+ cmp #200
+ bcs :y_at_target
+ lda :yp_proposed
  jsr check_y_bounds
  bcs :y_at_target      ; blocked, skip Y move
  ldy #0
@@ -1890,7 +1903,8 @@ fo_approach
  sta (info_ptr),y
  bra :check_range
 :y_decrement
-* Try Y - 1
+* Try Y - 1. Top-row check alone — decrementing can only push
+* the bottom up, so the 200-clamp above isn't needed here.
  sec
  sbc #1
  jsr check_y_bounds
@@ -1935,11 +1949,23 @@ fo_approach
 :no_action
  rts
 
+:yp_proposed dfb 0
+
 *----------------------------------------------------------
 * fo_start_punch - Trigger anim_wpunch on the NPC (William's
 * punch). Replicates start_anim's setup but stays on the NPC.
 *----------------------------------------------------------
 fo_start_punch
+* DEBUG: log fo_start_punch with info_ptr low (block identifier)
+ lda #$C6              ; 'F'
+ jsr dbg_print_char
+ lda #$D0              ; 'P'
+ jsr dbg_print_char
+ lda #$A0
+ jsr dbg_print_char
+ lda info_ptr
+ jsr dbg_print_hex8
+ jsr dbg_print_nl
 * Read per-NPC atk_anim from +54/+55 into anim_ptr ZP
  ldy #54
  lda (info_ptr),y
@@ -2705,7 +2731,33 @@ erase_all
  lda (info_ptr),y     ; anim_ptr high
  cmp #$FF
  bne :not_dead
-* Death: erase at prev position, then remove from table
+* Death: erase at prev position, then remove from table.
+* DEBUG: log death-erase with prev rect.
+ lda #$D2              ; 'R'
+ jsr dbg_print_char
+ lda #$CD              ; 'M'
+ jsr dbg_print_char
+ lda #$A0
+ jsr dbg_print_char
+ ldy #32
+ lda (info_ptr),y
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ ldy #34
+ lda (info_ptr),y
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ ldy #36
+ lda (info_ptr),y
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ ldy #38
+ lda (info_ptr),y
+ jsr dbg_print_hex8
+ jsr dbg_print_nl
  ldy #32
  lda (info_ptr),y
  sta IMAGE01_YPOS
@@ -2738,26 +2790,11 @@ erase_all
 * pixels (so no ghost) and the area the new frame will draw
 * (so transparent pixels in a grown/shifted frame don't reveal
 * stale content). Full prev∪current rect is the correct bound.
-* mark_overlapping is called with the prev rect only, so we
-* don't force redundant redraws of adjacent sprites when the
-* rect merely grew by 1 byte — that was the flicker source in
-* the earlier full-union attempt.
+* mark_overlapping runs with the SAME union rect since that's
+* what actually gets wiped — using just the prev rect under-
+* flagged neighboring sprites (e.g. ones adjacent on the side
+* the sprite is moving toward) and left visible artifacts.
 *
-* First, pass the prev rect to mark_overlapping.
- ldy #32
- lda (info_ptr),y     ; prev_ypos
- sta IMAGE01_YPOS
- ldy #34
- lda (info_ptr),y     ; prev_xpos
- sta IMAGE01_XPOS
- ldy #36
- lda (info_ptr),y     ; prev_frame_x
- sta FRAME_X
- ldy #38
- lda (info_ptr),y     ; prev_frame_y
- sta FRAME_Y
- jsr mark_overlapping
-* Now compute the union rect for the actual erase.
 * left = min(prev_xpos, xpos)
  ldy #34
  lda (info_ptr),y     ; prev_xpos
@@ -2824,7 +2861,62 @@ erase_all
  sec
  sbc IMAGE01_YPOS
  sta FRAME_Y
+* DEBUG: log erase rect ONLY if the erase bottom reaches y=180+
+* (where the HUD lives). This filters out normal gameplay erases.
+ lda IMAGE01_YPOS
+ clc
+ adc FRAME_Y
+ cmp #180
+ bcc :skip_er_debug
+ lda #$C5              ; 'E'
+ jsr dbg_print_char
+ lda #$D2              ; 'R'
+ jsr dbg_print_char
+ lda #$A0
+ jsr dbg_print_char
+ lda IMAGE01_YPOS
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda IMAGE01_XPOS
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda FRAME_X
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda FRAME_Y
+ jsr dbg_print_hex8
+ jsr dbg_print_nl
+:skip_er_debug
+ jsr mark_overlapping    ; flag other sprites whose prev drawn rect
+                          ; intersects the union we're about to erase
  jsr erase
+* Sync prev_* to current_* so subsequent frames' union erases don't
+* compound stale prev values. The erase above just cleaned up the
+* old-rect region based on prev, and draw_all will repaint at current.
+* Without this, a :normal_end unbump that deliberately sets
+* prev_ypos=bumped for one frame's erase leaks forward: a later
+* save_anim_state updates prev_frame_y=40 but leaves prev_ypos at
+* the bumped value, producing a union 64 rows tall that reaches
+* into the HUD at y=180+.
+ ldy #0
+ lda (info_ptr),y
+ ldy #32
+ sta (info_ptr),y     ; prev_ypos <- current ypos
+ ldy #2
+ lda (info_ptr),y
+ ldy #34
+ sta (info_ptr),y     ; prev_xpos <- current xpos
+ ldy #10
+ lda (info_ptr),y
+ ldy #36
+ sta (info_ptr),y     ; prev_frame_x <- current frame_x
+ ldy #12
+ lda (info_ptr),y
+ ldy #38
+ sta (info_ptr),y     ; prev_frame_y <- current frame_y
 * Clear bit 1 (needs_erase), set bit 0 (needs_draw) so sprite is redrawn
  ldy #30
  lda (info_ptr),y
@@ -3635,7 +3727,29 @@ start_anim
  iny
  lda (anim_ptr),y     ; frame_addr high
  sta FRAME_ADDR+1
- jsr save_sprite
+* Write frame data to block and mark dirty, but DON'T snapshot
+* prev_xpos/ypos — when check_punch_hit triggers this mid-frame
+* on an NPC that fo_approach already moved, save_sprite would
+* clobber the prev snapshot fo_approach took, and erase_all
+* would erase at the (new) current position, leaving the old
+* sprite drawn last frame un-erased. prev_frame_x/y stay at the
+* last drawn frame's size, which the union erase in erase_all
+* accounts for.
+ ldy #10
+ lda FRAME_X
+ sta (info_ptr),y
+ ldy #12
+ lda FRAME_Y
+ sta (info_ptr),y
+ ldy #14
+ lda FRAME_ADDR
+ sta (info_ptr),y
+ iny
+ lda FRAME_ADDR+1
+ sta (info_ptr),y
+ ldy #30
+ lda #$03
+ sta (info_ptr),y
  rts
 
 * Fallen-pose vertical offset. The frame 1 ("fallen") pose of
@@ -3761,25 +3875,58 @@ update_anims
  cmp #6
  bcc :normal_end
 * Death: set $FFFF sentinel, mark dirty for erase+removal.
-* Snapshot current pos/size to prev_* so erase_all clears the
-* fallen sprite at its actually-drawn (possibly bumped) rect
-* instead of the stale frame-0 values.
+*
+* For a fall-anim death, the sprite has a history of drawings
+* at different rects at this xpos: walking/wpunched at ypos-24
+* (40 tall), wfall frame 0 also around ypos-24 (33 tall), and
+* wfall frame 1 (WFALLEN 13 tall) at the bumped ypos. The
+* death erase needs to cover ALL of these because intermediate
+* transitions might not have fully cleaned them (e.g., rapid
+* punches where save_anim_state races the erase). Set prev to
+* a generous rect that envelops every pre-bump position: start
+* at ypos-FALL_Y_OFFSET and extend 40 rows down (reaching past
+* WFALLEN), width 20 (covers WFALL's 19).
+* DEBUG: log death entry with current ypos/xpos
+ lda #$C4              ; 'D'
+ jsr dbg_print_char
+ lda #$C4              ; 'D'
+ jsr dbg_print_char
+ lda #$A0              ; ' '
+ jsr dbg_print_char
  ldy #0
  lda (info_ptr),y
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ ldy #2
+ lda (info_ptr),y
+ jsr dbg_print_hex8
+ jsr dbg_print_nl
+ ldy #0
+ lda (info_ptr),y
+ sec
+ sbc #FALL_Y_OFFSET
  ldy #32
- sta (info_ptr),y     ; prev_ypos <- current ypos
+ sta (info_ptr),y     ; prev_ypos <- ypos - FALL_Y_OFFSET (pre-bump)
  ldy #2
  lda (info_ptr),y
  ldy #34
  sta (info_ptr),y     ; prev_xpos <- current xpos
- ldy #10
- lda (info_ptr),y
+ lda #20
  ldy #36
- sta (info_ptr),y     ; prev_frame_x <- current frame_x
- ldy #12
- lda (info_ptr),y
+ sta (info_ptr),y     ; prev_frame_x <- 20 (covers WFALL/WPUNCH)
+* Cap height so erase doesn't extend into the HUD at y=180+.
+* prev_frame_y = min(40, 180 - prev_ypos)
+ lda #180
+ ldy #32
+ sec
+ sbc (info_ptr),y     ; A = 180 - prev_ypos
+ cmp #40
+ bcc :dd_use_capped
+ lda #40
+:dd_use_capped
  ldy #38
- sta (info_ptr),y     ; prev_frame_y <- current frame_y
+ sta (info_ptr),y     ; prev_frame_y
  ldy #24
  lda #$FF
  sta (info_ptr),y     ; anim_ptr = $FFFF
@@ -3797,6 +3944,21 @@ update_anims
 * the fallen sprite at its drawn position, then subtract the
 * offset so the restored idle frame draws at the logical height.
 * anim_bfall is a 1-frame placeholder, so num_frames<2 skips.
+* DEBUG: log entry to :normal_end with anim_ptr low byte.
+ lda #$CE              ; 'N'
+ jsr dbg_print_char
+ lda #$C5              ; 'E'
+ jsr dbg_print_char
+ lda #$A0              ; ' '
+ jsr dbg_print_char
+ lda anim_ptr
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ ldy #50
+ lda (info_ptr),y
+ jsr dbg_print_hex8
+ jsr dbg_print_nl
  ldy #50
  lda (info_ptr),y
  cmp anim_ptr
@@ -3809,6 +3971,17 @@ update_anims
  lda (anim_ptr),y     ; num_frames
  cmp #2
  bcc :ne_no_unbump
+* DEBUG: log unbump with pre-unbump ypos
+ lda #$D5              ; 'U'
+ jsr dbg_print_char
+ lda #$C2              ; 'B'
+ jsr dbg_print_char
+ lda #$A0              ; ' '
+ jsr dbg_print_char
+ ldy #0
+ lda (info_ptr),y
+ jsr dbg_print_hex8
+ jsr dbg_print_nl
  ldy #0
  lda (info_ptr),y     ; current ypos (bumped)
  ldy #32
@@ -3936,6 +4109,17 @@ update_anims
  lda (info_ptr),y
  cmp anim_ptr+1
  bne :no_fall_bump
+* DEBUG: log bump with pre-bump ypos
+ lda #$C2              ; 'B'
+ jsr dbg_print_char
+ lda #$D0              ; 'P'
+ jsr dbg_print_char
+ lda #$A0              ; ' '
+ jsr dbg_print_char
+ ldy #0
+ lda (info_ptr),y
+ jsr dbg_print_hex8
+ jsr dbg_print_nl
  ldy #0
  lda (info_ptr),y
  clc
@@ -6110,6 +6294,63 @@ stack_blit_55_e1
 :save_s ds 2
 
  mx %11                ; following routines run in emulation mode (8-bit)
+
+*----------------------------------------------------------
+* Text-screen diagnostic helpers (use Apple //e ROM routines
+* via JSR $FDED/$FC58). Text screen persists behind SHR so
+* KEGS "Copy Text Screen" can capture these messages.
+* All helpers preserve A/X/Y. Caller must be in emulation
+* mode with 8-bit A/X/Y.
+*----------------------------------------------------------
+dbg_print_char
+ pha
+ phx
+ phy
+ jsr $FDED
+ ply
+ plx
+ pla
+ rts
+
+dbg_print_nl
+ pha
+ lda #$8D
+ jsr $FDED
+ pla
+ rts
+
+* Print nibble in low 4 bits of A as hex char with hi bit set.
+dbg_print_nib
+ and #$0F
+ cmp #$0A
+ bcc :dpn_digit
+ clc
+ adc #$B7            ; 10→'A' ($C1), 15→'F' ($C6)
+ bra :dpn_out
+:dpn_digit
+ clc
+ adc #$B0            ; 0→'0' ($B0), 9→'9' ($B9)
+:dpn_out
+ jsr $FDED
+ rts
+
+* Print byte in A as two hex digits. Preserves A/X/Y.
+dbg_print_hex8
+ pha
+ phx
+ phy
+ pha
+ lsr
+ lsr
+ lsr
+ lsr
+ jsr dbg_print_nib
+ pla
+ jsr dbg_print_nib
+ ply
+ plx
+ pla
+ rts
 
 *----------------------------------------------------------
 * Animation Descriptors
