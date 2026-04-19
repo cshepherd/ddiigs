@@ -649,7 +649,7 @@ ladders dfb 2                   ; ladder count
 * Ladder 1: Linda descends to screen 3 (lower level).
  dw 348                         ; x_left (world byte)
  dw 355                         ; x_right
- dfb 0,59                       ; y_top=0, y_bottom=59
+ dfb 0,68                       ; y_top=0, y_bottom=68
 * Ladder 2: screen 7 far right → screen 10 above.
 * Screen 7 spans world bytes 440..549 (UP_X_ANCHOR=330 + 110 for
 * screen 5, then +110 for its right neighbor screen 7). Best
@@ -722,17 +722,19 @@ bounds_scr4
  dfb 0,109
  --^
 
-* Screen 5 (upper level): walkable band for the road surface.
-* Billy is ~40px tall, so ypos=45 puts his feet at y=85
-* which should be about road level. Tune to match artwork.
+* Screen 5 (upper level): purple platform at top of first ladder.
+* Walkable ypos=53..130 (78 rows). Covers both the platform
+* (ypos=53..87) and the ladder-top "landing" range so snap
+* preserve-ypos logic doesn't fall back to the bottom of walkable
+* and teleport Billy after the scroll.
 bounds_scr5
- LUP 40
+ LUP 53
  dfb 0,0
  --^
- LUP 20
+ LUP 78
  dfb 0,109
  --^
- LUP 140
+ LUP 69
  dfb 0,0
  --^
 

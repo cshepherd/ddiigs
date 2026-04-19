@@ -239,10 +239,14 @@ NTPstreamsound          =   NinjaTrackerPlus+24
 
  lda #1
  pha
- lda #193
+ lda #195
  pha
  ldx #$3a04         ; MoveTo
  jsl $E10000
+
+ pea #$0001         ; bit 1 = bold
+ ldx #$9A04
+ jsl $E10000        ; SetTextFace
 
  pea ^string5
  pea string5
@@ -255,11 +259,11 @@ NTPstreamsound          =   NinjaTrackerPlus+24
 
  bra over1
 
-string1 ASC 'Player 1 x0',00
-string2 ASC 'Score: 00000',00
-string3 ASC 'Player 2 x0',00
-string4 ASC 'Score: 00000',00
-string5 ASC 'DD2 Tech Demo [cCc] 2026 -- Press 8,4,6,2',00
+string1 ASC 'DDIIGS',00
+string2 ASC '2026 [cCc]',00
+string3 ASC 'Devel/Eval',00
+string4 ASC 'Purpose Only',00
+string5 ASC 'PLAYER 1: 0000000       PLAYER 2: 0000000',00
 
 over1
 * Initial draw of all sprites
@@ -3232,7 +3236,9 @@ process_input
  rts
 :not_scroll
  cmp #'8'
- bne :not_up
+ beq :do_up
+ jmp :not_up              ; inverted — :not_up moved out of range
+:do_up
 * If scroll_up enabled AND on a ladder AND near top, scroll up
  lda scroll_up_enabled
  beq :up_walk
@@ -3245,6 +3251,16 @@ process_input
  lda IMAGE01_YPOS
  jsr check_ladder
  bcs :up_walk           ; not on ladder — normal walk
+* DEBUG: 'US' = up-scroll fired at current ypos
+ lda #$D5              ; 'U'
+ jsr dbg_print_char
+ lda #$D3              ; 'S'
+ jsr dbg_print_char
+ lda #$A0
+ jsr dbg_print_char
+ lda IMAGE01_YPOS
+ jsr dbg_print_hex8
+ jsr dbg_print_nl
 * Scroll world up by 4 rows with climbing animation
  jsr advance_climb
  jsr save_sprite
@@ -3258,7 +3274,7 @@ process_input
  sec
  sbc #1               ; proposed Y
  jsr check_y_bounds
- bcs :skip_up         ; blocked
+ bcs :up_blocked_bounds
 * If this upward step is only permitted by the ladder (proposed
 * row is blocked but falls within ladder Y range), also require
 * scroll_up to be enabled. Otherwise Billy would "climb" off the
@@ -3267,8 +3283,29 @@ process_input
  lda via_ladder
  beq :up_do_move
  lda scroll_up_enabled
- beq :skip_up
+ beq :up_blocked_ladder
 :up_do_move
+* DEBUG: 'UC' = via-ladder climb allowed; 'UW' = normal walk up
+ pha
+ lda via_ladder
+ beq :up_dbg_walk
+ lda #$D5              ; 'U'
+ jsr dbg_print_char
+ lda #$C3              ; 'C'
+ jsr dbg_print_char
+ bra :up_dbg_tail
+:up_dbg_walk
+ lda #$D5              ; 'U'
+ jsr dbg_print_char
+ lda #$D7              ; 'W'
+ jsr dbg_print_char
+:up_dbg_tail
+ lda #$A0
+ jsr dbg_print_char
+ lda IMAGE01_YPOS
+ jsr dbg_print_hex8
+ jsr dbg_print_nl
+ pla
  dec IMAGE01_YPOS
  lda via_ladder
  beq :up_walkframe
@@ -3279,7 +3316,31 @@ process_input
 :up_after_anim
  jsr save_sprite
  jsr resort_sprite_table
+ rts
+:up_blocked_bounds
+* DEBUG: 'UX' = climb blocked by bounds (and not on ladder)
+ lda #$D5
+ jsr dbg_print_char
+ lda #$D8              ; 'X'
+ jsr dbg_print_char
+ lda #$A0
+ jsr dbg_print_char
+ lda IMAGE01_YPOS
+ jsr dbg_print_hex8
+ jsr dbg_print_nl
 :skip_up rts
+:up_blocked_ladder
+* DEBUG: 'UL' = climb on ladder but scroll_up disabled
+ lda #$D5
+ jsr dbg_print_char
+ lda #$CC              ; 'L'
+ jsr dbg_print_char
+ lda #$A0
+ jsr dbg_print_char
+ lda IMAGE01_YPOS
+ jsr dbg_print_hex8
+ jsr dbg_print_nl
+ rts
 :not_up cmp #'2'
  bne :not_down
  lda IMAGE01_XPOS
@@ -5603,9 +5664,9 @@ scroll_up
  jsr draw_sprite
 
  lda scroll_up_off
- cmp #3
- bcs :su_normal
- jmp :snap_transition
+ cmp #30              ; fire snap early so the last ~28 rows of
+ bcs :su_normal       ; scroll don't show an invisible ladder gap
+ jmp :snap_transition ; above the scr5 ladder-top art
 :su_normal
  clc
  xce
@@ -6074,8 +6135,14 @@ scroll_up
  stz scroll_lsrc_off
 :snap_loaded
 * Reposition player to the upper screen's walkable area.
-* Scan bounds_tbl_hi from the bottom up to find the lowest
-* walkable row, then place the player there.
+* Prefer Billy's current ypos (his climb-end position during
+* scroll) so there's no visible teleport when snap fires.
+* Fall back to scanning from the bottom only if that row is
+* blocked on the new screen.
+ lda IMAGE01_YPOS
+ tax
+ lda bounds_tbl_hi,x
+ bne :found_floor       ; current ypos is walkable → keep it
  ldx #199
 :find_floor
  lda bounds_tbl_hi,x   ; max_x for row X
@@ -6084,6 +6151,11 @@ scroll_up
  bne :find_floor
 :found_floor
  txa
+ clc
+ adc #16                ; bump ypos to compensate for the BCLIMB→
+                        ; IMAGE01 anchor shift (idle sits ~16 rows
+                        ; higher within the same 40-row frame, so
+                        ; without this bump Billy jumps up on snap)
  sta IMAGE01_YPOS       ; update global for draw_sprite
 * Also write to sprite info block so it persists after load_sprite
  ldy #0
@@ -6093,6 +6165,72 @@ scroll_up
  ldy #30
  lda #$03
  sta (info_ptr),y       ; dirty = erase+draw
+* Reset Billy out of the climb animation into idle (IMAGE01).
+* Copy idle_addr/idle_x/idle_y (info+42/44/46) into
+* frame_addr/frame_x/frame_y (info+14/10/12) and sync globals.
+ ldy #42
+ lda (info_ptr),y       ; idle_addr low
+ sta FRAME_ADDR
+ ldy #14
+ sta (info_ptr),y
+ ldy #43
+ lda (info_ptr),y       ; idle_addr high
+ sta FRAME_ADDR+1
+ ldy #15
+ sta (info_ptr),y
+ ldy #44
+ lda (info_ptr),y       ; idle_x
+ sta FRAME_X
+ ldy #10
+ sta (info_ptr),y
+ ldy #46
+ lda (info_ptr),y       ; idle_y
+ sta FRAME_Y
+ ldy #12
+ sta (info_ptr),y
+ stz climb_toggle       ; next climb starts on BCLIMB1
+* Disable the ladder Billy just climbed by locating it from his
+* current world_x and setting y_top=255 so check_ladder fails
+* for any proposed y. Prevents re-climbing "invisible" after snap.
+ lda ladder_count
+ beq :dl_done
+ sta :dl_cnt
+ clc
+ lda IMAGE01_XPOS
+ adc world_offset
+ sta :dl_wx
+ lda #0
+ adc world_offset+1
+ sta :dl_wx+1
+ ldx #0
+:dl_scan
+ lda :dl_wx+1
+ cmp ladder_buf+1,x    ; x_left high
+ bcc :dl_next
+ bne :dl_ge_lf
+ lda :dl_wx
+ cmp ladder_buf,x      ; x_left low
+ bcc :dl_next
+:dl_ge_lf
+ lda ladder_buf+3,x    ; x_right high
+ cmp :dl_wx+1
+ bcc :dl_next
+ bne :dl_le_rt
+ lda ladder_buf+2,x    ; x_right low
+ cmp :dl_wx
+ bcc :dl_next
+:dl_le_rt
+ lda #255
+ sta ladder_buf+4,x    ; y_top = 255 → ladder disabled
+ bra :dl_done
+:dl_next
+ txa
+ clc
+ adc #6
+ tax
+ dec :dl_cnt
+ bne :dl_scan
+:dl_done
 
 * Blit the new playfield to screen
  clc
@@ -6127,6 +6265,8 @@ scroll_up
 :rgap_start ds 2
 :rgap_count ds 2
 :lgap_base  ds 2
+:dl_wx     ds 2         ; disable-ladder: Billy's world_x at snap
+:dl_cnt    ds 1         ; disable-ladder: iteration counter
 
 up_src_start ds 2       ; source byte offset within upper screen scanline
 up_dst_start ds 2       ; dest byte offset within playfield scanline
@@ -6966,7 +7106,13 @@ mark_overlapping
 * Saves/restores spr_ptr and info_ptr.
 *----------------------------------------------------------
 check_punch_hit
-* Save caller's spr_ptr and info_ptr
+* Save caller's spr_ptr, info_ptr, and anim_ptr. The iteration
+* below overwrites anim_ptr ZP for each target it checks, so
+* returning without restoring leaves the puncher's update_anims
+* continuation (specifically the fall-bump check) reading a
+* random target's anim_ptr — which can spuriously match the
+* puncher's fall_anim when puncher and target are the same
+* NPC type and bump ypos on a non-fall sprite.
  lda spr_ptr
  pha
  lda spr_ptr+1
@@ -6974,6 +7120,10 @@ check_punch_hit
  lda info_ptr
  pha
  lda info_ptr+1
+ pha
+ lda anim_ptr
+ pha
+ lda anim_ptr+1
  pha
 * Save puncher's info_ptr to identify self
  lda info_ptr
@@ -7223,7 +7373,11 @@ check_punch_hit
 :jloop jmp :loop
 
 :done
-* Restore caller's info_ptr and spr_ptr
+* Restore caller's anim_ptr, info_ptr, and spr_ptr (reverse order)
+ pla
+ sta anim_ptr+1
+ pla
+ sta anim_ptr
  pla
  sta info_ptr+1
  pla
