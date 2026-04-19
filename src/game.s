@@ -287,7 +287,7 @@ game_loop
  jsr erase_all
  jsr draw_all
  jsr draw_overlay
-* jsr draw_ladder_debug  ; uncomment to outline ladders for debug
+ jsr draw_ladder_debug  ; outline ladders for debug
  bra game_loop
 
 *----------------------------------------------------------
@@ -433,15 +433,15 @@ run_script
  sta scroll_left_screen
 * Configure left source: bank of target screen, offset starts at
 * rightmost valid content byte so first fill pulls real pixels.
-* Narrow targets (scr9 = 52 bytes wide) start at 51; full-width
-* targets start at 109.
+* Narrow targets (scr9 = 51 bytes wide, 102px) start at 50;
+* full-width targets start at 109.
  clc
  adc #$03
  sta scroll_lsrc_bank
  lda scroll_left_screen
  cmp #9
  bne :opl_wide
- lda #51                   ; scr9 content width = 52 bytes (0..51)
+ lda #50                   ; scr9 content width = 51 bytes (0..50)
  bra :opl_off_set
 :opl_wide
  lda #109

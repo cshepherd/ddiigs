@@ -650,7 +650,7 @@ linda_sprite
 *   y_top (1 byte), y_bottom (1 byte) = 6 bytes per ladder
 * World byte 1 = 2 pixels in 320 mode, so abs pixel 640 = byte 320.
 *==========================================================
-ladders dfb 2                   ; ladder count
+ladders dfb 3                   ; ladder count
 * Ladder 1: Linda descends to screen 3 (lower level).
  dw 348                         ; x_left (world byte)
  dw 355                         ; x_right
@@ -663,6 +663,13 @@ ladders dfb 2                   ; ladder count
  dw 453                         ; x_left (screen 7 byte 90)
  dw 460                         ; x_right
  dfb 0,59                       ; y_top=0, y_bottom=59
+* Ladder 3: screen 12 → screen 10 above.
+* Positioned at abs_x ≈ $277 (pixel 631 → world byte ≈ 315).
+* abs_x is half-byte granularity so $277/2 = 315.5; centered at
+* bytes 315..322 (8-byte ladder, same width as ladders 1 & 2).
+ dw 331                         ; x_left
+ dw 339                         ; x_right
+ dfb 0,68                       ; y_top=0, y_bottom=68
 
 *==========================================================
 * Per-screen Y bounds tables
