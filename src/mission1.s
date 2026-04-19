@@ -20,6 +20,7 @@ OP_END      EQU 9 ; end of level (no params)
 OP_WAITY    EQU 10 ; wait for player to cross Y threshold (params: Y position)
 OP_WAITCLR  EQU 11 ; wait for screen to be clear of enemies (no params)
 OP_WAITNPC  EQU 12 ; wait for a particular count of NPC sprites to be active (params: count)
+OP_WAITXREV EQU 13 ; wait for abs_x to descend to <= threshold (params: X position)
 ; NOTE OP_WAITX and OP_WAITY use 'absolute X' (level-wide) not screen xpos/ypos
 ;  so it's easier to use for game logic
 ; NOTE OP_NPC params are: sprite_ptr (2b), xpos (1b), ypos (1b), orient (1b), behavior (1b)
@@ -184,6 +185,10 @@ level_script
     db OP_WAITX
     dw 450
     db OP_UP,10,8,$ff     ; Up to screen 8, left=screen 9, right=none
+
+    db OP_WAITXREV
+    dw $02CE              ; wait for player to descend back to abs_x <= 718
+    db OP_LEFT,9          ; enable leftward scroll to screen 9 (narrow, 103px)
 
     db OP_END           ; end of level
 
@@ -785,10 +790,10 @@ bounds_scr9
 * Walkable ypos=27..47 (21 rows). snap_transition's fallback scan
 * places Billy at ypos=47 (landing at the platform).
 bounds_scr10
- LUP 27
+ LUP 47
  dfb 0,0
  --^
- LUP 21
+ LUP 1
  dfb 0,109
  --^
  LUP 152

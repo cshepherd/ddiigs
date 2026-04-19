@@ -237,7 +237,7 @@ NTPstreamsound          =   NinjaTrackerPlus+24
  ldx #$A604
  jsl $E10000        ; DrawCString
 
- lda #1
+ lda #2
  pha
  lda #195
  pha
@@ -317,7 +317,10 @@ run_script
 :nwn cmp #SCRIPT_WAITUP
  bne :nwu
  jmp :check_waitup
-:nwu
+:nwu cmp #SCRIPT_WAITXREV
+ bne :nwxr
+ jmp :check_waitxrev
+:nwxr
 
 * SCRIPT_RUN — execute opcodes
 :exec_loop
@@ -428,6 +431,22 @@ run_script
  ldy #1
  lda [script_pc],y
  sta scroll_left_screen
+* Configure left source: bank of target screen, offset starts at
+* rightmost valid content byte so first fill pulls real pixels.
+* Narrow targets (scr9 = 52 bytes wide) start at 51; full-width
+* targets start at 109.
+ clc
+ adc #$03
+ sta scroll_lsrc_bank
+ lda scroll_left_screen
+ cmp #9
+ bne :opl_wide
+ lda #51                   ; scr9 content width = 52 bytes (0..51)
+ bra :opl_off_set
+:opl_wide
+ lda #109
+:opl_off_set
+ sta scroll_lsrc_off
  lda #1
  sta scroll_left_enabled
  lda script_pc
@@ -556,6 +575,24 @@ run_script
  rts                   ; yield until condition met
 
 :not_waitx
+ cmp #OP_WAITXREV
+ bne :not_waitxrev
+* OP_WAITXREV: param = 2-byte absolute X threshold (low, high)
+ ldy #1
+ lda [script_pc],y
+ sta script_wait_val
+ ldy #2
+ lda [script_pc],y
+ sta script_wait_val+1
+ lda #SCRIPT_WAITXREV
+ sta script_state
+ lda script_pc
+ clc
+ adc #3                ; opcode + 2-byte param
+ sta script_pc
+ rts
+
+:not_waitxrev
  cmp #OP_WAITY
  bne :not_waity
  ldy #1
@@ -620,6 +657,20 @@ run_script
  lda #SCRIPT_RUN
  sta script_state
  jmp :exec_loop         ; condition met, resume executing
+
+:check_waitxrev
+* Check if player absolute X <= threshold (16-bit compare)
+ lda script_wait_val+1
+ cmp abs_x+1
+ bcc :rs_rts2           ; threshold_hi < abs_hi → abs still greater
+ bne :waitxrev_done     ; threshold_hi > abs_hi → done
+ lda script_wait_val
+ cmp abs_x
+ bcc :rs_rts2           ; threshold_lo < abs_lo → still greater
+:waitxrev_done
+ lda #SCRIPT_RUN
+ sta script_state
+ jmp :exec_loop
 
 :check_waity
  lda IMAGE01_YPOS
@@ -3122,6 +3173,7 @@ OP_END      = 9
 OP_WAITY    = 10
 OP_WAITCLR  = 11
 OP_WAITNPC  = 12
+OP_WAITXREV = 13      ; wait for player X to descend to <= threshold
 
 * Script interpreter state
 SCRIPT_RUN  = 0       ; executing opcodes
@@ -3131,6 +3183,7 @@ SCRIPT_WAITCLR = 3    ; waiting for all NPCs defeated
 SCRIPT_DONE = 4       ; level ended
 SCRIPT_WAITNPC = 5    ; waiting for NPC count <= threshold
 SCRIPT_WAITUP  = 6    ; waiting for vertical scroll to complete
+SCRIPT_WAITXREV = 7   ; waiting for abs_x <= threshold
 
 * NPC behaviors (must match mission1.s definitions)
 BEHAV_NONE    = 0
@@ -3231,6 +3284,20 @@ process_input
 :not_scroll
  cmp #'8'
  beq :do_up
+ cmp #' '
+ bne :ns_not_space
+* Debug: print absolute world x (abs_x) as hex to text screen.
+ lda #$D8              ; 'X' (high bit set for text screen)
+ jsr dbg_print_char
+ lda #$BA              ; ':'
+ jsr dbg_print_char
+ lda abs_x+1
+ jsr dbg_print_hex8
+ lda abs_x
+ jsr dbg_print_hex8
+ jsr dbg_print_nl
+ rts
+:ns_not_space
  jmp :not_up              ; inverted — :not_up moved out of range
 :do_up
 * If scroll_up enabled AND on a ladder AND near top, scroll up
@@ -5392,10 +5459,12 @@ scroll_left
 
 * Step 1: Shift each scanline 4 bytes right in bank $50.
 * Copy 53 words from offset 0..104 to offset 4..108.
-* Iterate from RIGHT to LEFT to avoid overwriting source.
- lda #$2068             ; src = line_start + 104 (last word src)
+* Iterate Y from 104 DOWN to 0 — negative Y would add ~$FFFE to
+* the 24-bit pointer (lda [dp],y doesn't wrap within bank), so
+* we keep Y non-negative and hold F0/F3 at the line's left edge.
+ lda #$2000             ; src base = line_start + 0
  sta $F0
- lda #$206C             ; dst = line_start + 108 (last word dst)
+ lda #$2004             ; dst base = line_start + 4
  sta $F3
  sep $20
  lda #$50
@@ -5405,15 +5474,13 @@ scroll_left
 
  ldx #183
 :lshift_line
- ldy #0
+ ldy #104               ; read offset 104 first, work down to 0
 :lshift_word
-* Move word from [F0+y] to [F3+y], then step y back by 2
  lda [$F0],y
  sta [$F3],y
  dey
  dey
- cpy #$FFFE             ; reached negative? (cpy #-2 in 16-bit signed)
- bne :lshift_word
+ bpl :lshift_word       ; Y>=0 keeps looping; exits when Y=-2
 
  lda $F0
  clc
@@ -5587,13 +5654,24 @@ scroll_left
  dex
  bne :lfill_line
 
-* State update: lsrc_off -= 4. Borrow → was 3 → set off=109, bank--
+* State update: lsrc_off -= 4. Borrow handling:
+*  - For narrow targets with no further left-neighbor (scr9),
+*    disable scroll_left_enabled so the scroll stops cleanly
+*    instead of falling into adjacent-bank garbage.
+*  - For wide targets, wrap to 109 and decrement bank.
  sep $20
  mx %10
  lda scroll_lsrc_off
  sec
  sbc #4
  bcs :lno_under
+ lda scroll_left_screen
+ cmp #9
+ bne :lunder_wide
+ stz scroll_left_enabled
+ stz scroll_lsrc_off
+ bra :lfill_done
+:lunder_wide
  lda #109
  sta scroll_lsrc_off
  dec scroll_lsrc_bank
