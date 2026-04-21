@@ -571,11 +571,14 @@ run_script
  bcc :op_up_anchor_default
  cmp #14
  bcs :op_up_anchor_default
-* scr11/12/13: 103px wide (52 bytes). anchor=307 places scr12's
-* ladder art (at scr12 byte 37) at world 344 — matching ladder[2].
- lda #<307
+* scr11/12/13: 103px wide (52 bytes). anchor=336 — compute_up_align
+* places scr12 at playfield dst_start = 336 - world_offset, so
+* scr12 appears whole (no clipping) for any Billy xpos on the
+* ladder. Flush-left only when Billy triggers at xpos=8 (world
+* 344-336); smaller xpos shifts scr12 right but keeps it visible.
+ lda #<336
  sta scroll_up_anchor
- lda #>307
+ lda #>336
  sta scroll_up_anchor+1
  lda #52
  sta scroll_up_twidth
@@ -1130,6 +1133,10 @@ scroll_up_twidth     dw 110       ; target content width in bytes (full-
 op_up_align_delta    dw 0         ; OP_UP narrow-target: world_offset
                                   ; delta from anchor, used to shift
                                   ; Billy's xpos when pre-aligning.
+scr8_src_off         dw 0         ; scroll_right lower-fill offset into
+                                  ; scr8's bank. Initialized at narrow-
+                                  ; target snap; advances 4 per scroll_
+                                  ; right so rows 113..182 track scr8.
 snap_copy_rows       dw 183       ; row count for snap_transition copies
                                   ; (source, lgap, rgap). 183 = default;
                                   ; narrow-height targets (scr11/12/13)
@@ -3440,40 +3447,6 @@ process_input
  lda IMAGE01_YPOS
  jsr dbg_print_hex8
  jsr dbg_print_nl
-* For narrow targets (scr11/12/13), pin world_offset to the
-* anchor so compute_up_align returns dst_start=0 / up_count=
-* twidth during every scroll iteration — scr12 stays flush at
-* the playfield's left edge throughout the scroll. Billy is on
-* the ladder here, so |delta| is at most the ladder's width and
-* the xpos shift stays inside the playfield.
- lda scroll_up_screen
- cmp #11
- bcc :do_up_align_done
- cmp #14
- bcs :do_up_align_done
- sec
- lda world_offset
- sbc scroll_up_anchor
- sta op_up_align_delta
- lda world_offset+1
- sbc scroll_up_anchor+1
- sta op_up_align_delta+1
- lda op_up_align_delta
- ora op_up_align_delta+1
- beq :do_up_align_done
- clc
- lda op_up_align_delta
- adc IMAGE01_XPOS
- sta IMAGE01_XPOS
- ldy #2
- sta (info_ptr),y
- ldy #34
- sta (info_ptr),y
- lda scroll_up_anchor
- sta world_offset
- lda scroll_up_anchor+1
- sta world_offset+1
-:do_up_align_done
 * Scroll world up by 4 rows with climbing animation
  jsr advance_climb
  jsr save_sprite
@@ -5581,6 +5554,73 @@ scroll_right
 :fill_done
  rep $20
  mx %00
+* Lower-screen fill: for narrow-target scrolling (scr11/12/13),
+* overwrite the rightmost 4 bytes of playfield rows 113..182
+* with scr8 ($0B) content tracked by scr8_src_off. This keeps
+* scr8 visible below the upper level as the player scrolls right.
+ sep $20
+ mx %10
+ lda current_screen
+ cmp #11
+ bcc :sr_lower_skip
+ cmp #14
+ bcs :sr_lower_skip
+ rep $20
+ mx %00
+ lda scr8_src_off
+ cmp #110
+ bcc :sr_lower_run      ; off < 110 → fill normally
+ jmp :sr_lower_done     ; off >= 110 → scr8 exhausted, skip
+:sr_lower_run
+ and #$00FF
+ clc
+ adc #$2000
+ sta $F0                ; src = scr8/(2000 + scr8_src_off)
+ lda #$670A             ; dst = $50/(2000 + 113*160 + 106)
+ sta $F3
+ sep $20
+ mx %10
+ lda #$0B               ; scr8 bank
+ sta $F2
+ lda #$50
+ sta $F5
+ rep $20
+ mx %00
+ ldx #70
+:sr_lower_row
+ ldy #0
+ lda [$F0],y
+ sta [$F3],y
+ iny
+ iny
+ lda [$F0],y
+ sta [$F3],y
+ lda $F0
+ clc
+ adc #$00A0
+ sta $F0
+ lda $F3
+ clc
+ adc #$00A0
+ sta $F3
+ dex
+ bne :sr_lower_row
+ sep $20
+ mx %10
+ lda scr8_src_off
+ clc
+ adc #4
+ sta scr8_src_off
+ lda scr8_src_off+1
+ adc #0
+ sta scr8_src_off+1
+ rep $20
+ mx %00
+ bra :sr_lower_done
+:sr_lower_skip
+ rep $20
+ mx %00
+:sr_lower_done
 
 * Step 3: Fast unrolled blit $50 -> $55 (back buffer)
  jsr fast_blit_50_55
@@ -6440,6 +6480,13 @@ scroll_up
  sta $F3
  dex
  bne :snap_dr_row
+* Initialize scr8_src_off for scroll_right's lower-row fill.
+* The snap above placed scr8 bytes 0..57 into playfield 52..109,
+* so the next byte to bring in is scr8 byte 58.
+ lda #58
+ sta scr8_src_off
+ lda #0
+ sta scr8_src_off+1
 :snap_lower_done
 
  sec
