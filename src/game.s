@@ -4066,9 +4066,19 @@ update_anims
  sta (info_ptr),y     ; prev_frame_y <- current frame_y
  lda IMAGE01_MIRROR
  bne :adv_left
+* Jumping right — clamp at PLAYER_MAX_X so Billy's feet stay
+* inside the playfield instead of walking past the right edge.
+ lda IMAGE01_XPOS
+ cmp #PLAYER_MAX_X
+ bcs :adv_done
  inc IMAGE01_XPOS
  bra :adv_done
 :adv_left
+* Jumping left — clamp at xpos=1 so the sprite's left edge
+* doesn't cross the playfield's left boundary.
+ lda IMAGE01_XPOS
+ cmp #2
+ bcc :adv_done
  dec IMAGE01_XPOS
 :adv_done
  ldy #2
