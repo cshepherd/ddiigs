@@ -1794,6 +1794,8 @@ update_npcs
 SCROLL_THRESH = 80    ; player xpos at/over which walking scrolls right
 LEFT_SCROLL_THRESH = 30 ; player xpos at/under which walking scrolls left
 UP_SCROLL_THRESH = 90 ; player ypos at/under which walking-up scrolls
+KICK_BACK_EXT = 10     ; bytes to extend kick hit box opposite Billy's
+                       ; facing so the foot reaches enemies behind him
 PLAYFIELD_EDGE = 109   ; rightmost byte position in the 110-byte playfield
 PLAYER_MAX_X = 98      ; rightmost xpos the player can walk to — ~22px inset
                        ; from PLAYFIELD_EDGE so Billy doesn't walk into the
@@ -4326,36 +4328,93 @@ update_anims
  bne :try_p2
  lda anim_ptr+1
  cmp #>anim_punch1
- beq :do_hit_now
- bra :try_p2
+ bne :try_p2
+ jmp :do_hit_now
 :try_p2
  lda anim_ptr
  cmp #<anim_punch2
  bne :try_wp
  lda anim_ptr+1
  cmp #>anim_punch2
- beq :do_hit_now
+ bne :try_wp
+ jmp :do_hit_now
 :try_wp
  lda anim_ptr
  cmp #<anim_wpunch
  bne :try_rp
  lda anim_ptr+1
  cmp #>anim_wpunch
- beq :do_hit_now
+ bne :try_rp
+ jmp :do_hit_now
 :try_rp
  lda anim_ptr
  cmp #<anim_rpunch
  bne :try_lp
  lda anim_ptr+1
  cmp #>anim_rpunch
- beq :do_hit_now
+ bne :try_lp
+ jmp :do_hit_now
 :try_lp
  lda anim_ptr
  cmp #<anim_lpunch
- bne :no_punch_hit
+ bne :try_kick
  lda anim_ptr+1
  cmp #>anim_lpunch
+ bne :try_kick
+ jmp :do_hit_now
+:try_kick
+ lda anim_ptr
+ cmp #<anim_kick
  bne :no_punch_hit
+ lda anim_ptr+1
+ cmp #>anim_kick
+ bne :no_punch_hit
+* Back-kick: KICK2 renders Billy's foot opposite his facing so
+* the sprite's natural bounding box doesn't cover enemies behind
+* him. Extend the hit box by KICK_BACK_EXT bytes in the opposite
+* direction before calling the standard punch-hit path, then
+* restore IMAGE01_XPOS / FRAME_X / FRAME_Y afterward. Override
+* FRAME_Y to walk-height (40) so the vertical tolerance in
+* check_punch_hit isn't thrown off by KICK2's shorter 34-row box.
+ lda IMAGE01_XPOS
+ sta :kick_saved_xpos
+ lda FRAME_X
+ sta :kick_saved_fx
+ lda FRAME_Y
+ sta :kick_saved_fy
+ lda #40
+ sta FRAME_Y
+ lda IMAGE01_MIRROR
+ bne :kick_extend_right
+* Mirror=0 (facing right): foot reaches LEFT. Shift xpos left and
+* widen FRAME_X so the box covers xpos-EXT..xpos+FRAME_X.
+ lda IMAGE01_XPOS
+ sec
+ sbc #KICK_BACK_EXT
+ bcs :kick_xl_ok
+ lda #0
+:kick_xl_ok
+ sta IMAGE01_XPOS
+ lda FRAME_X
+ clc
+ adc #KICK_BACK_EXT
+ sta FRAME_X
+ bra :kick_do_hit
+:kick_extend_right
+* Mirror=1 (facing left): foot reaches RIGHT. Just widen FRAME_X.
+ lda FRAME_X
+ clc
+ adc #KICK_BACK_EXT
+ sta FRAME_X
+:kick_do_hit
+ jsr check_punch_hit
+ lda :kick_saved_xpos
+ sta IMAGE01_XPOS
+ lda :kick_saved_fx
+ sta FRAME_X
+ lda :kick_saved_fy
+ sta FRAME_Y
+ jmp :no_punch_hit
 :do_hit_now
  jsr check_punch_hit
 :no_punch_hit
@@ -4407,6 +4466,9 @@ update_anims
 
 :frm dfb 0
 :ne_tmp dfb 0
+:kick_saved_xpos dfb 0
+:kick_saved_fx   dfb 0
+:kick_saved_fy   dfb 0
 
 *----------------------------------------------------------
 * toolbox_init - Start IIgs Toolbox tools
