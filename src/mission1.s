@@ -672,9 +672,10 @@ ladders dfb 3                   ; ladder count
 * Ladder 3: screen 12 → screen 10 above.
 * Positioned at world byte 344..351 (spacebar showed world_x
 * $0158 = 344 at the visible ladder art). check_ladder compares
-* against world_offset+xpos, not abs_x.
- dw 363                         ; x_left
- dw 370                         ; x_right
+* against world_offset+xpos, not abs_x. Shifted to track
+* scroll_up_anchor 328 → 325 (see game.s :op_up_notscr10).
+ dw 362                         ; x_left
+ dw 369                         ; x_right
  dfb 0,68                       ; y_top=0, y_bottom=68
 
 *==========================================================

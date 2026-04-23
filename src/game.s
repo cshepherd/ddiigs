@@ -571,14 +571,13 @@ run_script
  bcc :op_up_anchor_default
  cmp #14
  bcs :op_up_anchor_default
-* scr11/12/13: 103px wide (52 bytes). anchor=336 — compute_up_align
-* places scr12 at playfield dst_start = 336 - world_offset, so
-* scr12 appears whole (no clipping) for any Billy xpos on the
-* ladder. Flush-left only when Billy triggers at xpos=8 (world
-* 344-336); smaller xpos shifts scr12 right but keeps it visible.
- lda #<336
+* scr11/12/13: 103px wide (52 bytes). anchor=325 — shifts scr12
+* and its scr11 right-fill ~21px (11 bytes) further left in the
+* playfield vs the previous anchor=336. compute_up_align places
+* scr12 at playfield dst_start = 325 - world_offset.
+ lda #<325
  sta scroll_up_anchor
- lda #>336
+ lda #>325
  sta scroll_up_anchor+1
  lda #52
  sta scroll_up_twidth
@@ -609,9 +608,11 @@ run_script
 :op_up_lw_done
 * Initial scroll_up_off. Default 182 covers the full 183-row
 * playfield. Targets scr11/12/13 are only 113 lines tall (their
-* bank has content in rows 0..112 and empty rows 113..199). Start
-* scroll with ufill_top=112 so the fill pulls valid content from
-* the first iteration. scroll_up_off = ufill_top + 3 = 115.
+* bank has content in rows 0..112 and empty rows 113..199). Each
+* frame copies 4 rows starting at ufill_top = scroll_up_off - 3
+* and advancing downward, so ufill_top + 3 must stay ≤ 112 for
+* all 4 source rows to be valid. scroll_up_off = 112 → ufill_top
+* = 109, first frame reads rows 109..112 (all valid).
 * Also set snap_copy_rows so snap_transition only copies the 113
 * valid rows, leaving rows 113..182 as the pre-scroll content that
 * shifted down during the incremental scroll.
@@ -621,7 +622,7 @@ run_script
  bcc :op_up_off_std    ; target < 11 → full-height
  cmp #14
  bcs :op_up_off_std    ; target >= 14 → full-height
- lda #115
+ lda #112
  sta scroll_up_off
  lda #113
  sta snap_copy_rows
@@ -6351,11 +6352,106 @@ scroll_up
  xce
  rep $30
  mx %00
-* Copy source screen to $50 row-by-row with dynamic horizontal
-* align (computed from world_offset vs UP_X_ANCHOR). Narrow-
-* target alignment is already handled at OP_UP time — world_offset
-* is pinned to the anchor there so compute gives dst_start=0.
+* For narrow targets (scr11/12/13): temporarily pin world_offset
+* to scroll_up_anchor around the compute call, then restore.
+* This forces dst_start=0 in the snap only — scr12 shows its full
+* 52 bytes at cols 0..51, aligning with the hardcoded scr9 lower
+* fill. Climb-phase compute still uses actual world_offset, so
+* no teleport and the incremental scroll stays smooth.
+* We're in mx %00 (16-bit A), so a single sta writes both bytes.
+ lda scroll_up_twidth
+ cmp #52
+ bne :snap_no_pin
+ lda world_offset
+ sta :snap_wo_delta
+ lda scroll_up_anchor
+ sta world_offset
  jsr compute_up_align
+ lda :snap_wo_delta
+ sta world_offset
+ bra :snap_compute_done
+:snap_no_pin
+ jsr compute_up_align
+:snap_compute_done
+* DEBUG: one-line dump of world_offset / anchor / up_dst_start at
+* snap time so we can see whether the post-snap position drifts
+* run-to-run. Switch to emulation to use ROM COUT, then restore
+* native 16-bit mode for the rest of snap_transition.
+ sec
+ xce
+ mx %11
+ lda #$D7              ; 'W'
+ jsr dbg_print_char
+ lda #$CF              ; 'O'
+ jsr dbg_print_char
+ lda #$A0
+ jsr dbg_print_char
+ lda world_offset+1
+ jsr dbg_print_hex8
+ lda world_offset
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda #$C1              ; 'A'
+ jsr dbg_print_char
+ lda #$CE              ; 'N'
+ jsr dbg_print_char
+ lda #$A0
+ jsr dbg_print_char
+ lda scroll_up_anchor+1
+ jsr dbg_print_hex8
+ lda scroll_up_anchor
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda #$C4              ; 'D'
+ jsr dbg_print_char
+ lda #$D3              ; 'S'
+ jsr dbg_print_char
+ lda #$A0
+ jsr dbg_print_char
+ lda up_dst_start+1
+ jsr dbg_print_hex8
+ lda up_dst_start
+ jsr dbg_print_hex8
+ jsr dbg_print_nl
+ clc
+ xce
+ rep $30
+ mx %00
+* Clear the left gap (cols 0..up_dst_start-1) at rows 0..snap_copy_rows-1
+* to zero, so stale shifted-down pre-climb content doesn't show through
+* in the area exposed by the nudge. Only when lbank=0 (no left neighbor)
+* and up_dst_start > 0. The following scr12 copy will overwrite any
+* odd-byte overshoot (we write words) at col up_dst_start.
+ lda scroll_up_lbank
+ and #$00FF
+ bne :snap_clr_done
+ lda up_dst_start
+ beq :snap_clr_done
+ lda #$2000
+ sta $F3
+ sep $20
+ lda #$50
+ sta $F5
+ rep $20
+ ldx snap_copy_rows
+:snap_clr_row
+ ldy #0
+ lda #$0000
+:snap_clr_word
+ sta [$F3],y
+ iny
+ iny
+ cpy up_dst_start
+ bcc :snap_clr_word
+ lda $F3
+ clc
+ adc #$00A0
+ sta $F3
+ dex
+ bne :snap_clr_row
+:snap_clr_done
  lda up_count
  beq :snap_skip_copy
 * Setup pointers (apply offsets)
@@ -6717,6 +6813,21 @@ scroll_up
  dec :dl_cnt
  bne :dl_scan
 :dl_done
+* For narrow targets: nudge Billy's xpos right at snap so he
+* ends up aligned with scr12's ladder art. Without this, Billy
+* stays at his climb-phase xpos, which is the column where
+* scr9's ladder base was — not scr12's ladder art column. This
+* is a discrete snap-moment adjustment, not a mid-climb teleport.
+ lda scroll_up_twidth
+ cmp #52
+ bne :snap_no_xpos_fix
+ lda IMAGE01_XPOS
+ clc
+ adc #10
+ sta IMAGE01_XPOS
+ ldy #2
+ sta (info_ptr),y
+:snap_no_xpos_fix
 
 * Blit the new playfield to screen
  clc
