@@ -5703,7 +5703,10 @@ scroll_right
  lda scr8_src_off
  cmp #110
  bcc :sr_lower_run      ; off < 110 → fill normally
- jmp :sr_lower_done     ; off >= 110 → scr8 exhausted, skip
+ sec
+ sbc #110               ; off >= 110 → wrap back to 0..109 so scr8
+ sta scr8_src_off       ; tiles repeatedly below scr13 instead of
+                        ; leaving black space when exhausted.
 :sr_lower_run
  and #$00FF
  clc
