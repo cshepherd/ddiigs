@@ -571,13 +571,13 @@ run_script
  bcc :op_up_anchor_default
  cmp #14
  bcs :op_up_anchor_default
-* scr11/12/13: 103px wide (52 bytes). anchor=325 — shifts scr12
-* and its scr11 right-fill ~21px (11 bytes) further left in the
+* scr11/12/13: 103px wide (52 bytes). anchor=329 — shifts scr12
+* and its scr11 right-fill ~13px (7 bytes) further left in the
 * playfield vs the previous anchor=336. compute_up_align places
-* scr12 at playfield dst_start = 325 - world_offset.
- lda #<325
+* scr12 at playfield dst_start = 329 - world_offset.
+ lda #<329
  sta scroll_up_anchor
- lda #>325
+ lda #>329
  sta scroll_up_anchor+1
  lda #52
  sta scroll_up_twidth
@@ -3423,10 +3423,10 @@ process_input
  lda world_offset+1
  adc #0
  sta world_offset+1
-* Player advanced 4 bytes (8 pixels) through the world
+* Player advanced 4 bytes through the world
  lda abs_x
  clc
- adc #8
+ adc #4
  sta abs_x
  lda abs_x+1
  adc #0
@@ -3468,18 +3468,26 @@ process_input
 :ns_not_space
  jmp :not_up              ; inverted — :not_up moved out of range
 :do_up
-* If scroll_up enabled AND on a ladder AND near top, scroll up
+* If scroll_up enabled AND on a ladder AND near top, scroll up.
+* Inverted branches + jmp because :up_walk moved out of 8-bit range
+* when the ladder-center snap code was added below.
  lda scroll_up_enabled
- beq :up_walk
+ bne :do_up_enabled
+ jmp :up_walk
+:do_up_enabled
  lda IMAGE01_YPOS
  cmp #UP_SCROLL_THRESH
- bcs :up_walk
+ bcc :do_up_under_thresh
+ jmp :up_walk
+:do_up_under_thresh
 * Check if player is on a ladder
  lda IMAGE01_XPOS
  sta chk_xpos
  lda IMAGE01_YPOS
  jsr check_ladder
- bcs :up_walk           ; not on ladder — normal walk
+ bcc :do_up_on_ladder   ; on ladder — continue
+ jmp :up_walk           ; not on ladder — normal walk
+:do_up_on_ladder
 * DEBUG: 'US' = up-scroll fired at current ypos
  lda #$D5              ; 'U'
  jsr dbg_print_char
@@ -3490,12 +3498,129 @@ process_input
  lda IMAGE01_YPOS
  jsr dbg_print_hex8
  jsr dbg_print_nl
+* Snap to ladder center for any climb. Scans ladder_buf for the
+* ladder Billy's currently on, computes its world-x center, and
+* pins world_offset = scroll_up_anchor while setting IMAGE01_XPOS
+* = center - anchor. This guarantees Billy always lands on the
+* ladder's horizontal midpoint regardless of approach, making
+* every climb visually consistent.
+* Idempotent: subsequent climb frames reach the same values.
+ lda ladder_count
+ bne :sn_have_ladders
+ jmp :sn_done
+:sn_have_ladders
+ sta :sn_cnt
+ clc
+ lda IMAGE01_XPOS
+ adc world_offset
+ sta :sn_wx
+ lda #0
+ adc world_offset+1
+ sta :sn_wx+1
+ ldx #0
+:sn_scan
+ bra :sn_scan_body
+:sn_next_tramp
+ jmp :sn_next
+:sn_scan_body
+ lda :sn_wx+1
+ cmp ladder_buf+1,x
+ bcc :sn_next_tramp
+ bne :sn_ge_lf
+ lda :sn_wx
+ cmp ladder_buf,x
+ bcc :sn_next_tramp
+:sn_ge_lf
+ lda ladder_buf+3,x
+ cmp :sn_wx+1
+ bcc :sn_next_tramp
+ bne :sn_le_rt
+ lda ladder_buf+2,x
+ cmp :sn_wx
+ bcc :sn_next_tramp
+:sn_le_rt
+* Found the ladder. Compute center = (x_left + x_right) / 2.
+ clc
+ lda ladder_buf,x
+ adc ladder_buf+2,x
+ sta :sn_ctr
+ lda ladder_buf+1,x
+ adc ladder_buf+3,x
+ sta :sn_ctr+1
+ lsr :sn_ctr+1
+ ror :sn_ctr
+* Always center Billy on the ladder: xpos = center - world_offset
+* - 3. The -3 shifts Billy's 8-byte-wide sprite left so its visual
+* midpoint lands on the ladder center instead of its left edge.
+* world_offset stays at its current (approach-dependent) value,
+* so the teleport is at most half the ladder width.
+ lda :sn_ctr
+ sec
+ sbc world_offset
+ sec
+ sbc #3
+ sta IMAGE01_XPOS
+ ldy #2
+ sta (info_ptr),y
+* Narrow-specific xpos adjustment: after the default wide snap,
+* shift Billy 7 bytes right. Ladder 3's visible art sits further
+* right than ladders 1/2 relative to the def, so the universal
+* -3 leaves Billy too far left on narrow targets.
+ lda scroll_up_twidth
+ cmp #52
+ bne :sn_post_snap
+ lda IMAGE01_XPOS
+ clc
+ adc #7
+ sta IMAGE01_XPOS
+ ldy #2
+ sta (info_ptr),y
+:sn_post_snap
+* Update abs_x to reflect the world_x change from the snap so it
+* stays deterministic. delta = new_world_x - old_world_x
+* (:sn_wx was saved at scan start). 2's-complement subtract and
+* 16-bit add; abs_x tracks the signed delta correctly.
+ clc
+ lda IMAGE01_XPOS
+ adc world_offset
+ sta :sn_new_wx
+ lda #0
+ adc world_offset+1
+ sta :sn_new_wx+1
+ sec
+ lda :sn_new_wx
+ sbc :sn_wx
+ sta :sn_new_wx
+ lda :sn_new_wx+1
+ sbc :sn_wx+1
+ sta :sn_new_wx+1
+ clc
+ lda abs_x
+ adc :sn_new_wx
+ sta abs_x
+ lda abs_x+1
+ adc :sn_new_wx+1
+ sta abs_x+1
+ bra :sn_done
+:sn_next
+ txa
+ clc
+ adc #6
+ tax
+ dec :sn_cnt
+ beq :sn_done
+ jmp :sn_scan
+:sn_done
 * Scroll world up by 4 rows with climbing animation
  jsr advance_climb
  jsr save_sprite
  jsr scroll_up
  jsr load_sprite
  rts
+:sn_wx     ds 2
+:sn_cnt    dfb 0
+:sn_ctr    ds 2
+:sn_new_wx ds 2
 :up_walk
  lda IMAGE01_XPOS
  sta chk_xpos
@@ -3606,10 +3731,12 @@ process_input
  jsr scroll_left
  jsr load_sprite
  jsr sync_current_screen_left
-* abs_x retreats by 8 pixels through the world
+* abs_x retreats by 4 bytes — matches world_offset -= 4 so abs_x
+* represents the player's cumulative byte-displacement through
+* the world (1 per walk press, 4 per scroll, 1 per VBL of jump).
  lda abs_x
  sec
- sbc #8
+ sbc #4
  sta abs_x
  lda abs_x+1
  sbc #0
@@ -3663,10 +3790,12 @@ process_input
  lda world_offset+1
  adc #0
  sta world_offset+1
-* abs_x advances by 8 pixels through the world
+* abs_x advances by 4 bytes — matches world_offset += 4 so abs_x
+* represents the player's cumulative byte-displacement through
+* the world (1 per walk press, 4 per scroll, 1 per VBL of jump).
  lda abs_x
  clc
- adc #8
+ adc #4
  sta abs_x
  lda abs_x+1
  adc #0
@@ -5701,12 +5830,12 @@ scroll_right
  rep $20
  mx %00
  lda scr8_src_off
- cmp #110
- bcc :sr_lower_run      ; off < 110 → fill normally
+ cmp #107
+ bcc :sr_lower_run      ; off <= 106 → 4-byte read stays in 0..109
  sec
- sbc #110               ; off >= 110 → wrap back to 0..109 so scr8
- sta scr8_src_off       ; tiles repeatedly below scr13 instead of
-                        ; leaving black space when exhausted.
+ sbc #107               ; off >= 107 → would read past byte 109
+ sta scr8_src_off       ; (invalid). Wrap to 0..106 so every read
+                        ; is within scr8's valid byte range.
 :sr_lower_run
  and #$00FF
  clc
@@ -6199,8 +6328,8 @@ scroll_up
 * For narrow targets, temporarily pin world_offset to (anchor+N)
 * around compute so the incremental fill renders consistent
 * scr12 content. world_offset is restored immediately — Billy's
-* xpos is untouched, so no teleport. N=7 shifts visible scr12
-* content 14px left to match user-tuned alignment; tune here.
+* xpos is untouched, so no teleport. Pin to (anchor+15) to shift
+* scr12 ladder art 1 more byte left during climb.
  lda scroll_up_twidth
  cmp #52
  bne :no_climb_pin
@@ -6208,7 +6337,7 @@ scroll_up
  sta :snap_wo_delta
  lda scroll_up_anchor
  clc
- adc #7
+ adc #15
  sta world_offset
  jsr compute_up_align
  lda :snap_wo_delta
@@ -6437,10 +6566,8 @@ scroll_up
  mx %00
 * For narrow targets (scr11/12/13): temporarily pin world_offset
 * to scroll_up_anchor around the compute call, then restore.
-* This forces dst_start=0 in the snap only — scr12 shows its full
-* 52 bytes at cols 0..51, aligning with the hardcoded scr9 lower
-* fill. Climb-phase compute still uses actual world_offset, so
-* no teleport and the incremental scroll stays smooth.
+* src_start=0 shifts snap art 1 byte right of its previous
+* position (+1 pin), addressing "2px left at snap".
 * We're in mx %00 (16-bit A), so a single sta writes both bytes.
  lda scroll_up_twidth
  cmp #52
@@ -6702,10 +6829,13 @@ scroll_up
  sta $F3
  dex
  bne :snap_drow
-* scr8 fill — playfield bytes 52..109 (58 bytes), rows 113..182.
+* scr8 fill — playfield bytes 51..109 (59 bytes), rows 113..182.
+* Starts at col 51 (not 52) to overwrite scr9's empty byte 51
+* (scr9 is only 51 bytes of art, 0..50) and close the 2px seam
+* between scr9 and scr8.
  lda #$2000
  sta $F0               ; src = scr8/$2000 (row 0, byte 0)
- lda #$66D4            ; dst = $50/$66A0 + 52 (row 113, byte 52)
+ lda #$66D3            ; dst = $50/$66A0 + 51 (row 113, byte 51)
  sta $F3
  sep $20
  lda #$0B              ; scr8 bank
@@ -6719,7 +6849,7 @@ scroll_up
  sta [$F3],y
  iny
  iny
- cpy #58               ; playfield bytes 52..109 = 58 bytes
+ cpy #59               ; playfield bytes 51..109 = 59 bytes
  bcc :snap_dr_wrd
  lda $F0
  clc
@@ -6732,9 +6862,9 @@ scroll_up
  dex
  bne :snap_dr_row
 * Initialize scr8_src_off for scroll_right's lower-row fill.
-* The snap above placed scr8 bytes 0..57 into playfield 52..109,
-* so the next byte to bring in is scr8 byte 58.
- lda #58
+* The snap above placed scr8 bytes 0..58 into playfield 51..109,
+* so the next byte to bring in is scr8 byte 59.
+ lda #59
  sta scr8_src_off
  lda #0
  sta scr8_src_off+1
@@ -6897,10 +7027,9 @@ scroll_up
  bne :dl_scan
 :dl_done
 * For narrow targets: nudge Billy's xpos right at snap so he
-* ends up aligned with scr12's ladder art. Without this, Billy
-* stays at his climb-phase xpos, which is the column where
-* scr9's ladder base was — not scr12's ladder art column. This
-* is a discrete snap-moment adjustment, not a mid-climb teleport.
+* ends up aligned with scr12's ladder art. Also update abs_x by
+* the same amount so abs_x stays in sync with world_x (world_x =
+* world_offset + IMAGE01_XPOS, so +10 on xpos means +10 on world_x).
  lda scroll_up_twidth
  cmp #52
  bne :snap_no_xpos_fix
@@ -6910,6 +7039,13 @@ scroll_up
  sta IMAGE01_XPOS
  ldy #2
  sta (info_ptr),y
+ lda abs_x
+ clc
+ adc #10
+ sta abs_x
+ lda abs_x+1
+ adc #0
+ sta abs_x+1
 :snap_no_xpos_fix
 
 * Blit the new playfield to screen

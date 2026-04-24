@@ -123,7 +123,7 @@ level_script
 
 ; screen 2
     db OP_WAITX
-    dw 400              ; wait for player abs X >= 400
+    dw $0112            ; wait for player abs_x >= 274 (scr2 Ropers)
     db OP_SCRLOCK       ; stuck here
     db OP_NPC           ; Roper near right edge
     dw roper_sprite
@@ -140,7 +140,7 @@ level_script
 
 ; screen 3
      db OP_WAITX
-     dw 650              ; wait for player abs X >= 650
+     dw $0182            ; wait for player abs_x >= 402 (scr3 Linda)
      db OP_SCRLOCK
      db OP_NPC           ; Linda Lash descending ladder
      dw linda_sprite
@@ -187,17 +187,22 @@ level_script
     db OP_UP,10,8,$ff     ; Up to screen 8, left=screen 9, right=none
 
     db OP_WAITXREV
-    dw $0314              ; wait for player to descend back to abs_x <= 788
+    dw $0195              ; wait for player to descend back to abs_x <= 788
     db OP_LEFT,9          ; enable leftward scroll to screen 9 (narrow, 102px)
+
+    db OP_WAITXREV
+    dw $0171
+    db OP_SCRLOCK         ; lock scrolling in screen 9 (final screen)
+
     db OP_UP,12,$FF,11    ; enable climb on ladder 3 (scr12→scr10, scr11 rfill)
 
     db OP_WAITX
-    dw 660              ; wait for player abs X >= 600
+    dw $0198              ; wait for player abs X >= 600
 
     db OP_RIGHT,13        ; enable right-scroll → scr13 after scr11
 
     db OP_WAITX
-    dw $039B
+    dw $0210
     db OP_SCRLOCK         ; lock scrolling in screen 13 (final screen)
 
     db OP_END           ; end of level
@@ -675,11 +680,12 @@ ladders dfb 3                   ; ladder count
  dfb 0,59                       ; y_top=0, y_bottom=59
 * Ladder 3: screen 12 → screen 10 above.
 * Positioned at world byte 344..351 (spacebar showed world_x
-* $0158 = 344 at the visible ladder art). check_ladder compares
-* against world_offset+xpos, not abs_x. Shifted to track
-* scroll_up_anchor 328 → 325 (see game.s :op_up_notscr10).
- dw 362                         ; x_left
- dw 369                         ; x_right
+* $0158 = 344 at the visible ladder art). Widened on the left
+* (354 vs 358) so Billy's snap target (center = 359) keeps him
+* within the climb-detection zone while landing 2 bytes left of
+* his previous position.
+ dw 354                         ; x_left
+ dw 365                         ; x_right
  dfb 0,68                       ; y_top=0, y_bottom=68
 
 *==========================================================
