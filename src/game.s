@@ -1437,7 +1437,9 @@ load_ladders
 check_ladder
  sta :prop_y
  lda ladder_count
- beq :cl_no
+ bne :cl_have
+ jmp :cl_no
+:cl_have
 * Compute sprite_world_x = world_offset + chk_xpos (16-bit)
  lda chk_xpos
  sta :swx
@@ -1449,28 +1451,46 @@ check_ladder
  lda :swx+1
  adc world_offset+1
  sta :swx+1
+* Precompute tolerance-shifted values so ladder entry is forgiving
+* by LADDER_TOL bytes (2 bytes = 4px) on each side. swx_l is used
+* for the x_left compare (swx+TOL must be >= x_left → effective
+* lenient by TOL on the left). swx_r is used for x_right compare
+* (swx-TOL <= x_right → lenient by TOL on the right).
+ clc
+ lda :swx
+ adc #LADDER_TOL
+ sta :swx_l
+ lda :swx+1
+ adc #0
+ sta :swx_l+1
+ sec
+ lda :swx
+ sbc #LADDER_TOL
+ sta :swx_r
+ lda :swx+1
+ sbc #0
+ sta :swx_r+1
  lda #0
  sta :cl_idx
 :cl_scan
  ldx :cl_idx
-* sprite_world_x >= x_left?
-* Compare 16-bit: :swx vs ladder_buf[x..x+1] (low,high)
- lda :swx+1
+* sprite_world_x + TOL >= x_left? (compare :swx_l vs ladder_buf[x])
+ lda :swx_l+1
  cmp ladder_buf+1,x    ; x_left high
- bcc :cl_next          ; swx_hi < xl_hi → too far left
- bne :ge_left          ; swx_hi > xl_hi → ge
- lda :swx
+ bcc :cl_next          ; too far left
+ bne :ge_left
+ lda :swx_l
  cmp ladder_buf,x      ; x_left low
- bcc :cl_next          ; swx_lo < xl_lo → too far left
+ bcc :cl_next
 :ge_left
-* sprite_world_x <= x_right?
+* sprite_world_x - TOL <= x_right? (compare :swx_r vs ladder_buf[x+2])
  lda ladder_buf+3,x    ; x_right high
- cmp :swx+1
- bcc :cl_next          ; xr_hi < swx_hi → too far right
+ cmp :swx_r+1
+ bcc :cl_next          ; too far right
  bne :le_right
  lda ladder_buf+2,x    ; x_right low
- cmp :swx
- bcc :cl_next          ; xr_lo < swx_lo → too far right
+ cmp :swx_r
+ bcc :cl_next
 :le_right
 * y_top <= proposed_y <= y_bottom?
  lda :prop_y
@@ -1505,7 +1525,11 @@ check_ladder
 :prop_y dfb 0
 :cl_idx dfb 0
 :swx    ds 2
+:swx_l  ds 2         ; swx + LADDER_TOL (lenient left bound)
+:swx_r  ds 2         ; swx - LADDER_TOL (lenient right bound)
 :tmp    dfb 0
+
+LADDER_TOL = 2        ; ±2 bytes (±4px) tolerance for ladder entry
 
 * Overlay state (POINT_RIGHT arrow shown on OP_RIGHT)
 overlay_timer  dfb 0          ; frames remaining (0 = inactive)
