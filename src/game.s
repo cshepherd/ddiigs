@@ -742,16 +742,38 @@ run_script
 
 *--- Wait condition checks ---
 
+* Local rts for the waitx/waitxrev paths: the debug prints pushed
+* :rs_rts2 out of 8-bit branch range, so branch to this local one.
+:wx_wait_rts rts
+
 :check_waitx
 * Check if player absolute X >= threshold (16-bit compare)
  lda abs_x+1
  cmp script_wait_val+1
- bcc :rs_rts2           ; not yet (high byte less)
+ bcc :wx_wait_rts       ; not yet (high byte less)
  bne :waitx_done        ; high byte greater — done
  lda abs_x
  cmp script_wait_val
- bcc :rs_rts2           ; low byte less
+ bcc :wx_wait_rts       ; low byte less
 :waitx_done
+* DEBUG: 'WX xxxx=tttt' — abs_x vs threshold at the moment the op fires.
+ lda #$D7              ; 'W'
+ jsr dbg_print_char
+ lda #$D8              ; 'X'
+ jsr dbg_print_char
+ lda #$A0
+ jsr dbg_print_char
+ lda abs_x+1
+ jsr dbg_print_hex8
+ lda abs_x
+ jsr dbg_print_hex8
+ lda #$BD              ; '='
+ jsr dbg_print_char
+ lda script_wait_val+1
+ jsr dbg_print_hex8
+ lda script_wait_val
+ jsr dbg_print_hex8
+ jsr dbg_print_nl
  lda #SCRIPT_RUN
  sta script_state
  jmp :exec_loop         ; condition met, resume executing
@@ -760,12 +782,30 @@ run_script
 * Check if player absolute X <= threshold (16-bit compare)
  lda script_wait_val+1
  cmp abs_x+1
- bcc :rs_rts2           ; threshold_hi < abs_hi → abs still greater
+ bcc :wx_wait_rts       ; threshold_hi < abs_hi → abs still greater
  bne :waitxrev_done     ; threshold_hi > abs_hi → done
  lda script_wait_val
  cmp abs_x
- bcc :rs_rts2           ; threshold_lo < abs_lo → still greater
+ bcc :wx_wait_rts       ; threshold_lo < abs_lo → still greater
 :waitxrev_done
+* DEBUG: 'WR xxxx=tttt' — abs_x vs threshold at the moment the op fires.
+ lda #$D7              ; 'W'
+ jsr dbg_print_char
+ lda #$D2              ; 'R'
+ jsr dbg_print_char
+ lda #$A0
+ jsr dbg_print_char
+ lda abs_x+1
+ jsr dbg_print_hex8
+ lda abs_x
+ jsr dbg_print_hex8
+ lda #$BD              ; '='
+ jsr dbg_print_char
+ lda script_wait_val+1
+ jsr dbg_print_hex8
+ lda script_wait_val
+ jsr dbg_print_hex8
+ jsr dbg_print_nl
  lda #SCRIPT_RUN
  sta script_state
  jmp :exec_loop
@@ -4073,6 +4113,17 @@ update_anims
  cmp #PLAYER_MAX_X
  bcs :adv_done
  inc IMAGE01_XPOS
+* If player (controller=1 at info+22), also advance abs_x so
+* jumps contribute to world-position tracking the same as walks.
+* Without this, OP_WAITX thresholds fire at different times
+* depending on how much the player jumped.
+ ldy #22
+ lda (info_ptr),y
+ cmp #1
+ bne :adv_done
+ inc abs_x
+ bne :adv_done
+ inc abs_x+1
  bra :adv_done
 :adv_left
 * Jumping left — clamp at xpos=1 so the sprite's left edge
@@ -4081,6 +4132,15 @@ update_anims
  cmp #2
  bcc :adv_done
  dec IMAGE01_XPOS
+ ldy #22
+ lda (info_ptr),y
+ cmp #1
+ bne :adv_done
+ lda abs_x
+ bne :adv_absx_lo
+ dec abs_x+1
+:adv_absx_lo
+ dec abs_x
 :adv_done
  ldy #2
  lda IMAGE01_XPOS
@@ -6132,8 +6192,28 @@ scroll_up
  clc
  adc #$2000
  sta $F0                ; F0 = scroll_up_bank/(2000 + (off-3)*$A0)
-* Dynamic align: compute per-row offsets from world_offset
+* Dynamic align: compute per-row offsets from world_offset.
+* For narrow targets, temporarily pin world_offset to (anchor+N)
+* around compute so the incremental fill renders consistent
+* scr12 content. world_offset is restored immediately — Billy's
+* xpos is untouched, so no teleport. N=7 shifts visible scr12
+* content 14px left to match user-tuned alignment; tune here.
+ lda scroll_up_twidth
+ cmp #52
+ bne :no_climb_pin
+ lda world_offset
+ sta :snap_wo_delta
+ lda scroll_up_anchor
+ clc
+ adc #7
+ sta world_offset
  jsr compute_up_align
+ lda :snap_wo_delta
+ sta world_offset
+ bra :ufill_compute_done
+:no_climb_pin
+ jsr compute_up_align
+:ufill_compute_done
  lda up_count
  beq :ufill_skip        ; no overlap — skip fill entirely
 * Add up_src_start to F0

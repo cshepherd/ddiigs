@@ -140,7 +140,7 @@ level_script
 
 ; screen 3
      db OP_WAITX
-     dw 640              ; wait for player abs X >= 600
+     dw 650              ; wait for player abs X >= 650
      db OP_SCRLOCK
      db OP_NPC           ; Linda Lash descending ladder
      dw linda_sprite
@@ -187,7 +187,7 @@ level_script
     db OP_UP,10,8,$ff     ; Up to screen 8, left=screen 9, right=none
 
     db OP_WAITXREV
-    dw $02E0              ; wait for player to descend back to abs_x <= 718
+    dw $0314              ; wait for player to descend back to abs_x <= 788
     db OP_LEFT,9          ; enable leftward scroll to screen 9 (narrow, 102px)
     db OP_UP,12,$FF,11    ; enable climb on ladder 3 (scr12→scr10, scr11 rfill)
 
@@ -195,6 +195,10 @@ level_script
     dw 660              ; wait for player abs X >= 600
 
     db OP_RIGHT,13        ; enable right-scroll → scr13 after scr11
+
+    db OP_WAITX
+    dw $039B
+    db OP_SCRLOCK         ; lock scrolling in screen 13 (final screen)
 
     db OP_END           ; end of level
 
@@ -695,6 +699,9 @@ bounds_ptrs
  dw bounds_scr8
  dw bounds_scr9
  dw bounds_scr10
+ dw bounds_scr11
+ dw bounds_scr12
+ dw bounds_scr13
 
 * Screen 0: y<80 blocked, y=80-199 full playfield
 bounds_scr0
@@ -811,6 +818,39 @@ bounds_scr10
  dfb 0,109
  --^
  LUP 152
+ dfb 0,0
+ --^
+
+bounds_scr11
+ LUP 47
+ dfb 0,0
+ --^
+ LUP 33
+ dfb 0,109
+ --^
+ LUP 120
+ dfb 0,0
+ --^
+
+bounds_scr12
+ LUP 47
+ dfb 0,0
+ --^
+ LUP 33
+ dfb 0,109
+ --^
+ LUP 120
+ dfb 0,0
+ --^
+
+bounds_scr13
+ LUP 47
+ dfb 0,0
+ --^
+ LUP 33
+ dfb 0,109
+ --^
+ LUP 120
  dfb 0,0
  --^
 
