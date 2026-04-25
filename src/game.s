@@ -773,6 +773,109 @@ run_script
  sta script_pc
  jmp :exec_loop
 :not_scrmax
+ cmp #OP_SNAPSTATE
+ beq :do_snapstate
+ jmp :not_snapstate
+:do_snapstate
+* OP_SNAPSTATE: copy 17-byte inline payload into engine state
+* vars. Used to restore a "golden" state recorded via the 'g'
+* debug key. Place at script positions where canonical state is
+* desired (e.g., right before OP_UP for pre-climb golden, and
+* immediately after OP_UP for post-climb golden).
+ ldy #1
+ lda [script_pc],y     ; world_offset low
+ sta world_offset
+ ldy #2
+ lda [script_pc],y     ; world_offset high
+ sta world_offset+1
+ ldy #3
+ lda [script_pc],y     ; abs_x low
+ sta abs_x
+ ldy #4
+ lda [script_pc],y     ; abs_x high
+ sta abs_x+1
+ ldy #5
+ lda [script_pc],y     ; IMAGE01_XPOS
+ sta IMAGE01_XPOS
+ sta billy_sprite+2
+ sta billy_sprite+34   ; prev_xpos = new xpos (no stale erase)
+ ldy #6
+ lda [script_pc],y     ; current_screen
+ sta current_screen
+ ldy #7
+ lda [script_pc],y     ; scroll_src_bank
+ sta scroll_src_bank
+ ldy #8
+ lda [script_pc],y     ; scroll_src_off
+ sta scroll_src_off
+ ldy #9
+ lda [script_pc],y     ; scroll_lsrc_bank
+ sta scroll_lsrc_bank
+ ldy #10
+ lda [script_pc],y     ; scroll_lsrc_off
+ sta scroll_lsrc_off
+ ldy #11
+ lda [script_pc],y     ; scroll_up_anchor low
+ sta scroll_up_anchor
+ ldy #12
+ lda [script_pc],y     ; scroll_up_anchor high
+ sta scroll_up_anchor+1
+ ldy #13
+ lda [script_pc],y     ; scroll_up_off
+ sta scroll_up_off
+ ldy #14
+ lda [script_pc],y     ; scroll_min_wo low
+ sta scroll_min_wo
+ ldy #15
+ lda [script_pc],y     ; scroll_min_wo high
+ sta scroll_min_wo+1
+ ldy #16
+ lda [script_pc],y     ; scroll_max_wo low
+ sta scroll_max_wo
+ ldy #17
+ lda [script_pc],y     ; scroll_max_wo high
+ sta scroll_max_wo+1
+* Reload the new screen's bounds table since current_screen may
+* have changed.
+ lda current_screen
+ jsr load_screen_bounds
+* Advance script_pc by 18 (opcode + 17 data bytes).
+ lda script_pc
+ clc
+ adc #18
+ sta script_pc
+ lda script_pc+1
+ adc #0
+ sta script_pc+1
+ jmp :exec_loop
+:not_snapstate
+ cmp #OP_SNAPSTATE_DEFER
+ beq :do_snapstate_defer
+ jmp :not_snapstate_defer
+:do_snapstate_defer
+* OP_SNAPSTATE_DEFER: copy 25-byte inline payload (= bytes 1..25,
+* skipping the opcode at offset 0) to pending_snap_buf, set flag.
+* scroll_up's :su_normal applies state + repaints on first call.
+ ldx #0
+ ldy #1
+:dsd_loop
+ lda [script_pc],y
+ sta pending_snap_buf,x
+ iny
+ inx
+ cpx #25
+ bne :dsd_loop
+ lda #1
+ sta pending_snap_flag
+ lda script_pc
+ clc
+ adc #26
+ sta script_pc
+ lda script_pc+1
+ adc #0
+ sta script_pc+1
+ jmp :exec_loop
+:not_snapstate_defer
  cmp #OP_WAITY
  bne :not_waity
  ldy #1
@@ -1360,6 +1463,22 @@ world_offset dw 0
 * mean "no limit". Set by OP_SCRMIN/OP_SCRMAX, reset at level init.
 scroll_min_wo dw $0000
 scroll_max_wo dw $FFFF
+
+* Pending golden state for OP_SNAPSTATE_DEFER. The op stores its
+* 25-byte payload here and sets pending_snap_flag; scroll_up's
+* :su_normal entry applies state and runs repaints on first call.
+* Buffer layout:
+*   +0..+16: 17 bytes of engine state (matches OP_SNAPSTATE).
+*   +17:  region 1 repaint bank (0 = skip region 1).
+*   +18:  region 1 repaint source byte offset.
+*   +19:  region 1 repaint count (8-bit).
+*   +20:  region 1 repaint destination column.
+*   +21:  region 2 repaint bank (0 = skip region 2).
+*   +22:  region 2 repaint source byte offset.
+*   +23:  region 2 repaint count (8-bit).
+*   +24:  region 2 repaint destination column.
+pending_snap_flag dfb 0
+pending_snap_buf  ds 25
 
 *----------------------------------------------------------
 * load_screen_bounds - Copy bounds table (400 bytes) and
@@ -3445,6 +3564,21 @@ OP_WAITNPC  = 12
 OP_WAITXREV = 13      ; wait for player X to descend to <= threshold
 OP_SCRMIN   = 14      ; set minimum world_offset (left-scroll clamp)
 OP_SCRMAX   = 15      ; set maximum world_offset (right-scroll clamp)
+OP_SNAPSTATE = 16     ; restore engine to a recorded "golden" state.
+                      ; 17-byte inline payload: wo(2), abs_x(2),
+                      ; xpos(1), current_screen(1), scroll_src_bank(1),
+                      ; scroll_src_off(1), scroll_lsrc_bank(1),
+                      ; scroll_lsrc_off(1), scroll_up_anchor(2),
+                      ; scroll_up_off(1), scroll_min_wo(2), scroll_max_wo(2).
+OP_SNAPSTATE_DEFER = 17 ; like OP_SNAPSTATE but applied at next
+                      ; scroll_up call (= after climb has begun).
+                      ; Payload extends to 25 bytes: 17 bytes of
+                      ; engine state, then 8 bytes of repaint config
+                      ; (two regions of 4 bytes each):
+                      ;   db bank, db byte, db count, db dst (region 1)
+                      ;   db bank, db byte, db count, db dst (region 2)
+                      ; Engine repaints 183 rows from bank/byte+row*$A0
+                      ; to $50/(dst + row*$A0). Bank=0 skips that region.
 
 * Script interpreter state
 SCRIPT_RUN  = 0       ; executing opcodes
@@ -3555,6 +3689,17 @@ process_input
 :not_scroll
  cmp #'8'
  beq :do_up
+ cmp #'g'
+ bne :ns_not_g
+* Golden state capture: prints a 3-line snapshot of all state
+* relevant to ladder alignment & drift detection. Press the
+* 'g' key just below a ladder (pre-climb) and again just above
+* it (post-climb) to record before/after state. Comparing
+* across plays surfaces drift; comparing before-vs-after across
+* a single climb characterizes what the climb commits.
+ jsr dbg_golden_state
+ rts
+:ns_not_g
  cmp #' '
  bne :ns_not_space
 * Debug: print abs_x and Billy's world-byte x (world_offset+xpos).
@@ -3674,6 +3819,12 @@ process_input
 * midpoint lands on the ladder center instead of its left edge.
 * world_offset stays at its current (approach-dependent) value,
 * so the teleport is at most half the ladder width.
+* scr12 (ladder3) skip: ladder collision data is already
+* calibrated to Billy's natural approach position, so any snap
+* would be a visible teleport. Skip directly to :sn_done.
+ lda scroll_up_screen
+ cmp #12
+ beq :sn_done
  lda :sn_ctr
  sec
  sbc world_offset
@@ -6421,6 +6572,166 @@ scroll_up
  bcs :su_normal       ; scroll don't show an invisible ladder gap
  jmp :snap_transition ; above the scr5 ladder-top art
 :su_normal
+* Apply pending golden state if OP_SNAPSTATE_DEFER queued one.
+* Runs in emulation 8-bit mode (the inherited mode) so byte
+* stores and load_screen_bounds work. Switches to native 16-bit
+* afterward for the rest of :su_normal.
+ lda pending_snap_flag
+ bne :do_pending_snap
+ jmp :no_pending_snap
+:do_pending_snap
+ lda pending_snap_buf+0
+ sta world_offset
+ lda pending_snap_buf+1
+ sta world_offset+1
+ lda pending_snap_buf+2
+ sta abs_x
+ lda pending_snap_buf+3
+ sta abs_x+1
+ lda pending_snap_buf+4
+ sta IMAGE01_XPOS
+ sta billy_sprite+2
+ sta billy_sprite+34   ; prev_xpos = new xpos
+ lda pending_snap_buf+5
+ sta current_screen
+ lda pending_snap_buf+6
+ sta scroll_src_bank
+ lda pending_snap_buf+7
+ sta scroll_src_off
+ lda pending_snap_buf+8
+ sta scroll_lsrc_bank
+ lda pending_snap_buf+9
+ sta scroll_lsrc_off
+ lda pending_snap_buf+10
+ sta scroll_up_anchor
+ lda pending_snap_buf+11
+ sta scroll_up_anchor+1
+ lda pending_snap_buf+12
+ sta scroll_up_off
+ lda pending_snap_buf+13
+ sta scroll_min_wo
+ lda pending_snap_buf+14
+ sta scroll_min_wo+1
+ lda pending_snap_buf+15
+ sta scroll_max_wo
+ lda pending_snap_buf+16
+ sta scroll_max_wo+1
+ lda current_screen
+ jsr load_screen_bounds
+* Repaint lower art so the visible playfield matches the canonical
+* engine state. Two regions; each with its own bank/byte/count/dst.
+* Region with bank=0 is skipped. Both regions paint 183 rows.
+* Writes only to bank $50 (the playfield base); the
+* fast_blit_50_55 → stack_blit_55_e1 pipeline at the end of
+* scroll_up pushes $50 to the visible $E1 atomically.
+* --- Region 1 (offsets +17/+18/+19/+20) ---
+ lda pending_snap_buf+17
+ beq :skip_region1
+ clc
+ xce
+ rep $30
+ mx %00
+ lda pending_snap_buf+18
+ and #$00FF
+ clc
+ adc #$2000
+ sta $F0
+ lda pending_snap_buf+20
+ and #$00FF
+ clc
+ adc #$2000
+ sta $F3
+ sep $20
+ mx %10
+ lda pending_snap_buf+17
+ sta $F2
+ lda #$50
+ sta $F5
+ lda pending_snap_buf+19
+ sta :rg1_count
+ rep $20
+ mx %00
+ ldx #183
+:rg1_row
+ ldy #0
+:rg1_word
+ lda [$F0],y
+ sta [$F3],y
+ iny
+ iny
+ cpy :rg1_count
+ bcc :rg1_word
+ lda $F0
+ clc
+ adc #$00A0
+ sta $F0
+ lda $F3
+ clc
+ adc #$00A0
+ sta $F3
+ dex
+ bne :rg1_row
+ sec
+ xce
+ mx %11
+:skip_region1
+* --- Region 2 (offsets +21/+22/+23/+24) ---
+ lda pending_snap_buf+21
+ beq :skip_region2
+ clc
+ xce
+ rep $30
+ mx %00
+ lda pending_snap_buf+22
+ and #$00FF
+ clc
+ adc #$2000
+ sta $F0
+ lda pending_snap_buf+24
+ and #$00FF
+ clc
+ adc #$2000
+ sta $F3
+ sep $20
+ mx %10
+ lda pending_snap_buf+21
+ sta $F2
+ lda #$50
+ sta $F5
+ lda pending_snap_buf+23
+ sta :rg2_count
+ rep $20
+ mx %00
+ ldx #183
+:rg2_row
+ ldy #0
+:rg2_word
+ lda [$F0],y
+ sta [$F3],y
+ iny
+ iny
+ cpy :rg2_count
+ bcc :rg2_word
+ lda $F0
+ clc
+ adc #$00A0
+ sta $F0
+ lda $F3
+ clc
+ adc #$00A0
+ sta $F3
+ dex
+ bne :rg2_row
+ sec
+ xce
+ mx %11
+:skip_region2
+ stz pending_snap_flag
+ bra :continue_pending
+:rg1_count dw 0
+:rg2_count dw 0
+:continue_pending
+:no_pending_snap
  clc
  xce
  rep $30
@@ -7412,29 +7723,11 @@ scroll_up
  beq :dl_done
  jmp :dl_scan          ; far branch — :dl_le_rt block now too large
 :dl_done
-* scr12-specific post-snap xpos nudge: BCLIMB (mid-climb) and
-* IMAGE01 (post-snap) sprites have different visible centers,
-* so Billy's xpos that aligned mid-climb needs adjusting for
-* post-snap. Empirically tuned to +2 with ladder_buf center=373.
- lda scroll_up_screen
- cmp #12
- bne :no_post_snap_nudge
- lda IMAGE01_XPOS
- clc
- adc #2
- sta IMAGE01_XPOS
- ldy #2
- sta (info_ptr),y       ; billy_sprite+2
- ldy #34
- sta (info_ptr),y       ; prev_xpos = new xpos
- lda abs_x
- clc
- adc #2
- sta abs_x
- lda abs_x+1
- adc #0
- sta abs_x+1
-:no_post_snap_nudge
+* scr12 (ladder3) post-snap nudge removed. The old +2 was
+* calibrated for ladder_buf center=373; with center=362 the
+* ladder data is now aligned to Billy's natural xpos, and the
+* climb-snap is skipped above, so no post-climb adjustment is
+* needed. Any nudge here would be a visible teleport.
 
 * Blit the new playfield to screen
  clc
@@ -7675,6 +7968,117 @@ dbg_print_hex8
  ply
  plx
  pla
+ rts
+
+*----------------------------------------------------------
+* dbg_golden_state - Print 3-line state snapshot for ladder
+* alignment / drift debugging. Triggered by 'g' key in
+* process_input. Captures all state needed to characterize
+* a position before/after a ladder climb:
+*
+*   Line 1 (world position):  GS1 wo aa xp cs
+*     wo = world_offset (16-bit)
+*     aa = abs_x (16-bit)
+*     xp = IMAGE01_XPOS (8-bit)
+*     cs = current_screen (8-bit)
+*
+*   Line 2 (scroll source state):  GS2 sb so lb lo
+*     sb = scroll_src_bank (8-bit) — next bank for right-scroll
+*     so = scroll_src_off (8-bit)  — next offset within sb
+*     lb = scroll_lsrc_bank (8-bit) — left-scroll bank
+*     lo = scroll_lsrc_off (8-bit)  — left-scroll offset
+*
+*   Line 3 (up-scroll + script clamps):  GS3 ua uo mn mx
+*     ua = scroll_up_anchor (16-bit) — last OP_UP target's anchor
+*     uo = scroll_up_off (8-bit)
+*     mn = scroll_min_wo (16-bit)
+*     mx = scroll_max_wo (16-bit)
+*
+* Emulation mode, 8-bit A/X/Y. Preserves no state (just dumps).
+*----------------------------------------------------------
+dbg_golden_state
+* --- Line 1: GS1 wo=WWWW ax=AAAA xp=XX cs=CC ---
+ lda #$C7              ; 'G'
+ jsr dbg_print_char
+ lda #$D3              ; 'S'
+ jsr dbg_print_char
+ lda #$B1              ; '1'
+ jsr dbg_print_char
+ lda #$A0              ; ' '
+ jsr dbg_print_char
+ lda world_offset+1
+ jsr dbg_print_hex8
+ lda world_offset
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda abs_x+1
+ jsr dbg_print_hex8
+ lda abs_x
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda IMAGE01_XPOS
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda current_screen
+ jsr dbg_print_hex8
+ jsr dbg_print_nl
+* --- Line 2: GS2 sb=BB so=OO lb=BB lo=OO ---
+ lda #$C7              ; 'G'
+ jsr dbg_print_char
+ lda #$D3              ; 'S'
+ jsr dbg_print_char
+ lda #$B2              ; '2'
+ jsr dbg_print_char
+ lda #$A0
+ jsr dbg_print_char
+ lda scroll_src_bank
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda scroll_src_off
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda scroll_lsrc_bank
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda scroll_lsrc_off
+ jsr dbg_print_hex8
+ jsr dbg_print_nl
+* --- Line 3: GS3 ua=AAAA uo=OO mn=NNNN mx=XXXX ---
+ lda #$C7              ; 'G'
+ jsr dbg_print_char
+ lda #$D3              ; 'S'
+ jsr dbg_print_char
+ lda #$B3              ; '3'
+ jsr dbg_print_char
+ lda #$A0
+ jsr dbg_print_char
+ lda scroll_up_anchor+1
+ jsr dbg_print_hex8
+ lda scroll_up_anchor
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda scroll_up_off
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda scroll_min_wo+1
+ jsr dbg_print_hex8
+ lda scroll_min_wo
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda scroll_max_wo+1
+ jsr dbg_print_hex8
+ lda scroll_max_wo
+ jsr dbg_print_hex8
+ jsr dbg_print_nl
  rts
 
 *----------------------------------------------------------

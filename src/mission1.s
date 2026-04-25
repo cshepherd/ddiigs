@@ -23,6 +23,11 @@ OP_WAITNPC  EQU 12 ; wait for a particular count of NPC sprites to be active (pa
 OP_WAITXREV EQU 13 ; wait for abs_x to descend to <= threshold (params: X position)
 OP_SCRMIN   EQU 14 ; clamp world_offset from below (params: 2-byte wo minimum)
 OP_SCRMAX   EQU 15 ; clamp world_offset from above (params: 2-byte wo maximum)
+OP_SNAPSTATE EQU 16 ; restore engine to a "golden" state (17-byte payload)
+                    ; Payload order: dw wo, dw abs_x, db xpos, db cs,
+                    ; db ssrc_bank, db ssrc_off, db lsrc_bank, db lsrc_off,
+                    ; dw up_anchor, db up_off, dw min_wo, dw max_wo
+OP_SNAPSTATE_DEFER EQU 17 ; same as OP_SNAPSTATE but applied at next scroll_up
 ; NOTE OP_WAITX and OP_WAITY use 'absolute X' (level-wide) not screen xpos/ypos
 ;  so it's easier to use for game logic
 ; NOTE OP_NPC params are: sprite_ptr (2b), xpos (1b), ypos (1b), orient (1b), behavior (1b)
@@ -166,7 +171,59 @@ level_script
 ;    db OP_NPC           ; William from right
 ;    dw william_sprite
 ;    db $58,$5f,$01
+* Pre-climb golden state for ladder1 (recorded via 'g' key
+* below first ladder). DEFERRED: applied at the first scroll_up
+* call once climb begins. Includes a repaint region that paints
+* scr3 art at canonical position so the lower playfield art
+* matches the restored engine state.
+    db OP_SNAPSTATE_DEFER
+    dw $0128            ; world_offset
+    dw $015C            ; abs_x
+    db $34              ; IMAGE01_XPOS
+    db $02              ; current_screen
+    db $06              ; scroll_src_bank
+    db $4C              ; scroll_src_off
+    db $04              ; scroll_lsrc_bank
+    db $6D              ; scroll_lsrc_off
+    dw $014A            ; scroll_up_anchor
+    db $B6              ; scroll_up_off
+    dw $0000            ; scroll_min_wo
+    dw $FFFF            ; scroll_max_wo
+* Repaint config (two regions, 4 bytes each):
+*   Region 1: scr3 (bank $06, byte 0) → playfield cols [34..109]
+*     (= 76 bytes) for all 183 rows. With wo=$0128=296 and
+*     scr3_origin=330, scr3 byte 0 sits at world 330 = playfield
+*     col 330-296 = 34.
+*   Region 2: scr2 (bank $05, byte 76) → playfield cols [0..33]
+*     (= 34 bytes). With wo=296 and scr2_origin=220, the visible
+*     scr2 starts at byte (296 - 220) = 76 and runs through byte
+*     109 (= scr2's right edge), filling cols 0..33.
+    db $06              ; region 1 bank (scr3)
+    db $00              ; region 1 source byte
+    db $4C              ; region 1 count = 76
+    db $22              ; region 1 dst col (= 34)
+    db $05              ; region 2 bank (scr2)
+    db $4C              ; region 2 source byte = 76
+    db $22              ; region 2 count = 34
+    db $00              ; region 2 dst col = 0
     db OP_UP,5,6,7      ; Up to screen 5, left=screen 6, right=screen 7
+* Post-climb golden state for ladder1 (recorded above first
+* ladder). Fires after OP_UP completes — snap_transition has
+* already run, so playfield matches canonical state. This op
+* commits engine state to the recorded post-climb checkpoint.
+    db OP_SNAPSTATE
+    dw $0128            ; world_offset
+    dw $015C            ; abs_x
+    db $34              ; IMAGE01_XPOS
+    db $05              ; current_screen
+    db $08              ; scroll_src_bank
+    db $4C              ; scroll_src_off
+    db $07              ; scroll_lsrc_bank
+    db $6D              ; scroll_lsrc_off
+    dw $014A            ; scroll_up_anchor
+    db $1A              ; scroll_up_off
+    dw $0000            ; scroll_min_wo
+    dw $FFFF            ; scroll_max_wo
 
 ; upper level (screen 5)
     db OP_SCRLOCK       ; lock scrolling on upper level
@@ -694,8 +751,8 @@ ladders dfb 3                   ; ladder count
 * at 362-356-3 = 3, sprite center at playfield[7], aligned with
 * the visible ladder rendered at playfield[6] (= scr12 byte 32
 * with src_start=26 from compute_up_align).
- dw 367                         ; x_left
- dw 379                         ; x_right
+ dw 358                         ; x_left  (center=362, 8-byte wide)
+ dw 366                         ; x_right
  dfb 0,68                       ; y_top=0, y_bottom=68
 
 *==========================================================
