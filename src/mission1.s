@@ -21,6 +21,8 @@ OP_WAITY    EQU 10 ; wait for player to cross Y threshold (params: Y position)
 OP_WAITCLR  EQU 11 ; wait for screen to be clear of enemies (no params)
 OP_WAITNPC  EQU 12 ; wait for a particular count of NPC sprites to be active (params: count)
 OP_WAITXREV EQU 13 ; wait for abs_x to descend to <= threshold (params: X position)
+OP_SCRMIN   EQU 14 ; clamp world_offset from below (params: 2-byte wo minimum)
+OP_SCRMAX   EQU 15 ; clamp world_offset from above (params: 2-byte wo maximum)
 ; NOTE OP_WAITX and OP_WAITY use 'absolute X' (level-wide) not screen xpos/ypos
 ;  so it's easier to use for game logic
 ; NOTE OP_NPC params are: sprite_ptr (2b), xpos (1b), ypos (1b), orient (1b), behavior (1b)
@@ -190,9 +192,14 @@ level_script
     dw $0195              ; wait for player to descend back to abs_x <= 788
     db OP_LEFT,9          ; enable leftward scroll to screen 9 (narrow, 102px)
 
-    db OP_WAITXREV
-    dw $0171
-    db OP_SCRLOCK         ; lock scrolling in screen 9 (final screen)
+    db OP_SCRMIN
+    dw 356                ; wo floor — pins art so scr12 byte 26
+                          ; (= world 356) sits at playfield[0]; was
+                          ; 344 with the old narrow scr12 layout
+
+;    db OP_WAITXREV
+;    dw $0161
+;    db OP_SCRLOCK         ; lock scrolling in screen 9 (final screen)
 
     db OP_UP,12,$FF,11    ; enable climb on ladder 3 (scr12→scr10, scr11 rfill)
 
@@ -679,13 +686,16 @@ ladders dfb 3                   ; ladder count
  dw 460                         ; x_right
  dfb 0,59                       ; y_top=0, y_bottom=59
 * Ladder 3: screen 12 → screen 10 above.
-* Positioned at world byte 344..351 (spacebar showed world_x
-* $0158 = 344 at the visible ladder art). Widened on the left
-* (354 vs 358) so Billy's snap target (center = 359) keeps him
-* within the climb-detection zone while landing 2 bytes left of
-* his previous position.
- dw 354                         ; x_left
- dw 365                         ; x_right
+* x_left/x_right bracket the visible ladder art at world 362
+* (measured via space-bar with new full-width scr12 art).
+* scr12 is now full-width so OP_UP target=12 takes the wide
+* path: ladder-snap formula is xpos = center - wo - 3.
+* With OP_SCRMIN=356 and ladder center=362, Billy's xpos lands
+* at 362-356-3 = 3, sprite center at playfield[7], aligned with
+* the visible ladder rendered at playfield[6] (= scr12 byte 32
+* with src_start=26 from compute_up_align).
+ dw 360                         ; x_left
+ dw 372                         ; x_right
  dfb 0,68                       ; y_top=0, y_bottom=68
 
 *==========================================================

@@ -308,6 +308,17 @@ game_loop
  jsr run_script
  jsr update_npcs       ; runs behavior state machines
  jsr update_anims
+* Invariant check: abs_x must equal world_offset + IMAGE01_XPOS.
+* Placed after every position-mutating pass (process_input walks
+* and scrolls; update_anims advances xpos per VBL for jumps).
+ jsr assert_abs_x
+* Art-alignment checks: scroll_src_off / scroll_lsrc_off should
+* be derivable from world_offset + screen_origin_x. Drift in
+* these accumulators is the usual cause of late-level art
+* offsets. Skipped for screens whose origin is $FFFF in the
+* table (fill in as values become known).
+ jsr assert_scroll_src_off
+ jsr assert_scroll_lsrc_off
 * erase and draw run back-to-back at the end of the frame so
 * sprites are never left in an "erased but not yet redrawn"
 * state while the CPU is doing per-frame work. With SHR
@@ -472,20 +483,12 @@ run_script
  lda [script_pc],y
  sta scroll_left_screen
 * Configure left source: bank of target screen, offset starts at
-* rightmost valid content byte so first fill pulls real pixels.
-* Narrow targets (scr9 = 51 bytes wide, 102px) start at 50;
-* full-width targets start at 109.
+* rightmost byte (109) so first fill pulls real pixels. scr9 is
+* now full-width art so the previous narrow special-case is gone.
  clc
  adc #$03
  sta scroll_lsrc_bank
- lda scroll_left_screen
- cmp #9
- bne :opl_wide
- lda #50                   ; scr9 content width = 51 bytes (0..50)
- bra :opl_off_set
-:opl_wide
  lda #109
-:opl_off_set
  sta scroll_lsrc_off
  lda #1
  sta scroll_left_enabled
@@ -500,6 +503,40 @@ run_script
  beq :do_op_up
  jmp :not_up_op        ; inverted — target moved out of branch range
 :do_op_up
+* DEBUG: 'UP WO=wwww AX=aaaa' — world_offset and abs_x at the
+* moment OP_UP fires. Narrow-target UP scroll compensation
+* (+15 pin / +7 ladder / +10 snap xpos) is calibrated for a
+* specific wo at this point; compare across runs to see whether
+* wo varies (which would confirm the compensation is fragile).
+ lda #$D5              ; 'U'
+ jsr dbg_print_char
+ lda #$D0              ; 'P'
+ jsr dbg_print_char
+ lda #$A0              ; ' '
+ jsr dbg_print_char
+ lda #$D7              ; 'W'
+ jsr dbg_print_char
+ lda #$CF              ; 'O'
+ jsr dbg_print_char
+ lda #$BD              ; '='
+ jsr dbg_print_char
+ lda world_offset+1
+ jsr dbg_print_hex8
+ lda world_offset
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda #$C1              ; 'A'
+ jsr dbg_print_char
+ lda #$D8              ; 'X'
+ jsr dbg_print_char
+ lda #$BD
+ jsr dbg_print_char
+ lda abs_x+1
+ jsr dbg_print_hex8
+ lda abs_x
+ jsr dbg_print_hex8
+ jsr dbg_print_nl
 * OP_UP: param1=target, param2=left-neighbor, param3=right-neighbor.
 * $FF in any neighbor slot = no fill on that side.
  ldy #1
@@ -567,14 +604,26 @@ run_script
  sta scroll_up_twidth
  bra :op_up_anchor_done
 :op_up_notscr10
+* scr12 is full-width but its visible content sits ~56 bytes
+* into the bank, so we use anchor=274 instead of the default
+* 330 to render scr12[82..109] at playfield[0..27] when wo=356.
+* scr11/13 (still narrow, 52 bytes) keep anchor=329. Other
+* OP_UP targets use the default anchor=330.
+ cmp #12
+ bne :op_up_check_scr1113
+ lda #<274
+ sta scroll_up_anchor
+ lda #>274
+ sta scroll_up_anchor+1
+ lda #110
+ sta scroll_up_twidth
+ bra :op_up_anchor_done
+:op_up_check_scr1113
  cmp #11
  bcc :op_up_anchor_default
  cmp #14
  bcs :op_up_anchor_default
-* scr11/12/13: 103px wide (52 bytes). anchor=329 — shifts scr12
-* and its scr11 right-fill ~13px (7 bytes) further left in the
-* playfield vs the previous anchor=336. compute_up_align places
-* scr12 at playfield dst_start = 329 - world_offset.
+* scr11/13: 103px wide (52 bytes), anchor=329.
  lda #<329
  sta scroll_up_anchor
  lda #>329
@@ -635,6 +684,7 @@ run_script
  sta snap_copy_rows
  stz snap_copy_rows+1
 :op_up_off_done
+ stz climb_started     ; reset one-time setup flag for this climb
  lda #1
  sta scroll_up_enabled
  lda #SCRIPT_WAITUP
@@ -691,6 +741,38 @@ run_script
  rts
 
 :not_waitxrev
+ cmp #OP_SCRMIN
+ bne :not_scrmin
+* OP_SCRMIN: 2-byte param = new minimum world_offset.
+* Left-scrolling further will be blocked once wo hits this.
+ ldy #1
+ lda [script_pc],y
+ sta scroll_min_wo
+ ldy #2
+ lda [script_pc],y
+ sta scroll_min_wo+1
+ lda script_pc
+ clc
+ adc #3
+ sta script_pc
+ jmp :exec_loop
+:not_scrmin
+ cmp #OP_SCRMAX
+ bne :not_scrmax
+* OP_SCRMAX: 2-byte param = new maximum world_offset.
+* Right-scrolling further will be blocked once wo hits this.
+ ldy #1
+ lda [script_pc],y
+ sta scroll_max_wo
+ ldy #2
+ lda [script_pc],y
+ sta scroll_max_wo+1
+ lda script_pc
+ clc
+ adc #3
+ sta script_pc
+ jmp :exec_loop
+:not_scrmax
  cmp #OP_WAITY
  bne :not_waity
  ldy #1
@@ -1157,6 +1239,11 @@ scroll_left_screen dfb 0
 scroll_up_screen     dfb 0
 scroll_up_bank       dfb $03
 scroll_up_off        dfb 0
+climb_started        dfb 0       ; one-time flag for scr12 climb's scr8
+                                  ; right-fill setup. Set by scroll_up on
+                                  ; first call after OP_UP, cleared at
+                                  ; OP_UP fire so each climb runs setup
+                                  ; exactly once.
 scroll_up_lbank      dfb $03     ; bank of upper screen's left neighbor
                                   ; (0 = sentinel, skip left-gap fill)
 scroll_up_rbank      dfb $03     ; bank of upper screen's right neighbor
@@ -1266,6 +1353,13 @@ ladder_buf   ds 24             ; 4 ladders × 6 bytes
 * World byte offset of the playfield's left edge.
 * Increases by 4 per scroll_right call.
 world_offset dw 0
+
+* Per-script scroll clamps. scroll_right blocks when wo+4 would
+* exceed scroll_max_wo; scroll_left blocks when wo-4 would fall
+* below scroll_min_wo. Sentinels ($0000 for min, $FFFF for max)
+* mean "no limit". Set by OP_SCRMIN/OP_SCRMAX, reset at level init.
+scroll_min_wo dw $0000
+scroll_max_wo dw $FFFF
 
 *----------------------------------------------------------
 * load_screen_bounds - Copy bounds table (400 bytes) and
@@ -3349,6 +3443,8 @@ OP_WAITY    = 10
 OP_WAITCLR  = 11
 OP_WAITNPC  = 12
 OP_WAITXREV = 13      ; wait for player X to descend to <= threshold
+OP_SCRMIN   = 14      ; set minimum world_offset (left-scroll clamp)
+OP_SCRMAX   = 15      ; set maximum world_offset (right-scroll clamp)
 
 * Script interpreter state
 SCRIPT_RUN  = 0       ; executing opcodes
@@ -3586,16 +3682,24 @@ process_input
  sta IMAGE01_XPOS
  ldy #2
  sta (info_ptr),y
-* Narrow-specific xpos adjustment: after the default wide snap,
-* shift Billy 7 bytes right. Ladder 3's visible art sits further
-* right than ladders 1/2 relative to the def, so the universal
-* -3 leaves Billy too far left on narrow targets.
+* Narrow-target override: the incremental pin now uses anchor
+* (no +N), so scr12 renders at playfield[0..51] during climb and
+* post-snap alike. Billy's xpos formula collapses to:
+*   xpos = ladder_center - anchor - 4
+*        = scr12_byte_of_ladder_center - sprite_half (BCLIMB=8)
+* Same form as post-snap (which uses sprite_half=4 too). Delta
+* math below still updates abs_x correctly so the invariant
+* holds. Engine wo_actual differs from the renderer's view by
+* (wo_actual - anchor) bytes — LADDER_TOL is widened to absorb
+* that offset so check_ladder collision still fires.
  lda scroll_up_twidth
  cmp #52
  bne :sn_post_snap
- lda IMAGE01_XPOS
- clc
- adc #7
+ sec
+ lda :sn_ctr
+ sbc scroll_up_anchor
+ sec
+ sbc #4
  sta IMAGE01_XPOS
  ldy #2
  sta (info_ptr),y
@@ -3750,6 +3854,20 @@ process_input
  lda IMAGE01_XPOS
  cmp #LEFT_SCROLL_THRESH
  bcs :left_walk        ; xpos > threshold, walk
+* Script clamp: reject scroll when wo-4 would fall below
+* scroll_min_wo. 16-bit compare: (wo - 4) vs scroll_min_wo.
+ lda world_offset
+ sec
+ sbc #4
+ tax                   ; low byte of (wo-4) in X
+ lda world_offset+1
+ sbc #0                ; high byte of (wo-4) in A
+ cmp scroll_min_wo+1
+ bcc :left_walk        ; (wo-4) < min → walk instead
+ bne :left_scroll_ok   ; (wo-4) high > min high → scroll ok
+ cpx scroll_min_wo
+ bcc :left_walk        ; (wo-4) low < min low → walk
+:left_scroll_ok
 * Scroll world LEFT by 4 bytes
  jsr save_sprite
  jsr scroll_left
@@ -3801,6 +3919,22 @@ process_input
  lda IMAGE01_XPOS
  cmp #SCROLL_THRESH
  bcc :walk_right       ; xpos < threshold, walk
+* Script clamp: reject scroll when wo+4 would exceed scroll_max_wo.
+* 16-bit compare: scroll_max_wo vs (wo + 4).
+ lda world_offset
+ clc
+ adc #4
+ tax                   ; low byte of (wo+4) in X
+ lda world_offset+1
+ adc #0                ; high byte of (wo+4) in A
+ cmp scroll_max_wo+1
+ bcc :right_scroll_ok  ; (wo+4) high < max high → scroll ok
+ bne :walk_right       ; (wo+4) high > max → walk
+ cpx scroll_max_wo
+ bcc :right_scroll_ok  ; (wo+4) low < max low → ok
+ beq :right_scroll_ok  ; equal → ok (reaching exactly max)
+ bcs :walk_right       ; (wo+4) low > max low → walk
+:right_scroll_ok
 * Scroll world right by 4 bytes (8 pixels = 2 words)
  jsr save_sprite
  jsr scroll_right
@@ -5433,6 +5567,12 @@ init_level
 * Reset world scroll offset
  stz world_offset
  stz world_offset+1
+* Reset script scroll clamps to no-limit sentinels.
+ stz scroll_min_wo
+ stz scroll_min_wo+1
+ lda #$FF
+ sta scroll_max_wo
+ sta scroll_max_wo+1
  rts
 
 *-------------------------------
@@ -6286,6 +6426,74 @@ scroll_up
  rep $30
  mx %00
 
+* First-call setup for scr12 climb: paint scr8 over the cols
+* where scr10 was visible (= cols [110-count..109], count =
+* wo-330) across all 183 rows, BEFORE Step 1's shift. Painting
+* before the shift lets scr8 and scr9 both shift together and
+* stay vertically aligned. (After the shift would leave scr8
+* at rows 0..182 while scr9 sits at rows 4..182 — a 4-row gap.)
+ lda climb_started
+ and #$00FF
+ bne :ffs_done
+ lda scroll_up_screen
+ and #$00FF
+ cmp #12
+ bne :ffs_done
+ sep $20
+ lda #1
+ sta climb_started
+* count = wo - 330 (8-bit; wo high byte = 330 high byte = 1)
+ sec
+ lda world_offset
+ sbc #<330
+ sta :ffs_count
+ stz :ffs_count+1
+ beq :ffs_done_sep
+* dst = 110 - count (where the scr10 region begins)
+ sec
+ lda #110
+ sbc :ffs_count
+ sta :ffs_dst
+ stz :ffs_dst+1
+ rep $20
+* src = scr8 bank, byte 0 (row 0)
+ lda #$2000
+ sta $F0
+* dst = $50 / (row 0, byte ffs_dst)
+ lda :ffs_dst
+ and #$00FF
+ clc
+ adc #$2000
+ sta $F3
+ sep $20
+ lda #$0B               ; scr8 bank
+ sta $F2
+ lda #$50
+ sta $F5
+ rep $20
+ ldx #183
+:ffs_row ldy #0
+:ffs_wrd lda [$F0],y
+ sta [$F3],y
+ iny
+ iny
+ cpy :ffs_count
+ bcc :ffs_wrd
+ lda $F0
+ clc
+ adc #$00A0
+ sta $F0
+ lda $F3
+ clc
+ adc #$00A0
+ sta $F3
+ dex
+ bne :ffs_row
+ bra :ffs_done
+:ffs_done_sep
+ rep $20
+:ffs_done
+
 * Step 1: shift rows down by 4 in $50.
 * Iterate from row 178 down to row 0, copying to row+4.
 * Source addr starts at row 178: $2000 + 178*$A0 = $8F40
@@ -6349,19 +6557,22 @@ scroll_up
  adc #$2000
  sta $F0                ; F0 = scroll_up_bank/(2000 + (off-3)*$A0)
 * Dynamic align: compute per-row offsets from world_offset.
-* For narrow targets, temporarily pin world_offset to (anchor+N)
-* around compute so the incremental fill renders consistent
-* scr12 content. world_offset is restored immediately — Billy's
-* xpos is untouched, so no teleport. Pin to (anchor+15) to shift
-* scr12 ladder art 1 more byte left during climb.
+* For narrow targets, temporarily pin world_offset to anchor (no
+* +N offset) so the incremental fill renders scr12[0..51] at
+* playfield[0..51] — same visual position as snap_transition.
+* This matches what compute_up_align produces post-snap, so Billy
+* sees the ladder art at the same playfield column throughout the
+* climb and after. Engine wo_actual stays at its pre-climb value
+* (so abs_x bookkeeping is preserved); the renderer just temporar-
+* ily uses anchor as its world reference. The resulting 11-byte
+* offset between engine_world_x and visual world_x is absorbed by
+* a wider LADDER_TOL so collision still fires.
  lda scroll_up_twidth
  cmp #52
  bne :no_climb_pin
  lda world_offset
  sta :snap_wo_delta
  lda scroll_up_anchor
- clc
- adc #15
  sta world_offset
  jsr compute_up_align
  lda :snap_wo_delta
@@ -6584,6 +6795,40 @@ scroll_up
 * screen entirely to $50 and update current_screen.
 *----------------------------------------------------------
 :snap_transition
+* DEBUG: 'SN WO=wwww AX=aaaa' — world_offset and abs_x at snap
+* entry, before compute_up_align pins or xpos fix runs. Paired
+* with the 'UP' print to show (a) wo at OP_UP time, (b) wo at
+* snap time; they should be identical (no input during climb)
+* and they should match what the compensation constants assume.
+ lda #$D3              ; 'S'
+ jsr dbg_print_char
+ lda #$CE              ; 'N'
+ jsr dbg_print_char
+ lda #$A0
+ jsr dbg_print_char
+ lda #$D7              ; 'W'
+ jsr dbg_print_char
+ lda #$CF              ; 'O'
+ jsr dbg_print_char
+ lda #$BD              ; '='
+ jsr dbg_print_char
+ lda world_offset+1
+ jsr dbg_print_hex8
+ lda world_offset
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda #$C1              ; 'A'
+ jsr dbg_print_char
+ lda #$D8              ; 'X'
+ jsr dbg_print_char
+ lda #$BD
+ jsr dbg_print_char
+ lda abs_x+1
+ jsr dbg_print_hex8
+ lda abs_x
+ jsr dbg_print_hex8
+ jsr dbg_print_nl
  clc
  xce
  rep $30
@@ -6811,24 +7056,29 @@ scroll_up
  bne :snap_rgrow
 :snap_rgap_done
 
-* Lower-screen fill: after a narrow-height target (scr11/12/13)
-* copy, fill the remaining 70 playfield rows (113..182) from the
-* lower screens. Their horizontal placement is independent of
-* the target's: scr9 is left-aligned (playfield 0..51, 52 bytes),
-* scr8 fills the rest to the right (playfield 52..109, 58 bytes).
-* Pull rows 0..69 so the top of each lower screen lines up with
-* playfield row 113.
+* Lower-screen fill: after a short (113-row-tall) target copy,
+* fill the remaining 70 playfield rows (113..182) from scr9.
+* scr9 is now full-width and shares the upper target's world
+* origin, so we reuse compute_up_align's results (up_src_start,
+* up_dst_start, up_count) to keep the lower fill horizontally
+* aligned with the upper screen.
  lda scroll_up_screen
  and #$00FF
  cmp #12
  beq :snap_lower_go
  jmp :snap_lower_done
 :snap_lower_go
-* scr9 fill — playfield bytes 0..51, rows 113..182.
+* scr9 fill — playfield rows 113..182, columns up_dst_start..
+* up_dst_start+up_count-1, sourced from scr9 starting at byte
+* up_src_start. Pulls scr9 rows 0..69 (top of scr9 art).
  lda #$2000
- sta $F0               ; src = scr9/$2000 (row 0, byte 0)
- lda #$66A0            ; dst = $50/$66A0 (row 113, byte 0)
- sta $F3
+ clc
+ adc up_src_start
+ sta $F0               ; src = scr9/(2000 + up_src_start)
+ lda #$66A0
+ clc
+ adc up_dst_start
+ sta $F3               ; dst = $50/(row 113, byte up_dst_start)
  sep $20
  lda #$0C              ; scr9 bank
  sta $F2
@@ -6841,7 +7091,7 @@ scroll_up
  sta [$F3],y
  iny
  iny
- cpy #52               ; scr9 content width
+ cpy up_count
  bcc :snap_dwrd
  lda $F0
  clc
@@ -6853,16 +7103,29 @@ scroll_up
  sta $F3
  dex
  bne :snap_drow
-* scr8 fill — playfield bytes 51..109 (59 bytes), rows 113..182.
-* Starts at col 51 (not 52) to overwrite scr9's empty byte 51
-* (scr9 is only 51 bytes of art, 0..50) and close the 2px seam
-* between scr9 and scr8.
+* scr8 lower fill — covers the playfield columns to the right of
+* scr9 in rows 113..182. Without this, those cols show stale
+* shifted-down content (scr10 from the pre-climb playfield).
+* Width = 110 - up_dst_start - up_count (= 82 with anchor=274).
+ sec
+ lda #110
+ sbc up_dst_start
+ sec
+ sbc up_count
+ sta :lower_rgap_count
+ beq :no_scr8_fill
+* src = scr8 bank, byte 0 (leftmost)
  lda #$2000
- sta $F0               ; src = scr8/$2000 (row 0, byte 0)
- lda #$66D3            ; dst = $50/$66A0 + 51 (row 113, byte 51)
+ sta $F0
+* dst = $50 / row 113 / col (up_dst_start + up_count)
+ lda up_dst_start
+ clc
+ adc up_count
+ clc
+ adc #$66A0
  sta $F3
  sep $20
- lda #$0B              ; scr8 bank
+ lda #$0B               ; scr8 bank
  sta $F2
  lda #$50
  sta $F5
@@ -6873,7 +7136,7 @@ scroll_up
  sta [$F3],y
  iny
  iny
- cpy #59               ; playfield bytes 51..109 = 59 bytes
+ cpy :lower_rgap_count
  bcc :snap_dr_wrd
  lda $F0
  clc
@@ -6885,13 +7148,15 @@ scroll_up
  sta $F3
  dex
  bne :snap_dr_row
-* Initialize scr8_src_off for scroll_right's lower-row fill.
-* The snap above placed scr8 bytes 0..58 into playfield 51..109,
-* so the next byte to bring in is scr8 byte 59.
- lda #59
+* Initialize scr8_src_off so subsequent scroll_right lower-fill
+* picks up where this snap left off.
+ lda :lower_rgap_count
  sta scr8_src_off
- lda #0
- sta scr8_src_off+1
+ stz scr8_src_off+1
+ bra :snap_lower_done
+:no_scr8_fill
+ stz scr8_src_off
+ stz scr8_src_off+1
 :snap_lower_done
 
  sec
@@ -7012,7 +7277,9 @@ scroll_up
 * current world_x and setting y_top=255 so check_ladder fails
 * for any proposed y. Prevents re-climbing "invisible" after snap.
  lda ladder_count
- beq :dl_done
+ bne :dl_have
+ jmp :dl_done          ; no ladders — skip scan; far branch
+:dl_have
  sta :dl_cnt
  clc
  lda IMAGE01_XPOS
@@ -7041,6 +7308,59 @@ scroll_up
 :dl_le_rt
  lda #255
  sta ladder_buf+4,x    ; y_top = 255 → ladder disabled
+* Narrow-target canonicalization: the snap's compute_up_align
+* above pinned wo=scroll_up_anchor, so scr12 was drawn starting
+* at playfield[0]. The engine must also believe wo=anchor for
+* the drawn art to agree with future scrolls. Snap wo to anchor
+* and teleport Billy to the ladder's world-x center; keep
+* abs_x consistent (abs_x := ladder_center).
+*
+* Supersedes the old +10 xpos fix and all wo-dependence in the
+* post-snap state. Result is deterministic regardless of the
+* player's approach path on the source screen: after a narrow-
+* target ladder climb, wo, xpos, and abs_x always land on the
+* same values computed from the ladder's own world coords.
+*
+* X currently indexes the matched ladder in ladder_buf.
+ lda scroll_up_twidth
+ cmp #52
+ bne :dl_done
+* ladder_center = (x_left + x_right) / 2, 16-bit
+ clc
+ lda ladder_buf,x       ; x_left low
+ adc ladder_buf+2,x     ; x_right low
+ sta :ldr_ctr
+ lda ladder_buf+1,x     ; x_left high
+ adc ladder_buf+3,x     ; x_right high
+ sta :ldr_ctr+1
+ lsr :ldr_ctr+1
+ ror :ldr_ctr
+* world_offset := scroll_up_anchor
+ lda scroll_up_anchor
+ sta world_offset
+ lda scroll_up_anchor+1
+ sta world_offset+1
+* IMAGE01_XPOS := ladder_center - anchor - 4 (sprite half-width
+* compensation so Billy's visual center sits on scr12_center,
+* matching the mid-climb formula).
+ sec
+ lda :ldr_ctr
+ sbc scroll_up_anchor
+ sec
+ sbc #4
+ sta IMAGE01_XPOS
+ ldy #2
+ sta (info_ptr),y       ; billy_sprite+2
+ ldy #34
+ sta (info_ptr),y       ; prev_xpos = new xpos → no ghost erase
+* abs_x := ladder_center - 4 (== world_offset + IMAGE01_XPOS)
+ sec
+ lda :ldr_ctr
+ sbc #4
+ sta abs_x
+ lda :ldr_ctr+1
+ sbc #0
+ sta abs_x+1
  bra :dl_done
 :dl_next
  txa
@@ -7048,29 +7368,34 @@ scroll_up
  adc #6
  tax
  dec :dl_cnt
- bne :dl_scan
+ beq :dl_done
+ jmp :dl_scan          ; far branch — :dl_le_rt block now too large
 :dl_done
-* For narrow targets: nudge Billy's xpos right at snap so he
-* ends up aligned with scr12's ladder art. Also update abs_x by
-* the same amount so abs_x stays in sync with world_x (world_x =
-* world_offset + IMAGE01_XPOS, so +10 on xpos means +10 on world_x).
- lda scroll_up_twidth
- cmp #52
- bne :snap_no_xpos_fix
+* scr12-specific post-snap xpos nudge: BCLIMB (mid-climb) and
+* IMAGE01 (post-snap) sprites have different visible centers,
+* so Billy's xpos that aligned mid-climb is ~5 bytes left of
+* aligned post-snap. Apply a one-time +5 to xpos and abs_x
+* when the climb target was scr12. (Hardcoded for now; could
+* be parameterized via OP_UP if other targets need it.)
+ lda scroll_up_screen
+ cmp #12
+ bne :no_post_snap_nudge
  lda IMAGE01_XPOS
  clc
- adc #10
+ adc #5
  sta IMAGE01_XPOS
  ldy #2
- sta (info_ptr),y
+ sta (info_ptr),y       ; billy_sprite+2
+ ldy #34
+ sta (info_ptr),y       ; prev_xpos = new xpos
  lda abs_x
  clc
- adc #10
+ adc #5
  sta abs_x
  lda abs_x+1
  adc #0
  sta abs_x+1
-:snap_no_xpos_fix
+:no_post_snap_nudge
 
 * Blit the new playfield to screen
  clc
@@ -7107,6 +7432,10 @@ scroll_up
 :lgap_base  ds 2
 :dl_wx     ds 2         ; disable-ladder: Billy's world_x at snap
 :dl_cnt    ds 1         ; disable-ladder: iteration counter
+:ldr_ctr   ds 2         ; narrow-target snap: matched ladder's center
+:lower_rgap_count ds 2  ; lower-fill scr8: bytes-per-row count
+:ffs_count ds 2         ; first-fill scr8 (scr10 region) byte count
+:ffs_dst   ds 2         ; first-fill scr8 (scr10 region) dst column
 :snap_wo_delta ds 2     ; narrow-target snap: world_offset - anchor
 
 up_src_start ds 2       ; source byte offset within upper screen scanline
@@ -7308,6 +7637,337 @@ dbg_print_hex8
  plx
  pla
  rts
+
+*----------------------------------------------------------
+* assert_abs_x - Verify abs_x == world_offset + billy_sprite.xpos.
+* Reads xpos directly from billy_sprite+2, NOT the global
+* IMAGE01_XPOS. update_anims iterates sprite_table through
+* load_sprite and leaves IMAGE01_XPOS holding whichever sprite
+* was last loaded (typically an NPC). billy_sprite+2 is the
+* player's canonical xpos; all mutating paths write it through
+* save_sprite when info_ptr is the player block.
+* Halts with a text-screen diagnostic if the invariant breaks.
+* Emulation mode, 8-bit A/X/Y.
+*----------------------------------------------------------
+assert_abs_x
+ clc
+ lda billy_sprite+2
+ adc world_offset
+ sta :ax_lo
+ lda #0
+ adc world_offset+1
+ sta :ax_hi
+ lda :ax_hi
+ cmp abs_x+1
+ bne :ax_fail
+ lda :ax_lo
+ cmp abs_x
+ bne :ax_fail
+ rts
+:ax_fail
+* 'AX! aaaa=eeee wo=wwww xp=xx' — abs_x vs expected,
+* plus world_offset and IMAGE01_XPOS so the failing inputs
+* are visible in the text-screen capture.
+ lda #$C1              ; 'A'
+ jsr dbg_print_char
+ lda #$D8              ; 'X'
+ jsr dbg_print_char
+ lda #$A1              ; '!'
+ jsr dbg_print_char
+ lda #$A0              ; ' '
+ jsr dbg_print_char
+ lda abs_x+1
+ jsr dbg_print_hex8
+ lda abs_x
+ jsr dbg_print_hex8
+ lda #$BD              ; '='
+ jsr dbg_print_char
+ lda :ax_hi
+ jsr dbg_print_hex8
+ lda :ax_lo
+ jsr dbg_print_hex8
+ lda #$A0              ; ' '
+ jsr dbg_print_char
+ lda #$D7              ; 'W'
+ jsr dbg_print_char
+ lda #$CF              ; 'O'
+ jsr dbg_print_char
+ lda #$BD              ; '='
+ jsr dbg_print_char
+ lda world_offset+1
+ jsr dbg_print_hex8
+ lda world_offset
+ jsr dbg_print_hex8
+ lda #$A0              ; ' '
+ jsr dbg_print_char
+ lda #$D8              ; 'X'
+ jsr dbg_print_char
+ lda #$D0              ; 'P'
+ jsr dbg_print_char
+ lda #$BD              ; '='
+ jsr dbg_print_char
+ lda billy_sprite+2
+ jsr dbg_print_hex8
+ jsr dbg_print_nl
+:ax_halt
+ bra :ax_halt
+:ax_lo dfb 0
+:ax_hi dfb 0
+
+*----------------------------------------------------------
+* screen_origin_x - World-byte origin (left edge) of each
+* screen's horizontal content. $FFFF = not yet determined or
+* dynamic (scr10..13 choose anchor at runtime via
+* scroll_up_anchor); the assertions below skip $FFFF entries
+* rather than false-fail.
+*
+* Derived from mission1's level_script:
+*   scr0..3: linear ground-floor chain, 110 bytes apart
+*   scr5:    OP_UP from scr3, default anchor 330 (= scr3 origin)
+*   scr7:    OP_RIGHT from scr5
+*   others:  fill in when drift is observed and the true
+*            world-x of that screen's left edge is measured
+*----------------------------------------------------------
+screen_origin_x
+ dw 0          ; scr0 — spawn
+ dw 110        ; scr1 — OP_RIGHT from scr0
+ dw 220        ; scr2 — OP_RIGHT from scr1
+ dw 330        ; scr3 — OP_RIGHT from scr2
+ dw $FFFF      ; scr4 — unused
+ dw 330        ; scr5 — OP_UP default anchor (game.s op_up_anchor_default)
+ dw $FFFF      ; scr6 — scr5 left-neighbor (w=52); speculative 278
+ dw 440        ; scr7 — OP_RIGHT from scr5 (330 + 110)
+ dw $FFFF      ; scr8 — scr10 left-neighbor (w=58); speculative 382
+ dw $FFFF      ; scr9 — narrow left-neighbor (w=51); speculative 389
+ dw $FFFF      ; scr10 — dynamic (scroll_up_anchor: 440 or 302)
+ dw $FFFF      ; scr11 — right-neighbor of scr12 narrow layout
+ dw $FFFF      ; scr12 — dynamic (scroll_up_anchor=329)
+ dw $FFFF      ; scr13 — OP_RIGHT from scr11, narrow layout
+ dw $FFFF      ; scr14 — unused
+ dw $FFFF      ; scr15 — unused
+
+*----------------------------------------------------------
+* assert_scroll_src_off - Verify the right-scroll source
+* offset matches what's derivable from world_offset.
+* Invariant (steady state, horizontal scroll):
+*   screen_origin_x[scroll_src_bank - $03] + scroll_src_off
+*     == world_offset + 110
+* (the byte next to pull from the source bank is the byte that
+* will enter the playfield's right edge, which lives one past
+* the current playfield's right.)
+* Skipped when the source screen's origin is $FFFF or when the
+* computed expected is out of [0, 109] (transition windows).
+*----------------------------------------------------------
+assert_scroll_src_off
+* Skip-rts at top keeps all short branches in range for a long
+* diagnostic tail. Every "skip this check" path branches here.
+:as_skip rts
+ lda scroll_src_bank
+ sec
+ sbc #$03
+ bmi :as_skip          ; bank < $03 (uninitialized/weird)
+ cmp #16
+ bcs :as_skip          ; screen index out of table
+ asl                   ; *2 for 2-byte entries
+ tax
+ lda screen_origin_x,x
+ sta :as_orig
+ lda screen_origin_x+1,x
+ sta :as_orig+1
+* Skip sentinel ($FFFF)
+ cmp #$FF
+ bne :as_check
+ lda :as_orig
+ cmp #$FF
+ beq :as_skip
+:as_check
+* expected = (world_offset + 110) - origin   (16-bit)
+ clc
+ lda world_offset
+ adc #110
+ sta :as_exp
+ lda world_offset+1
+ adc #0
+ sta :as_exp+1
+ sec
+ lda :as_exp
+ sbc :as_orig
+ sta :as_exp
+ lda :as_exp+1
+ sbc :as_orig+1
+ sta :as_exp+1
+* If expected is negative or >= 110, we're in a weird
+* transition window (scroll_src just wrapped / script mid-
+* reconfig). Skip rather than false-fail.
+ lda :as_exp+1
+ bne :as_skip
+ lda :as_exp
+ cmp #110
+ bcs :as_skip
+* Compare to scroll_src_off (1-byte)
+ cmp scroll_src_off
+ beq :as_skip
+* Mismatch — 'SS! aa=ee B=bb WO=wwww CS=cs'
+ lda #$D3              ; 'S'
+ jsr dbg_print_char
+ lda #$D3              ; 'S'
+ jsr dbg_print_char
+ lda #$A1              ; '!'
+ jsr dbg_print_char
+ lda #$A0
+ jsr dbg_print_char
+ lda scroll_src_off
+ jsr dbg_print_hex8
+ lda #$BD              ; '='
+ jsr dbg_print_char
+ lda :as_exp
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda #$C2              ; 'B'
+ jsr dbg_print_char
+ lda #$BD
+ jsr dbg_print_char
+ lda scroll_src_bank
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda #$D7              ; 'W'
+ jsr dbg_print_char
+ lda #$CF              ; 'O'
+ jsr dbg_print_char
+ lda #$BD
+ jsr dbg_print_char
+ lda world_offset+1
+ jsr dbg_print_hex8
+ lda world_offset
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda #$C3              ; 'C'
+ jsr dbg_print_char
+ lda #$D3              ; 'S'
+ jsr dbg_print_char
+ lda #$BD
+ jsr dbg_print_char
+ lda current_screen
+ jsr dbg_print_hex8
+ jsr dbg_print_nl
+:as_halt
+ bra :as_halt
+:as_orig ds 2
+:as_exp  ds 2
+
+*----------------------------------------------------------
+* assert_scroll_lsrc_off - Verify the left-scroll source
+* offset matches what's derivable from world_offset.
+* Invariant (steady state, horizontal scroll):
+*   screen_origin_x[scroll_lsrc_bank - $03] + scroll_lsrc_off
+*     == world_offset - 1
+* (the byte next to pull is the one that lands at playfield[0]
+* after a left scroll, which corresponds to world byte wo-1
+* relative to the current playfield's left.)
+* Skipped when: left-neighbor screen's origin is $FFFF; when
+* lsrc bank == current_screen's bank (no left neighbor, e.g.
+* scr0); or when expected is out of the neighbor's valid range.
+*----------------------------------------------------------
+assert_scroll_lsrc_off
+:al_skip rts
+ lda scroll_lsrc_bank
+ sec
+ sbc #$03
+ bmi :al_skip
+ cmp #16
+ bcs :al_skip
+* Skip if lsrc screen == current_screen (means "no left nbr")
+ cmp current_screen
+ beq :al_skip
+ asl
+ tax
+ lda screen_origin_x,x
+ sta :al_orig
+ lda screen_origin_x+1,x
+ sta :al_orig+1
+ cmp #$FF
+ bne :al_check
+ lda :al_orig
+ cmp #$FF
+ beq :al_skip
+:al_check
+* expected = (world_offset - 1) - origin   (16-bit)
+ sec
+ lda world_offset
+ sbc #1
+ sta :al_exp
+ lda world_offset+1
+ sbc #0
+ sta :al_exp+1
+ sec
+ lda :al_exp
+ sbc :al_orig
+ sta :al_exp
+ lda :al_exp+1
+ sbc :al_orig+1
+ sta :al_exp+1
+* Expected must be in [0, 109] for standard-width neighbor;
+* skip if out of range (narrow neighbor or transition window).
+ lda :al_exp+1
+ bne :al_skip
+ lda :al_exp
+ cmp #110
+ bcs :al_skip
+ cmp scroll_lsrc_off
+ beq :al_skip
+* Mismatch — 'LS! aa=ee B=bb WO=wwww CS=cs'
+ lda #$CC              ; 'L'
+ jsr dbg_print_char
+ lda #$D3              ; 'S'
+ jsr dbg_print_char
+ lda #$A1              ; '!'
+ jsr dbg_print_char
+ lda #$A0
+ jsr dbg_print_char
+ lda scroll_lsrc_off
+ jsr dbg_print_hex8
+ lda #$BD
+ jsr dbg_print_char
+ lda :al_exp
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda #$C2              ; 'B'
+ jsr dbg_print_char
+ lda #$BD
+ jsr dbg_print_char
+ lda scroll_lsrc_bank
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda #$D7              ; 'W'
+ jsr dbg_print_char
+ lda #$CF              ; 'O'
+ jsr dbg_print_char
+ lda #$BD
+ jsr dbg_print_char
+ lda world_offset+1
+ jsr dbg_print_hex8
+ lda world_offset
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda #$C3              ; 'C'
+ jsr dbg_print_char
+ lda #$D3              ; 'S'
+ jsr dbg_print_char
+ lda #$BD
+ jsr dbg_print_char
+ lda current_screen
+ jsr dbg_print_hex8
+ jsr dbg_print_nl
+:al_halt
+ bra :al_halt
+:al_orig ds 2
+:al_exp  ds 2
 
 *----------------------------------------------------------
 * Animation Descriptors
