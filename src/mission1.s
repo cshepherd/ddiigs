@@ -694,8 +694,8 @@ ladders dfb 3                   ; ladder count
 * at 362-356-3 = 3, sprite center at playfield[7], aligned with
 * the visible ladder rendered at playfield[6] (= scr12 byte 32
 * with src_start=26 from compute_up_align).
- dw 360                         ; x_left
- dw 372                         ; x_right
+ dw 367                         ; x_left
+ dw 379                         ; x_right
  dfb 0,68                       ; y_top=0, y_bottom=68
 
 *==========================================================

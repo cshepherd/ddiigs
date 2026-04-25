@@ -6426,42 +6426,86 @@ scroll_up
  rep $30
  mx %00
 
-* First-call setup for scr12 climb: paint scr8 over the cols
-* where scr10 was visible (= cols [110-count..109], count =
-* wo-330) across all 183 rows, BEFORE Step 1's shift. Painting
-* before the shift lets scr8 and scr9 both shift together and
-* stay vertically aligned. (After the shift would leave scr8
-* at rows 0..182 while scr9 sits at rows 4..182 — a 4-row gap.)
+* First-call setup for scr12 climb: paint the FULL post-snap
+* lower layout (scr9 right portion + all of scr8) across all 183
+* rows, BEFORE Step 1's shift. Replaces pre-climb scr9+scr10
+* with scr9[82..109] at cols [up_dst_start..up_dst_start+
+* up_count-1] and scr8[0..81] at cols [up_dst_start+up_count..
+* 109]. Mirrors snap_transition's lower-fill but for all rows so
+* the climb animation shows the post-snap layout throughout.
+* Cost ~100ms one-time at climb start.
  lda climb_started
  and #$00FF
- bne :ffs_done
+ beq :ffs_check_screen
+ jmp :ffs_done
+:ffs_check_screen
  lda scroll_up_screen
  and #$00FF
  cmp #12
- bne :ffs_done
+ beq :ffs_do
+ jmp :ffs_done
+:ffs_do
  sep $20
  lda #1
  sta climb_started
-* count = wo - 330 (8-bit; wo high byte = 330 high byte = 1)
- sec
- lda world_offset
- sbc #<330
- sta :ffs_count
- stz :ffs_count+1
- beq :ffs_done_sep
-* dst = 110 - count (where the scr10 region begins)
+ rep $20
+* compute_up_align populates up_src_start, up_count, up_dst_start
+* from world_offset and scroll_up_anchor. Step 2 will call it
+* again with the same inputs (no narrow pin for scr12 wide).
+ jsr compute_up_align
+ lda up_count
+ bne :ffs_paint
+ jmp :ffs_done
+:ffs_paint
+* --- scr9 fill: scr9[up_src_start..] at cols [up_dst_start..] ---
+ lda #$2000
+ clc
+ adc up_src_start
+ sta $F0
+ lda #$2000
+ clc
+ adc up_dst_start
+ sta $F3
+ sep $20
+ lda #$0C               ; scr9 bank
+ sta $F2
+ lda #$50
+ sta $F5
+ rep $20
+ ldx #183
+:ffs_s9_row ldy #0
+:ffs_s9_wrd lda [$F0],y
+ sta [$F3],y
+ iny
+ iny
+ cpy up_count
+ bcc :ffs_s9_wrd
+ lda $F0
+ clc
+ adc #$00A0
+ sta $F0
+ lda $F3
+ clc
+ adc #$00A0
+ sta $F3
+ dex
+ bne :ffs_s9_row
+* --- scr8 fill: scr8[0..N-1] at cols [up_dst_start+up_count..109]
+* where N = 110 - up_dst_start - up_count ---
  sec
  lda #110
- sbc :ffs_count
- sta :ffs_dst
- stz :ffs_dst+1
- rep $20
-* src = scr8 bank, byte 0 (row 0)
+ sbc up_dst_start
+ sec
+ sbc up_count
+ sta :ffs_count
+ bne :ffs_s8_setup
+ jmp :ffs_done
+:ffs_s8_setup
  lda #$2000
  sta $F0
-* dst = $50 / (row 0, byte ffs_dst)
- lda :ffs_dst
- and #$00FF
+ lda up_dst_start
+ clc
+ adc up_count
  clc
  adc #$2000
  sta $F3
@@ -6472,13 +6516,13 @@ scroll_up
  sta $F5
  rep $20
  ldx #183
-:ffs_row ldy #0
-:ffs_wrd lda [$F0],y
+:ffs_s8_row ldy #0
+:ffs_s8_wrd lda [$F0],y
  sta [$F3],y
  iny
  iny
  cpy :ffs_count
- bcc :ffs_wrd
+ bcc :ffs_s8_wrd
  lda $F0
  clc
  adc #$00A0
@@ -6488,10 +6532,7 @@ scroll_up
  adc #$00A0
  sta $F3
  dex
- bne :ffs_row
- bra :ffs_done
-:ffs_done_sep
- rep $20
+ bne :ffs_s8_row
 :ffs_done
 
 * Step 1: shift rows down by 4 in $50.
@@ -7373,16 +7414,14 @@ scroll_up
 :dl_done
 * scr12-specific post-snap xpos nudge: BCLIMB (mid-climb) and
 * IMAGE01 (post-snap) sprites have different visible centers,
-* so Billy's xpos that aligned mid-climb is ~5 bytes left of
-* aligned post-snap. Apply a one-time +5 to xpos and abs_x
-* when the climb target was scr12. (Hardcoded for now; could
-* be parameterized via OP_UP if other targets need it.)
+* so Billy's xpos that aligned mid-climb needs adjusting for
+* post-snap. Empirically tuned to +2 with ladder_buf center=373.
  lda scroll_up_screen
  cmp #12
  bne :no_post_snap_nudge
  lda IMAGE01_XPOS
  clc
- adc #5
+ adc #2
  sta IMAGE01_XPOS
  ldy #2
  sta (info_ptr),y       ; billy_sprite+2
@@ -7390,7 +7429,7 @@ scroll_up
  sta (info_ptr),y       ; prev_xpos = new xpos
  lda abs_x
  clc
- adc #5
+ adc #2
  sta abs_x
  lda abs_x+1
  adc #0
