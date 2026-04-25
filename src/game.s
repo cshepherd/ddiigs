@@ -327,7 +327,7 @@ game_loop
  jsr erase_all
  jsr draw_all
  jsr draw_overlay
-* jsr draw_ladder_debug  ; uncomment to outline ladders for debug
+ jsr draw_ladder_debug   ; outline ladders for debug
  bra game_loop
 
 *----------------------------------------------------------
@@ -485,11 +485,22 @@ run_script
 * Configure left source: bank of target screen, offset starts at
 * rightmost byte (109) so first fill pulls real pixels. scr9 is
 * now full-width art so the previous narrow special-case is gone.
+* Special case: if the target bank already matches scroll_lsrc_bank
+* (e.g., snap_transition pre-set lsrc to OP_UP's lbank, and we're
+* enabling left-scroll into that same screen), preserve
+* scroll_lsrc_off so the scroll continues from where the lgap fill
+* left off without a visible jump.
  clc
  adc #$03
+ cmp scroll_lsrc_bank
+ beq :op_left_keep_off
  sta scroll_lsrc_bank
  lda #109
  sta scroll_lsrc_off
+ bra :op_left_off_done
+:op_left_keep_off
+ sta scroll_lsrc_bank
+:op_left_off_done
  lda #1
  sta scroll_left_enabled
  lda script_pc
@@ -604,16 +615,17 @@ run_script
  sta scroll_up_twidth
  bra :op_up_anchor_done
 :op_up_notscr10
-* scr12 is full-width but its visible content sits ~56 bytes
-* into the bank, so we use anchor=274 instead of the default
-* 330 to render scr12[82..109] at playfield[0..27] when wo=356.
+* scr12 anchor=230 with wo=296 (the OP_SCRMIN/MAX-locked ladder3
+* entry position) places scr12 byte 66 at playfield col 0, so
+* scr12's visible ladder art lands aligned with Billy's sprite
+* center (col 33) when OP_SNAPSTATE_DEFER puts him at xpos=29.
 * scr11/13 (still narrow, 52 bytes) keep anchor=329. Other
 * OP_UP targets use the default anchor=330.
  cmp #12
  bne :op_up_check_scr1113
- lda #<274
+ lda #<230
  sta scroll_up_anchor
- lda #>274
+ lda #>230
  sta scroll_up_anchor+1
  lda #110
  sta scroll_up_twidth
@@ -3818,13 +3830,10 @@ process_input
 * - 3. The -3 shifts Billy's 8-byte-wide sprite left so its visual
 * midpoint lands on the ladder center instead of its left edge.
 * world_offset stays at its current (approach-dependent) value,
-* so the teleport is at most half the ladder width.
-* scr12 (ladder3) skip: ladder collision data is already
-* calibrated to Billy's natural approach position, so any snap
-* would be a visible teleport. Skip directly to :sn_done.
- lda scroll_up_screen
- cmp #12
- beq :sn_done
+* so the teleport is at most half the ladder width. For scr12
+* climbs, the ladder data is now centered at world 369 to match
+* scr12's visible art at byte 95, so the snap aligns Billy with
+* the climb-time ladder rendering.
  lda :sn_ctr
  sec
  sbc world_offset
@@ -7561,11 +7570,31 @@ scroll_up
  sta scroll_lsrc_bank
  lda #109
  sta scroll_lsrc_off
- bra :snap_loaded
+ bra :snap_lsrc_check_lbank
 :snap_no_left
  lda #$03
  sta scroll_lsrc_bank
  stz scroll_lsrc_off
+:snap_lsrc_check_lbank
+* If OP_UP supplied an explicit left-neighbor (scroll_up_lbank
+* set, sentinel 0 = no lbank), use it instead of the linear
+* fallback. The lgap fill above just painted lbank bytes
+* (lwidth - up_dst_start)..(lwidth - 1) at cols 0..(up_dst_start-1),
+* so set lsrc_off = lwidth - up_dst_start - 1: the next byte to
+* pull on left-scroll continues seamlessly from the lgap.
+* CPU is in emulation 8-bit here (sec/xce above + load_screen_bounds
+* returns in emul); no mode switching needed.
+ lda scroll_up_lbank
+ beq :snap_loaded         ; sentinel 0 = no lbank, keep linear
+ ldx up_dst_start
+ beq :snap_loaded         ; no lgap painted → keep linear
+ sta scroll_lsrc_bank
+ lda scroll_up_lwidth
+ sec
+ sbc up_dst_start
+ sec
+ sbc #1
+ sta scroll_lsrc_off
 :snap_loaded
 * Reposition player to the upper screen's walkable area.
 * Prefer Billy's current ypos (his climb-end position during
