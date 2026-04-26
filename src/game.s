@@ -303,6 +303,9 @@ over1
 *==========================================================
 game_loop
  jsr wait_for_vbl
+ jsr check_pause       ; ESC tap toggles paused
+ lda paused
+ bne game_loop         ; frozen: skip all per-frame work
  jsr update_overlay
  jsr process_input
  jsr run_script
@@ -1820,6 +1823,29 @@ overlay_h      dfb 0          ; FRAME_Y (height in rows)
 overlay_mirror dfb 0          ; 0 = normal, 1 = flipped horizontally
 overlay_addr   ds 2           ; pointer to sprite frame data (bank $02)
 OVERLAY_MASK   = $77          ; transparent byte (shared by POINT_* sprites)
+
+* Pause state — toggled by ESC tap in check_pause. When paused,
+* game_loop skips update_overlay/process_input/update_anims/etc.,
+* leaving the screen frozen until the next ESC tap.
+paused dfb 0                  ; 0 = running, 1 = paused
+
+*----------------------------------------------------------
+* check_pause - If ESC is in the keyboard register, toggle the
+* paused flag and consume the keystroke. Other keys are left in
+* the strobe so process_input (or other handlers) can read them
+* on the next frame this passes through.
+*----------------------------------------------------------
+check_pause
+ lda $c000
+ bpl :cp_done           ; bit 7 clear → no key waiting
+ and #$7f
+ cmp #$1B               ; ESC
+ bne :cp_done           ; some other key — leave for process_input
+ sta $c010              ; consume the strobe (write clears it)
+ lda paused
+ eor #$01               ; toggle 0↔1
+ sta paused
+:cp_done rts
 
 *----------------------------------------------------------
 * update_overlay - Decrement overlay timer. When it expires,
