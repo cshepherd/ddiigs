@@ -467,11 +467,23 @@ run_script
 :rt_same_bank
  lda #1
  sta scroll_right_enabled
-* Show POINT_RIGHT overlay for 180 frames (right side, arrow points right)
+* Show POINT_RIGHT overlay (right side, arrow points right) for 180 frames
+ jsr clear_active_overlay
  lda #180
  sta overlay_timer
- lda #0
- sta overlay_mirror
+ lda #100
+ sta overlay_x
+ lda #120
+ sta overlay_y
+ lda #$0C
+ sta overlay_w
+ lda #$10
+ sta overlay_h
+ stz overlay_mirror
+ lda spr_pointright
+ sta overlay_addr
+ lda spr_pointright+1
+ sta overlay_addr+1
  lda script_pc
  clc
  adc #2
@@ -506,10 +518,23 @@ run_script
  lda #1
  sta scroll_left_enabled
 * Show POINT_RIGHT overlay mirrored on the left side for 180 frames
+ jsr clear_active_overlay
  lda #180
  sta overlay_timer
+ lda #0
+ sta overlay_x
+ lda #120
+ sta overlay_y
+ lda #$0C
+ sta overlay_w
+ lda #$10
+ sta overlay_h
  lda #1
  sta overlay_mirror
+ lda spr_pointright
+ sta overlay_addr
+ lda spr_pointright+1
+ sta overlay_addr+1
  lda script_pc
  clc
  adc #2
@@ -706,6 +731,24 @@ run_script
  stz snap_copy_rows+1
 :op_up_off_done
  stz climb_started     ; reset one-time setup flag for this climb
+* Show POINT_UP overlay (centered, top of playfield) for 180 frames.
+* Playfield is 110 bytes; POINT_UP is 8 bytes wide → x = (110-8)/2 = 51.
+ jsr clear_active_overlay
+ lda #180
+ sta overlay_timer
+ lda #51
+ sta overlay_x
+ lda #0
+ sta overlay_y
+ lda #$08
+ sta overlay_w
+ lda #$18
+ sta overlay_h
+ stz overlay_mirror
+ lda spr_pointup
+ sta overlay_addr
+ lda spr_pointup+1
+ sta overlay_addr+1
  lda #1
  sta scroll_up_enabled
  lda #SCRIPT_WAITUP
@@ -1765,16 +1808,18 @@ check_ladder
 
 LADDER_TOL = 2        ; ±2 bytes (±4px) tolerance for ladder entry
 
-* Overlay state (POINT_RIGHT arrow shown on OP_RIGHT / mirrored on OP_LEFT)
+* Overlay state — populated by OP_RIGHT / OP_LEFT / OP_UP, drawn by
+* draw_overlay each frame, erased by update_overlay when timer hits 0.
+* All position/size/sprite fields are written by the activating opcode
+* so the same draw/erase code services every direction.
 overlay_timer  dfb 0          ; frames remaining (0 = inactive)
-overlay_mirror dfb 0          ; 0 = right side (arrow points right),
-                              ; 1 = left side (arrow flipped, points left)
-OVERLAY_X      = 100          ; right-side X (screen byte; 200px in 320 mode)
-OVERLAY_LX     = 0            ; left-side X (mirrored placement)
-OVERLAY_Y      = 120          ; screen scanline
-OVERLAY_W      = $0C          ; POINT_RIGHT width in bytes
-OVERLAY_H      = $10          ; POINT_RIGHT height in rows
-OVERLAY_MASK   = $77          ; transparent byte for POINT_RIGHT
+overlay_x      dfb 0          ; IMAGE01_XPOS (screen byte)
+overlay_y      dfb 0          ; IMAGE01_YPOS (scanline)
+overlay_w      dfb 0          ; FRAME_X (width in bytes)
+overlay_h      dfb 0          ; FRAME_Y (height in rows)
+overlay_mirror dfb 0          ; 0 = normal, 1 = flipped horizontally
+overlay_addr   ds 2           ; pointer to sprite frame data (bank $02)
+OVERLAY_MASK   = $77          ; transparent byte (shared by POINT_* sprites)
 
 *----------------------------------------------------------
 * update_overlay - Decrement overlay timer. When it expires,
@@ -1787,23 +1832,38 @@ update_overlay
  sbc #1
  sta overlay_timer
  bne :done
-* Timer just hit 0 — erase overlay from screen
- lda #OVERLAY_Y
- sta IMAGE01_YPOS
- lda overlay_mirror
- bne :erase_left
- lda #OVERLAY_X
- bra :erase_setx
-:erase_left
- lda #OVERLAY_LX
-:erase_setx
- sta IMAGE01_XPOS
- lda #OVERLAY_W
- sta FRAME_X
- lda #OVERLAY_H
- sta FRAME_Y
- jsr erase
+ jsr erase_overlay_rect
 :done rts
+
+*----------------------------------------------------------
+* clear_active_overlay - if overlay_timer != 0, immediately
+* erase the current overlay rect and force timer to 0.
+* Called by OP_RIGHT/LEFT/UP before they overwrite overlay state
+* so the previous overlay's pixels are removed from the playfield
+* (otherwise the erase rect would point at the new position when
+* the timer eventually expired, leaving the old pixels on screen).
+*----------------------------------------------------------
+clear_active_overlay
+ lda overlay_timer
+ beq :cao_done
+ jsr erase_overlay_rect
+ stz overlay_timer
+:cao_done rts
+
+*----------------------------------------------------------
+* erase_overlay_rect - erase the rect described by current
+* overlay_x/y/w/h via the standard erase routine.
+*----------------------------------------------------------
+erase_overlay_rect
+ lda overlay_y
+ sta IMAGE01_YPOS
+ lda overlay_x
+ sta IMAGE01_XPOS
+ lda overlay_w
+ sta FRAME_X
+ lda overlay_h
+ sta FRAME_Y
+ jmp erase
 
 *----------------------------------------------------------
 * draw_overlay - If overlay is active, draw POINT_RIGHT
@@ -1835,29 +1895,20 @@ draw_overlay
  pha
  lda MASKLO
  pha
-* Set overlay globals
- lda #OVERLAY_Y
+* Set overlay globals from cached state
+ lda overlay_y
  sta IMAGE01_YPOS
+ lda overlay_x
+ sta IMAGE01_XPOS
  lda overlay_mirror
- bne :draw_left
- lda #OVERLAY_X
- sta IMAGE01_XPOS
- lda #0
  sta IMAGE01_MIRROR
- bra :draw_setrest
-:draw_left
- lda #OVERLAY_LX
- sta IMAGE01_XPOS
- lda #1
- sta IMAGE01_MIRROR
-:draw_setrest
- lda #OVERLAY_W
+ lda overlay_w
  sta FRAME_X
- lda #OVERLAY_H
+ lda overlay_h
  sta FRAME_Y
- lda spr_pointright
+ lda overlay_addr
  sta FRAME_ADDR
- lda spr_pointright+1
+ lda overlay_addr+1
  sta FRAME_ADDR+1
  lda #OVERLAY_MASK
  sta MASK
@@ -5536,23 +5587,28 @@ init_level
  lda [$F0],y
  sta spr_pointright
 
-* BCLIMB1 (offset +76)
+* POINT_UP (offset +76)
  ldy #76
+ lda [$F0],y
+ sta spr_pointup
+
+* BCLIMB1 (offset +78)
+ ldy #78
  lda [$F0],y
  sta spr_bclimb1
 
-* BCLIMB2 (offset +78)
- ldy #78
+* BCLIMB2 (offset +80)
+ ldy #80
  lda [$F0],y
  sta spr_bclimb2
 
-* LCLIMB1 (offset +80)
- ldy #80
+* LCLIMB1 (offset +82)
+ ldy #82
  lda [$F0],y
  sta spr_lclimb1
 
-* LCLIMB2 (offset +82)
- ldy #82
+* LCLIMB2 (offset +84)
+ ldy #84
  lda [$F0],y
  sta spr_lclimb2
 
@@ -5817,6 +5873,7 @@ spr_lpunched ds 2
 spr_lfall1   ds 2
 spr_lfall2   ds 2
 spr_pointright ds 2
+spr_pointup    ds 2
 spr_bclimb1    ds 2
 spr_bclimb2    ds 2
 spr_lclimb1    ds 2
