@@ -443,6 +443,10 @@ run_script
  sta overlay_addr
  lda spr_pointright+1
  sta overlay_addr+1
+ lda spr_pointright_mask
+ sta overlay_mask
+ lda spr_pointright_mask+1
+ sta overlay_mask+1
  lda script_pc
  clc
  adc #2
@@ -476,7 +480,7 @@ run_script
 :op_left_off_done
  lda #1
  sta scroll_left_enabled
-* Show POINT_RIGHT overlay mirrored on the left side for 180 frames
+* Show POINT_RIGHT overlay on the left side (using pre-mirrored sprite)
  jsr clear_active_overlay
  lda #180
  sta overlay_timer
@@ -489,11 +493,15 @@ run_script
  lda #$10
  sta overlay_h
  lda #1
- sta overlay_mirror
- lda spr_pointright
+ sta overlay_mirror               ; legacy flag (informational only)
+ lda spr_pointright_data_mirror
  sta overlay_addr
- lda spr_pointright+1
+ lda spr_pointright_data_mirror+1
  sta overlay_addr+1
+ lda spr_pointright_mask_mirror
+ sta overlay_mask
+ lda spr_pointright_mask_mirror+1
+ sta overlay_mask+1
  lda script_pc
  clc
  adc #2
@@ -708,6 +716,10 @@ run_script
  sta overlay_addr
  lda spr_pointup+1
  sta overlay_addr+1
+ lda spr_pointup_mask
+ sta overlay_mask
+ lda spr_pointup_mask+1
+ sta overlay_mask+1
  lda #1
  sta scroll_up_enabled
  lda #SCRIPT_WAITUP
@@ -1776,9 +1788,11 @@ overlay_x      dfb 0          ; IMAGE01_XPOS (screen byte)
 overlay_y      dfb 0          ; IMAGE01_YPOS (scanline)
 overlay_w      dfb 0          ; FRAME_X (width in bytes)
 overlay_h      dfb 0          ; FRAME_Y (height in rows)
-overlay_mirror dfb 0          ; 0 = normal, 1 = flipped horizontally
-overlay_addr   ds 2           ; pointer to sprite frame data (bank $02)
-OVERLAY_MASK   = $77          ; transparent byte (shared by POINT_* sprites)
+overlay_mirror dfb 0          ; 0 = normal, 1 = flipped (legacy; unused
+                              ; under compiled pipeline — mirror is baked
+                              ; into pre-rotated _DATA_MIRROR / _MASK_MIRROR)
+overlay_addr   ds 2           ; pointer to sprite DATA (bank $02)
+overlay_mask   ds 2           ; pointer to inverse MASK (bank $02)
 
 * Pause state — toggled by ESC tap in check_pause. When paused,
 * game_loop skips update_overlay/process_input/update_anims/etc.,
@@ -1966,8 +1980,10 @@ erase_overlay_rect
  jmp erase
 
 *----------------------------------------------------------
-* draw_overlay - If overlay is active, draw POINT_RIGHT
-* at fixed screen position. Uses draw_sprite globals.
+* draw_overlay - If overlay is active, render the cached
+* overlay sprite via draw_sprite_compiled (AND/ORA pipeline).
+* Saves and restores the engine's draw globals so the call
+* doesn't disturb gameplay sprites mid-frame.
 *----------------------------------------------------------
 draw_overlay
  lda overlay_timer
@@ -1979,8 +1995,6 @@ draw_overlay
  pha
  lda IMAGE01_XPOS
  pha
- lda IMAGE01_MIRROR
- pha
  lda FRAME_X
  pha
  lda FRAME_Y
@@ -1989,19 +2003,15 @@ draw_overlay
  pha
  lda FRAME_ADDR+1
  pha
- lda MASK
+ lda MASK_ADDR
  pha
- lda MASKHI
- pha
- lda MASKLO
+ lda MASK_ADDR+1
  pha
 * Set overlay globals from cached state
  lda overlay_y
  sta IMAGE01_YPOS
  lda overlay_x
  sta IMAGE01_XPOS
- lda overlay_mirror
- sta IMAGE01_MIRROR
  lda overlay_w
  sta FRAME_X
  lda overlay_h
@@ -2010,20 +2020,16 @@ draw_overlay
  sta FRAME_ADDR
  lda overlay_addr+1
  sta FRAME_ADDR+1
- lda #OVERLAY_MASK
- sta MASK
- lda #$70
- sta MASKHI
- lda #$07
- sta MASKLO
- jsr draw_sprite
+ lda overlay_mask
+ sta MASK_ADDR
+ lda overlay_mask+1
+ sta MASK_ADDR+1
+ jsr draw_sprite_compiled
 * Restore globals
  pla
- sta MASKLO
+ sta MASK_ADDR+1
  pla
- sta MASKHI
- pla
- sta MASK
+ sta MASK_ADDR
  pla
  sta FRAME_ADDR+1
  pla
@@ -2032,8 +2038,6 @@ draw_overlay
  sta FRAME_Y
  pla
  sta FRAME_X
- pla
- sta IMAGE01_MIRROR
  pla
  sta IMAGE01_XPOS
  pla
@@ -3577,7 +3581,24 @@ draw_all
  lda (info_ptr),y
  and #$01
  beq :skip_draw
+* Dispatch: compiled (AND/ORA) path when MASK_ADDR != 0 and the
+* sprite is the keyboard player (Billy). MASK_ADDR is the live
+* signal "current FRAME_ADDR points at compiled DATA"; advance_walk
+* and :anim_done idle-restore set it, while start_anim and
+* advance_climb clear it (their frames are uncompiled, must go
+* through legacy). NPCs always use legacy (controller != 1).
+ ldy #22
+ lda (info_ptr),y
+ cmp #$01
+ bne :da_legacy
+ lda MASK_ADDR
+ ora MASK_ADDR+1
+ beq :da_legacy
+ jsr draw_sprite_compiled
+ bra :da_drawn
+:da_legacy
  jsr draw_sprite
+:da_drawn
 * Clear bit 0 (needs_draw)
  ldy #30
  lda (info_ptr),y
@@ -3637,6 +3658,15 @@ load_sprite
  ldy #20
  lda (info_ptr),y     ; +20 masklo
  sta MASKLO
+ ldy #52
+ lda (info_ptr),y     ; +52 mask_addr low (compiled-pipeline mask;
+                      ;     for NPC slots this is walk_anim — dispatch
+                      ;     in draw_all gates on controller==1, so this
+                      ;     value is harmless when the legacy path runs)
+ sta MASK_ADDR
+ iny
+ lda (info_ptr),y
+ sta MASK_ADDR+1
  clc
  rts
 :null sec
@@ -3686,6 +3716,20 @@ save_sprite
  iny
  lda FRAME_ADDR+1
  sta (info_ptr),y     ; +15 frame_addr high
+* For Billy (keyboard player), also persist MASK_ADDR → +52 so
+* load_sprite picks up the matching inverse-mask next frame. NPC
+* slots use +52 as walk_anim, so we skip the write for them.
+ ldy #22
+ lda (info_ptr),y     ; +22 controller
+ cmp #$01
+ bne :ss_skip_mask
+ ldy #52
+ lda MASK_ADDR
+ sta (info_ptr),y
+ iny
+ lda MASK_ADDR+1
+ sta (info_ptr),y
+:ss_skip_mask
 * Mark sprite as dirty (bit0=needs_draw, bit1=needs_erase)
  ldy #30
  lda #$03
@@ -3726,6 +3770,18 @@ save_anim_state
  iny
  lda FRAME_ADDR+1
  sta (info_ptr),y
+* Persist MASK_ADDR → +52 for Billy only (see save_sprite note).
+ ldy #22
+ lda (info_ptr),y
+ cmp #$01
+ bne :sas_skip_mask
+ ldy #52
+ lda MASK_ADDR
+ sta (info_ptr),y
+ iny
+ lda MASK_ADDR+1
+ sta (info_ptr),y
+:sas_skip_mask
 * Mark dirty (bit0=needs_draw, bit1=needs_erase)
  ldy #30
  lda #$03
@@ -4395,10 +4451,29 @@ advance_walk
  txa
  asl
  tax
+* Pick data + mask table pair based on Billy's mirror flag.
+* walk_addr_tbl/walk_mask_tbl  for forward (mirror=0).
+* walk_addr_tbl_mirror/walk_mask_tbl_mirror for left-facing (mirror=1).
+ lda IMAGE01_MIRROR
+ bne :aw_mirror
  lda walk_addr_tbl,x
  sta FRAME_ADDR
  lda walk_addr_tbl+1,x
  sta FRAME_ADDR+1
+ lda walk_mask_tbl,x
+ sta MASK_ADDR
+ lda walk_mask_tbl+1,x
+ sta MASK_ADDR+1
+ rts
+:aw_mirror
+ lda walk_addr_tbl_mirror,x
+ sta FRAME_ADDR
+ lda walk_addr_tbl_mirror+1,x
+ sta FRAME_ADDR+1
+ lda walk_mask_tbl_mirror,x
+ sta MASK_ADDR
+ lda walk_mask_tbl_mirror+1,x
+ sta MASK_ADDR+1
  rts
 
 walk_step dfb 0
@@ -4409,6 +4484,14 @@ walk_toggle dfb 0
 * alternating each call. Sets FRAME_X/Y/ADDR globals.
 *----------------------------------------------------------
 advance_climb
+* BCLIMB1/2 are uncompiled — clear MASK_ADDR (and billy_sprite+52)
+* so dispatch routes to the legacy draw_sprite. The subsequent
+* save_sprite call in the climb caller will persist info+52=0.
+ lda #0
+ sta MASK_ADDR
+ sta MASK_ADDR+1
+ sta billy_sprite+52
+ sta billy_sprite+53
  lda climb_toggle
  eor #$01
  sta climb_toggle
@@ -4433,7 +4516,10 @@ climb_toggle dfb 0
 
 walk_x_tbl dfb $09,$08,$0B,$08
 walk_y_tbl dfb $28,$28,$28,$28
-walk_addr_tbl ds 8         ; patched by init_level (IMAGE01,IMAGE02,IMAGE03,IMAGE02)
+walk_addr_tbl        ds 8  ; patched by init_level (IMAGE01,IMAGE02,IMAGE03,IMAGE02)
+walk_mask_tbl        ds 8  ; companion mask addresses (compiled pipeline)
+walk_addr_tbl_mirror ds 8  ; mirror-baked data addresses
+walk_mask_tbl_mirror ds 8  ; mirror-baked mask addresses
 
 *----------------------------------------------------------
 * resort_sprite_table - Rebuild sprite_table sorted by ypos.
@@ -4674,6 +4760,21 @@ start_anim
  iny
  lda FRAME_ADDR+1
  sta (info_ptr),y
+* For Billy: clear MASK_ADDR (and persist to info+52) so the next
+* draw routes to legacy — animation frames are uncompiled. NPCs
+* leave +52 (walk_anim) untouched.
+ ldy #22
+ lda (info_ptr),y
+ cmp #$01
+ bne :sa_skip_mask
+ lda #0
+ sta MASK_ADDR
+ sta MASK_ADDR+1
+ ldy #52
+ sta (info_ptr),y
+ iny
+ sta (info_ptr),y
+:sa_skip_mask
  ldy #30
  lda #$03
  sta (info_ptr),y
@@ -4991,6 +5092,32 @@ update_anims
  ldy #46
  lda (info_ptr),y     ; idle_y
  sta FRAME_Y
+* For Billy (controller=$01): pick compiled idle data + mask whose
+* orientation matches IMAGE01_MIRROR. Mirror is baked into the
+* pre-rotated arrays — draw_sprite_compiled has no mirror branch.
+ ldy #22
+ lda (info_ptr),y
+ cmp #$01
+ bne :ne_no_billy_mask
+ lda IMAGE01_MIRROR
+ bne :ne_billy_mirror
+* mirror=0: FRAME_ADDR is already idle_addr = IMAGE01_DATA. Just set MASK.
+ lda spr_image01_mask
+ sta MASK_ADDR
+ lda spr_image01_mask+1
+ sta MASK_ADDR+1
+ bra :ne_no_billy_mask
+:ne_billy_mirror
+* mirror=1: swap FRAME_ADDR + MASK_ADDR for the pre-mirrored versions.
+ lda spr_image01_data_mirror
+ sta FRAME_ADDR
+ lda spr_image01_data_mirror+1
+ sta FRAME_ADDR+1
+ lda spr_image01_mask_mirror
+ sta MASK_ADDR
+ lda spr_image01_mask_mirror+1
+ sta MASK_ADDR+1
+:ne_no_billy_mask
  jsr save_anim_state
  jmp :next
 
@@ -5715,6 +5842,55 @@ init_level
  lda [$F0],y
  sta spr_lclimb2
 
+* Compiled-sprite extras (offsets +86..+96)
+ ldy #86
+ lda [$F0],y
+ sta spr_pointright_mask
+ ldy #88
+ lda [$F0],y
+ sta spr_pointright_data_mirror
+ ldy #90
+ lda [$F0],y
+ sta spr_pointright_mask_mirror
+ ldy #92
+ lda [$F0],y
+ sta spr_pointup_mask
+ ldy #94
+ lda [$F0],y
+ sta spr_pointup_data_mirror
+ ldy #96
+ lda [$F0],y
+ sta spr_pointup_mask_mirror
+
+* Billy walk-frame compiled extras (offsets +98..+114)
+ ldy #98
+ lda [$F0],y
+ sta spr_image01_mask
+ ldy #100
+ lda [$F0],y
+ sta spr_image01_data_mirror
+ ldy #102
+ lda [$F0],y
+ sta spr_image01_mask_mirror
+ ldy #104
+ lda [$F0],y
+ sta spr_image02_mask
+ ldy #106
+ lda [$F0],y
+ sta spr_image02_data_mirror
+ ldy #108
+ lda [$F0],y
+ sta spr_image02_mask_mirror
+ ldy #110
+ lda [$F0],y
+ sta spr_image03_mask
+ ldy #112
+ lda [$F0],y
+ sta spr_image03_data_mirror
+ ldy #114
+ lda [$F0],y
+ sta spr_image03_mask_mirror
+
 * Now patch all DA references in animation descriptors
 * and sprite info blocks with bank $02 addresses.
 * Each anim frame has: dfb x,y,dur, DA addr (5 bytes per frame)
@@ -5842,10 +6018,15 @@ init_level
  lda spr_lfall2
  sta anim_lfall+3+8
 
-* Patch billy_sprite frame_addr (+14) and idle_addr (+42)
+* Patch billy_sprite frame_addr (+14), idle_addr (+42), and the
+* compiled inverse-mask address (+52). Also seed MASK_ADDR so the
+* very first draw_all (before any advance_walk) renders correctly.
  lda spr_img01
  sta billy_sprite+14
  sta billy_sprite+42
+ lda spr_image01_mask
+ sta billy_sprite+52
+ sta MASK_ADDR
 
 * Patch william_sprite frame_addr and idle_addr
  lda spr_william1
@@ -5857,7 +6038,7 @@ init_level
  sta william2_sprite+14
  sta william2_sprite+42
 
-* Patch walk_addr_tbl
+* Patch walk_addr_tbl (data) and walk_mask_tbl (parallel mask)
  lda spr_img01
  sta walk_addr_tbl
  lda spr_img02
@@ -5866,6 +6047,34 @@ init_level
  sta walk_addr_tbl+4
  lda spr_img02
  sta walk_addr_tbl+6
+
+ lda spr_image01_mask
+ sta walk_mask_tbl
+ lda spr_image02_mask
+ sta walk_mask_tbl+2
+ lda spr_image03_mask
+ sta walk_mask_tbl+4
+ lda spr_image02_mask
+ sta walk_mask_tbl+6
+
+* Patch mirror-baked walk tables
+ lda spr_image01_data_mirror
+ sta walk_addr_tbl_mirror
+ lda spr_image02_data_mirror
+ sta walk_addr_tbl_mirror+2
+ lda spr_image03_data_mirror
+ sta walk_addr_tbl_mirror+4
+ lda spr_image02_data_mirror
+ sta walk_addr_tbl_mirror+6
+
+ lda spr_image01_mask_mirror
+ sta walk_mask_tbl_mirror
+ lda spr_image02_mask_mirror
+ sta walk_mask_tbl_mirror+2
+ lda spr_image03_mask_mirror
+ sta walk_mask_tbl_mirror+4
+ lda spr_image02_mask_mirror
+ sta walk_mask_tbl_mirror+6
 
 * Read player_spawn_x/y from header ($02/0002, $02/0003)
 * and apply to billy_sprite xpos/ypos (+ prev fields).
@@ -5981,6 +6190,23 @@ spr_bclimb1    ds 2
 spr_bclimb2    ds 2
 spr_lclimb1    ds 2
 spr_lclimb2    ds 2
+* Compiled-sprite extras for AND/ORA pipeline overlay path
+spr_pointright_mask        ds 2
+spr_pointright_data_mirror ds 2
+spr_pointright_mask_mirror ds 2
+spr_pointup_mask           ds 2
+spr_pointup_data_mirror    ds 2
+spr_pointup_mask_mirror    ds 2
+* Billy walk frames — compiled
+spr_image01_mask           ds 2
+spr_image01_data_mirror    ds 2
+spr_image01_mask_mirror    ds 2
+spr_image02_mask           ds 2
+spr_image02_data_mirror    ds 2
+spr_image02_mask_mirror    ds 2
+spr_image03_mask           ds 2
+spr_image03_data_mirror    ds 2
+spr_image03_mask_mirror    ds 2
 
 *----------------------------------------------------------
 * Set ntp_open pathname pointer and ntp_bank before calling.
@@ -6107,7 +6333,7 @@ scroll_right
 * Redraw the sprite on $01 now (shadowed to $E1) so it stays
 * visible at its current screen position while we work. The
 * final stack_blit replaces everything atomically at the end.
- jsr draw_sprite
+ jsr draw_active_sprite
 
  lda x_scroll_idx
  clc
@@ -6566,7 +6792,7 @@ scroll_right
  sta draw_bank
  lda #$00
  sta draw_bank+1
- jsr draw_sprite
+ jsr draw_active_sprite
 * Composite the HUD overlay (if active) onto $55 too, so the
 * stack_blit preserves it. Otherwise the scrolled $55 overwrites
 * the overlay on $E1 and it flickers until draw_overlay redraws
@@ -6637,7 +6863,7 @@ scroll_left
 * player on $01 (shadowed to $E1) before the scroll composite
 * pipeline, so the sprite doesn't visibly vanish in the gap
 * between erase_all and the final stack_blit.
- jsr draw_sprite
+ jsr draw_active_sprite
 
  clc
  xce
@@ -6881,7 +7107,7 @@ scroll_left
  sta draw_bank
  lda #$00
  sta draw_bank+1
- jsr draw_sprite
+ jsr draw_active_sprite
  jsr draw_overlay      ; composite HUD onto $55
  clc
  xce
@@ -6923,7 +7149,7 @@ scroll_up
 * player on $01 (shadowed to $E1) before the scroll composite
 * pipeline. Covers both the incremental (:su_normal) path and
 * the :snap_transition path.
- jsr draw_sprite
+ jsr draw_active_sprite
 
  lda scroll_up_off
  cmp #30              ; fire snap early so the last ~28 rows of
@@ -7485,7 +7711,7 @@ scroll_up
  sta draw_bank
  lda #$00
  sta draw_bank+1
- jsr draw_sprite
+ jsr draw_active_sprite
  jsr draw_overlay      ; composite HUD onto $55
  clc
  xce
@@ -8011,6 +8237,35 @@ scroll_up
  sta FRAME_Y
  ldy #12
  sta (info_ptr),y
+* Restore compiled MASK_ADDR + override FRAME_ADDR with the mirror
+* variant if Billy is facing left. Without this, FRAME_ADDR is the
+* compiled IMAGE01_DATA but MASK_ADDR was cleared by advance_climb,
+* so dispatch routes to legacy and the $00 transparency slots in
+* the compiled data render as opaque black ("box around Billy" at
+* the top of the ladder).
+ lda IMAGE01_MIRROR
+ bne :st_mirror
+ lda spr_image01_mask
+ sta MASK_ADDR
+ sta billy_sprite+52
+ lda spr_image01_mask+1
+ sta MASK_ADDR+1
+ sta billy_sprite+53
+ bra :st_mask_done
+:st_mirror
+ lda spr_image01_data_mirror
+ sta FRAME_ADDR
+ sta billy_sprite+14
+ lda spr_image01_data_mirror+1
+ sta FRAME_ADDR+1
+ sta billy_sprite+15
+ lda spr_image01_mask_mirror
+ sta MASK_ADDR
+ sta billy_sprite+52
+ lda spr_image01_mask_mirror+1
+ sta MASK_ADDR+1
+ sta billy_sprite+53
+:st_mask_done
  stz climb_toggle       ; next climb starts on BCLIMB1
 * Disable the ladder Billy just climbed by locating it from his
 * current world_x and setting y_top=255 so check_ladder fails
@@ -8128,7 +8383,7 @@ scroll_up
  sta draw_bank
  lda #$00
  sta draw_bank+1
- jsr draw_sprite
+ jsr draw_active_sprite
  jsr draw_overlay      ; composite HUD onto $55
  clc
  xce
@@ -10044,6 +10299,151 @@ SKIP REP $20
  PLB
  RTS
 
+*----------------------------------------------------------
+* draw_active_sprite - Draw the player sprite using whichever
+* pipeline matches its current frame data. Dispatches on
+* MASK_ADDR: when non-zero, FRAME_ADDR points at compiled DATA
+* and we use draw_sprite_compiled; when zero, FRAME_ADDR is raw
+* (animation, climb, etc.) and we use legacy draw_sprite.
+*----------------------------------------------------------
+draw_active_sprite
+ lda MASK_ADDR
+ ora MASK_ADDR+1
+ bne :das_compiled
+ jmp draw_sprite
+:das_compiled
+ jmp draw_sprite_compiled
+
+*----------------------------------------------------------
+* draw_sprite_compiled - AND/ORA pipeline draw for sprites
+* compiled via tools/compile_sprite.py. Inputs:
+*   IMAGE01_XPOS / IMAGE01_YPOS  destination
+*   FRAME_X / FRAME_Y            sprite size (bytes / rows)
+*   FRAME_ADDR                   pointer to *_DATA  array (bank $02)
+*   MASK_ADDR                    pointer to *_MASK  array (bank $02)
+*   draw_bank                    destination bank ($01 in normal use)
+*   sprite_bank                  bank holding _DATA / _MASK ($02)
+*
+* Inner loop (per byte) is branchless:
+*   LDA [scr],Y / AND [mask],Y / ORA [data],Y / STA [scr],Y
+* Mirror sprites use pre-computed _DATA_MIRROR / _MASK_MIRROR
+* arrays — there is no separate mirror branch here.
+*
+* DP layout after the 11-byte stack carve-out:
+*   DP 0-2  screen long pointer (offset 0-1, bank 2)
+*   DP 4-6  data   long pointer (offset 4-5, bank 6)
+*   DP 7-9  mask   long pointer (offset 7-8, bank 9)
+*   DP A    end_x  (= IMAGE01_XPOS + FRAME_X)
+*----------------------------------------------------------
+draw_sprite_compiled
+ PHB
+ PHP
+ CLC
+ XCE
+ PHP
+ PHK
+ PLB
+ REP $30
+ TSC
+ SEC
+ SBC #11
+ TCS
+ PHD
+ TSC
+ CLC
+ ADC #3
+ TCD
+ SEP $20
+ LDAL $E0C029
+ ORA #%01000000
+ STAL $E0C029
+
+* Bank bytes (8-bit stores so they don't clobber adjacent DP bytes
+* that the 16-bit offset writes below will overwrite anyway).
+ LDA draw_bank
+ STA 2                 ; DP 2 = screen bank
+ LDA sprite_bank
+ STA 6                 ; DP 6 = data bank
+ STA 9                 ; DP 9 = mask bank
+
+ REP $20
+
+* DP 0-1 = ypos * $A0 + $2000 + IMAGE01_XPOS
+* (Pre-adding IMAGE01_XPOS lets the inner loop use Y as a sprite-byte
+*  index from 0..FRAME_X-1 against all three pointers in lockstep.)
+ LDA IMAGE01_YPOS
+ ASL
+ ASL
+ ASL
+ ASL
+ ASL
+ STA IMAGE01_XTEMP     ; absolute scratch (DP space is tight)
+ ASL
+ ASL
+ CLC
+ ADC IMAGE01_XTEMP
+ CLC
+ ADC #$2000
+ CLC
+ ADC IMAGE01_XPOS      ; 16-bit add of IMAGE01_XPOS (low byte = column,
+                       ; high byte must be 0 — IMAGE01_XPOS is stored as
+                       ; HEX nn00 so the 16-bit load gives that)
+ STA 0
+
+ LDA FRAME_ADDR
+ STA 4                 ; DP 4-5 = data offset
+ LDA MASK_ADDR
+ STA 7                 ; DP 7-8 = mask offset
+
+ SEP $30
+ LDA FRAME_X
+ STA $0A               ; DP $0A = byte width (loop bound, Y < FRAME_X)
+ LDX FRAME_Y           ; X = row counter
+
+:dsc_row
+ LDY #0                ; sprite-byte index, runs 0..FRAME_X-1
+:dsc_byte
+ LDA [0],Y
+ AND [7],Y
+ ORA [4],Y
+ STA [0],Y
+ INY
+ CPY $0A
+ BCC :dsc_byte
+
+ DEX
+ BEQ :dsc_done
+
+* Advance pointers to next row (16-bit math)
+ REP $20
+ LDA 0
+ CLC
+ ADC #$00A0
+ STA 0
+ LDA 4
+ CLC
+ ADC FRAME_X
+ STA 4
+ LDA 7
+ CLC
+ ADC FRAME_X
+ STA 7
+ SEP $20
+ BRA :dsc_row
+
+:dsc_done
+ REP $30
+ PLD
+ TSC
+ CLC
+ ADC #11
+ TCS
+ PLP
+ XCE
+ PLP
+ PLB
+ RTS
+
 wait_for_vbl
 :lp1 bit $c019
  bmi :lp1 ; wait for current VBL to end
@@ -10177,6 +10577,12 @@ billy_sprite
   hex 2800         ; +46 idle_y
   hex 0000         ; +48 punch_count
   da anim_bfall    ; +50 fall_anim pointer
+  hex 0000         ; +52 mask_addr (compiled inverse-mask companion to
+                   ;     +14 frame_addr; patched by init_level, kept in
+                   ;     sync by advance_walk and :anim_done. NPC slots
+                   ;     use +52/+54 as walk_anim/atk_anim — compiled
+                   ;     dispatch in draw_all gates on controller==1 so
+                   ;     the meaning of +52 stays sprite-type-specific)
 
 *-------------------------------
 * Globals (used by erase/draw_sprite)
@@ -10184,6 +10590,8 @@ billy_sprite
 FRAME_X  HEX 0900         ; current frame width
 FRAME_Y  HEX 2800         ; current frame height
 FRAME_ADDR ds 2            ; current frame data address (set at runtime)
+MASK_ADDR  ds 2            ; companion inverse-mask address for compiled
+                           ; AND/ORA draw path; consumed by draw_sprite_compiled
 
 *-------------------------------
 * Sprite state
