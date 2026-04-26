@@ -73,7 +73,7 @@ NTPstreamsound          =   NinjaTrackerPlus+24
  lda #$03
  sta unpack_bank
  jsr load_and_unpack
-* Copy $03/2000 -> $50/2000 (playfield shadow), then $50 -> $01
+* Copy $03/2000 -> $18/2000 (playfield shadow), then $18 -> $01
  jsr copy_03_to_50
  jsr copy_50_to_01
 
@@ -1863,7 +1863,7 @@ draw_pause_text
 
 *----------------------------------------------------------
 * erase_pause_text - Restore the rect under the PAUSED label by
-* copying clean playfield bytes from $50 back to $01 via the
+* copying clean playfield bytes from $18 back to $01 via the
 * standard erase routine.
 *----------------------------------------------------------
 erase_pause_text
@@ -1885,10 +1885,11 @@ P1_SCORE_Y   = 195            ; pixel baseline (matches HUD line)
 P1_SCORE_LEN = 7              ; digit width (matches "0000000")
 
 *----------------------------------------------------------
-* draw_p1_score - If p1_score_dirty is non-zero, render
-* p1_score as a 7-digit ASCII string via _Int2Dec into a
-* buffer at ]IOBUF, draw it with _DrawCString
-* over the static HUD digits, and clear the dirty flag.
+* draw_p1_score - If p1_score_dirty is non-zero, draw the
+* p1_score C-string directly via _DrawCString over the
+* static HUD digits, and clear the dirty flag. p1_score is
+* maintained as live ASCII by the incp1s_* carry ladder, so
+* no binary→decimal conversion is needed at draw time.
 *----------------------------------------------------------
 draw_p1_score
  lda p1_score_dirty
@@ -1922,7 +1923,7 @@ draw_p1_score
 
 *----------------------------------------------------------
 * update_overlay - Decrement overlay timer. When it expires,
-* erase the overlay rect from the $50 shadow.
+* erase the overlay rect from the $18 shadow.
 *----------------------------------------------------------
 update_overlay
  lda overlay_timer
@@ -3767,7 +3768,7 @@ OP_SNAPSTATE_DEFER = 17 ; like OP_SNAPSTATE but applied at next
                       ;   db bank, db byte, db count, db dst (region 1)
                       ;   db bank, db byte, db count, db dst (region 2)
                       ; Engine repaints 183 rows from bank/byte+row*$A0
-                      ; to $50/(dst + row*$A0). Bank=0 skips that region.
+                      ; to $18/(dst + row*$A0). Bank=0 skips that region.
 
 * Script interpreter state
 SCRIPT_RUN  = 0       ; executing opcodes
@@ -5409,7 +5410,7 @@ unpack_size hex ffff     ; size of unpacked data (set by UnPackBytes)
 unpack_addr hex 0020E100 ; unpacking destination address (bank/2000)
 
 *----------------------------------------------------------
-* copy_50_to_01 - Copy 32KB from $50/2000 to $01/2000
+* copy_50_to_01 - Copy 32KB from $18/2000 to $01/2000
 * (for initial screen display via shadowing).
 *----------------------------------------------------------
 copy_50_to_01
@@ -5421,7 +5422,7 @@ copy_50_to_01
  sta $F0               ; src addr
  sta $F3               ; dst addr
  sep $20
- lda #$50
+ lda #$18
  sta $F2               ; src bank
  lda #$01
  sta $F5               ; dst bank
@@ -5443,7 +5444,7 @@ copy_50_to_01
 
 *----------------------------------------------------------
 * copy_03_to_50 - Copy 32KB from $03/2000 (screen 0 bg)
-* to $50/2000 (playfield shadow).
+* to $18/2000 (playfield shadow).
 *----------------------------------------------------------
 copy_03_to_50
  clc
@@ -5455,7 +5456,7 @@ copy_03_to_50
  sep $20
  lda #$03
  sta $F2
- lda #$50
+ lda #$18
  sta $F5
  rep $30
  ldy #$0000
@@ -6088,9 +6089,9 @@ mission1_path dfb 16
 
 *----------------------------------------------------------
 * scroll_right - Scroll playfield 1 byte (2 pixels) right.
-* 1) Shift bytes 1-110 left by one in bank $50 for 183 lines
+* 1) Shift bytes 1-110 left by one in bank $18 for 183 lines
 * 2) Fill right edge from bank $51 (x_scroll_idx bytes)
-* 3) Blit 110-byte wide playfield from $50 to $E1
+* 3) Blit 110-byte wide playfield from $18 to $E1
 * 4) Redraw sprite
 *----------------------------------------------------------
 scroll_right
@@ -6118,14 +6119,14 @@ scroll_right
  rep $30               ; 16-bit A, X, Y
  mx %00
 
-* Step 1: Shift each scanline 4 bytes left in bank $50.
+* Step 1: Shift each scanline 4 bytes left in bank $18.
 * Copy words from offset+4 to offset, 53 words (106 bytes).
  lda #$2004
  sta $F0               ; src = line_start + 4
  lda #$2000
  sta $F3               ; dst = line_start
  sep $20
- lda #$50
+ lda #$18
  sta $F2
  sta $F5
  rep $20
@@ -6182,12 +6183,12 @@ scroll_right
  clc
  adc #$2000
  sta $F0               ; src = scroll_src_bank/(2000 + scroll_src_off)
- lda #$206A            ; dst = $50/(2000 + 106)
+ lda #$206A            ; dst = $18/(2000 + 106)
  sta $F3
  sep $20
  lda scroll_src_bank
  sta $F2
- lda #$50
+ lda #$18
  sta $F5
  rep $20
 
@@ -6273,12 +6274,12 @@ scroll_right
 * First pass: fill bytes 106-107 from current bank offset 108
  lda #$2000+108
  sta $F0
- lda #$206A            ; dst = $50/(2000+106)
+ lda #$206A            ; dst = $18/(2000+106)
  sta $F3
  sep $20
  lda scroll_src_bank
  sta $F2
- lda #$50
+ lda #$18
  sta $F5
  rep $20
  ldy #0
@@ -6302,7 +6303,7 @@ scroll_right
 * otherwise linear inc to the next screen.
  lda #$2000
  sta $F0
- lda #$206C            ; dst = $50/(2000+108)
+ lda #$206C            ; dst = $18/(2000+108)
  sta $F3
  sep $20
  lda current_screen
@@ -6322,7 +6323,7 @@ scroll_right
  sta transition_pending     ; signal sync_current_screen
  lda scroll_src_bank
  sta $F2
- lda #$50
+ lda #$18
  sta $F5
  rep $20
  ldy #0
@@ -6372,13 +6373,13 @@ scroll_right
  clc
  adc #$2000
  sta $F0               ; src = current_bank/(2000+off)
- lda #$206A            ; dst = $50/(2000+106)
+ lda #$206A            ; dst = $18/(2000+106)
  sta $F3
  sep $20
  mx %10
  lda scroll_src_bank
  sta $F2
- lda #$50
+ lda #$18
  sta $F5
  ldx #183
 :fsg_p1_row
@@ -6433,7 +6434,7 @@ scroll_right
 :fsg_bank_done
  lda #1
  sta transition_pending
-* --- Phase 2 setup: dst F3 = $50/(2000 + 106 + count_curr) ---
+* --- Phase 2 setup: dst F3 = $18/(2000 + 106 + count_curr) ---
  lda #$6A
  clc
  adc :fsg_count1
@@ -6449,7 +6450,7 @@ scroll_right
  mx %10
  lda scroll_src_bank
  sta $F2
- lda #$50
+ lda #$18
  sta $F5
  ldx #183
 :fsg_p2_row
@@ -6508,13 +6509,13 @@ scroll_right
  clc
  adc #$2000
  sta $F0                ; src = scr8/(2000 + scr8_src_off)
- lda #$670A             ; dst = $50/(2000 + 113*160 + 106)
+ lda #$670A             ; dst = $18/(2000 + 113*160 + 106)
  sta $F3
  sep $20
  mx %10
  lda #$0B               ; scr8 bank
  sta $F2
- lda #$50
+ lda #$18
  sta $F5
  rep $20
  mx %00
@@ -6554,7 +6555,7 @@ scroll_right
  mx %00
 :sr_lower_done
 
-* Step 3: Fast unrolled blit $50 -> $55 (back buffer)
+* Step 3: Fast unrolled blit $18 -> $55 (back buffer)
  jsr fast_blit_50_55
 
  sec
@@ -6607,7 +6608,7 @@ scroll_right
 
 *----------------------------------------------------------
 * scroll_left - Mirror of scroll_right.
-* Shift each scanline 4 bytes RIGHT in bank $50, then fill
+* Shift each scanline 4 bytes RIGHT in bank $18, then fill
 * the leftmost 4 bytes (offsets 0-3) from the previous
 * screen's source bank.
 *----------------------------------------------------------
@@ -6643,7 +6644,7 @@ scroll_left
  rep $30
  mx %00
 
-* Step 1: Shift each scanline 4 bytes right in bank $50.
+* Step 1: Shift each scanline 4 bytes right in bank $18.
 * Copy 53 words from offset 0..104 to offset 4..108.
 * Iterate Y from 104 DOWN to 0 — negative Y would add ~$FFFE to
 * the 24-bit pointer (lda [dp],y doesn't wrap within bank), so
@@ -6653,7 +6654,7 @@ scroll_left
  lda #$2004             ; dst base = line_start + 4
  sta $F3
  sep $20
- lda #$50
+ lda #$18
  sta $F2
  sta $F5
  rep $20
@@ -6724,7 +6725,7 @@ scroll_left
  sec
  sbc #1
  sta $F2
- lda #$50
+ lda #$18
  sta $F5
  ldx #183
 :lspl_p_line
@@ -6764,7 +6765,7 @@ scroll_left
  mx %11
  lda scroll_lsrc_bank
  sta $F2
- lda #$50
+ lda #$18
  sta $F5
  ldx #183
 :lspl_c_line
@@ -6816,7 +6817,7 @@ scroll_left
  sep $20
  lda scroll_lsrc_bank
  sta $F2
- lda #$50
+ lda #$18
  sta $F5
  rep $20
  ldy #0
@@ -6912,10 +6913,10 @@ scroll_left
 
 *----------------------------------------------------------
 * scroll_up - Vertical scroll: shift all rows DOWN by 4 in
-* bank $50, then fill the top 4 rows from scroll_up_bank
+* bank $18, then fill the top 4 rows from scroll_up_bank
 * (the screen ABOVE) at scroll_up_off (counts down from 182).
 * When scroll_up_off would go below 3, snap-transition: copy
-* the entire source bank to $50 and update current_screen.
+* the entire source bank to $18 and update current_screen.
 *----------------------------------------------------------
 scroll_up
 * Flicker-cover: see scroll_right for rationale. Re-draw the
@@ -6978,9 +6979,9 @@ scroll_up
 * Repaint lower art so the visible playfield matches the canonical
 * engine state. Two regions; each with its own bank/byte/count/dst.
 * Region with bank=0 is skipped. Both regions paint 183 rows.
-* Writes only to bank $50 (the playfield base); the
+* Writes only to bank $18 (the playfield base); the
 * fast_blit_50_55 → stack_blit_55_e1 pipeline at the end of
-* scroll_up pushes $50 to the visible $E1 atomically.
+* scroll_up pushes $18 to the visible $E1 atomically.
 * --- Region 1 (offsets +17/+18/+19/+20) ---
  lda pending_snap_buf+17
  beq :skip_region1
@@ -7002,7 +7003,7 @@ scroll_up
  mx %10
  lda pending_snap_buf+17
  sta $F2
- lda #$50
+ lda #$18
  sta $F5
  lda pending_snap_buf+19
  sta :rg1_count
@@ -7053,7 +7054,7 @@ scroll_up
  mx %10
  lda pending_snap_buf+21
  sta $F2
- lda #$50
+ lda #$18
  sta $F5
  lda pending_snap_buf+23
  sta :rg2_count
@@ -7146,7 +7147,7 @@ scroll_up
  sep $20
  lda #$0C               ; scr9 bank
  sta $F2
- lda #$50
+ lda #$18
  sta $F5
  rep $20
  ldx #183
@@ -7186,7 +7187,7 @@ scroll_up
  sep $20
  lda #$0B               ; scr8 bank
  sta $F2
- lda #$50
+ lda #$18
  sta $F5
  rep $20
  ldx #183
@@ -7212,7 +7213,7 @@ scroll_up
  jmp :ffs_done
 :ffs_done
 
-* Step 1: shift rows down by 4 in $50.
+* Step 1: shift rows down by 4 in $18.
 * Iterate from row 178 down to row 0, copying to row+4.
 * Source addr starts at row 178: $2000 + 178*$A0 = $8F40
 * Dest addr starts at row 182: $2000 + 182*$A0 = $91C0
@@ -7221,7 +7222,7 @@ scroll_up
  lda #$91C0
  sta $F3
  sep $20
- lda #$50
+ lda #$18
  sta $F2
  sta $F5
  rep $20
@@ -7306,7 +7307,7 @@ scroll_up
  clc
  adc up_src_start
  sta $F0
-* Set F3 = $50/(2000 + up_dst_start)
+* Set F3 = $18/(2000 + up_dst_start)
  lda #$2000
  clc
  adc up_dst_start
@@ -7314,7 +7315,7 @@ scroll_up
  sep $20
  lda scroll_up_bank
  sta $F2
- lda #$50
+ lda #$18
  sta $F5
  rep $20
 
@@ -7370,11 +7371,11 @@ scroll_up
  sbc up_dst_start
  sta $F0                ; src = lbank/(2000 + row*$A0 + width - gap)
  lda #$2000
- sta $F3                ; dst = $50/$2000 (playfield row 0, byte 0)
+ sta $F3                ; dst = $18/$2000 (playfield row 0, byte 0)
  sep $20
  lda scroll_up_lbank
  sta $F2
- lda #$50
+ lda #$18
  sta $F5
  rep $20
 
@@ -7433,7 +7434,7 @@ scroll_up
  clc
  adc #$2000
  sta $F0                ; src = rbank/(2000 + row*$A0)
-* Dest: $50/(2000 + rgap_start)
+* Dest: $18/(2000 + rgap_start)
  lda #$2000
  clc
  adc :rgap_start
@@ -7441,7 +7442,7 @@ scroll_up
  sep $20
  lda scroll_up_rbank
  sta $F2
- lda #$50
+ lda #$18
  sta $F5
  rep $20
  ldx #4
@@ -7510,7 +7511,7 @@ scroll_up
 
 *----------------------------------------------------------
 * :snap_transition - End of vertical scroll: copy source
-* screen entirely to $50 and update current_screen.
+* screen entirely to $18 and update current_screen.
 *----------------------------------------------------------
 :snap_transition
 * DEBUG: 'SN WO=wwww AX=aaaa' — world_offset and abs_x at snap
@@ -7629,7 +7630,7 @@ scroll_up
  lda #$2000
  sta $F3
  sep $20
- lda #$50
+ lda #$18
  sta $F5
  rep $20
  ldx snap_copy_rows
@@ -7659,11 +7660,11 @@ scroll_up
  lda #$2000
  clc
  adc up_dst_start
- sta $F3                ; dst = $50/(2000 + up_dst_start)
+ sta $F3                ; dst = $18/(2000 + up_dst_start)
  sep $20
  lda scroll_up_bank
  sta $F2
- lda #$50
+ lda #$18
  sta $F5
  rep $20
  ldx snap_copy_rows   ; 183 default, 113 for narrow targets
@@ -7700,11 +7701,11 @@ scroll_up
  sbc up_dst_start       ; src = lbank/(2000 + width - gap)
  sta $F0
  lda #$2000
- sta $F3                ; dst = $50/2000
+ sta $F3                ; dst = $18/2000
  sep $20
  lda scroll_up_lbank
  sta $F2
- lda #$50
+ lda #$18
  sta $F5
  rep $20
  ldx snap_copy_rows
@@ -7751,7 +7752,7 @@ scroll_up
  sep $20
  lda scroll_up_rbank
  sta $F2
- lda #$50
+ lda #$18
  sta $F5
  rep $20
  ldx snap_copy_rows
@@ -7796,7 +7797,7 @@ scroll_up
  adc #$2000
  sta $F0               ; src = scr9 byte (wo-220)
  lda #$66A0
- sta $F3               ; dst = $50/(row 113, col 0)
+ sta $F3               ; dst = $18/(row 113, col 0)
  lda #330
  sec
  sbc world_offset
@@ -7805,7 +7806,7 @@ scroll_up
  sep $20
  lda #$0C              ; scr9 bank
  sta $F2
- lda #$50
+ lda #$18
  sta $F5
  rep $20
  ldx #70
@@ -7841,11 +7842,11 @@ scroll_up
  sbc world_offset
  clc
  adc #$66A0
- sta $F3               ; dst = $50/(row 113, col 330-wo)
+ sta $F3               ; dst = $18/(row 113, col 330-wo)
  sep $20
  lda #$0B               ; scr8 bank
  sta $F2
- lda #$50
+ lda #$18
  sta $F5
  rep $20
  ldx #70
@@ -8222,7 +8223,7 @@ compute_up_align
  mx %11                 ; restore default for following code
 
 *----------------------------------------------------------
-* fast_blit_50_55 - Unrolled blit from bank $50 to bank $55
+* fast_blit_50_55 - Unrolled blit from bank $18 to bank $55
 * 110 bytes (55 words) wide, 183 lines.
 * Entry: native mode, REP $30 (16-bit A/X/Y).
 *----------------------------------------------------------
@@ -8234,7 +8235,7 @@ fast_blit_50_55
 :line
 ]idx = 108
  LUP 55
- LDAL $502000+]idx,x
+ LDAL $182000+]idx,x
  STAL $552000+]idx,x
 ]idx = ]idx-2
  --^
@@ -9765,7 +9766,7 @@ incp1s_ret
 *----------------------------------------------------------
 * erase - Restore the background behind the sprite
 * Copies the rectangle at the sprite's current position
-* from the clean background in bank $50 back to the screen
+* from the clean background in bank $18 back to the screen
 * in bank $E1. Uses FRAME_X/FRAME_Y for dimensions.
 *----------------------------------------------------------
 erase    PHB
@@ -9807,8 +9808,8 @@ erase    PHB
  clc
  adc #$2000
  sta 0
-* Set up source pointer (background copy at $50/2000) in DP 4-6
- LDA #$50
+* Set up source pointer (background copy at $18/2000) in DP 4-6
+ LDA #$18
  STA 6
  LDA 0              ; same offset as screen
  STA 4
