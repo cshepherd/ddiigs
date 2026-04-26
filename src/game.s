@@ -615,17 +615,19 @@ run_script
  sta scroll_up_twidth
  bra :op_up_anchor_done
 :op_up_notscr10
-* scr12 anchor=230 with wo=296 (the OP_SCRMIN/MAX-locked ladder3
-* entry position) places scr12 byte 66 at playfield col 0, so
-* scr12's visible ladder art lands aligned with Billy's sprite
-* center (col 33) when OP_SNAPSTATE_DEFER puts him at xpos=29.
+* scr12 anchor=221 with wo=296 (the OP_SCRMIN/MAX-locked ladder3
+* entry position) places scr12 byte 75 at playfield col 0. This
+* shifts scr12 art 7 bytes (14px) left in the playfield relative
+* to a naive anchor=228, compensating for a right-bias in the
+* scr12 source art so its visible content lines up with scr9
+* below at the seam.
 * scr11/13 (still narrow, 52 bytes) keep anchor=329. Other
 * OP_UP targets use the default anchor=330.
  cmp #12
  bne :op_up_check_scr1113
- lda #<230
+ lda #<221
  sta scroll_up_anchor
- lda #>230
+ lda #>221
  sta scroll_up_anchor+1
  lda #110
  sta scroll_up_twidth
@@ -3842,6 +3844,18 @@ process_input
  sta IMAGE01_XPOS
  ldy #2
  sta (info_ptr),y
+* scr12 (ladder3) nudge: -5 to xpos to land Billy on scr9's
+* visible ladder art. Snap formula gives 28; -5 brings it to 23.
+ lda scroll_up_screen
+ cmp #12
+ bne :sn_no_scr12_inc
+ lda IMAGE01_XPOS
+ sec
+ sbc #5
+ sta IMAGE01_XPOS
+ ldy #2
+ sta (info_ptr),y
+:sn_no_scr12_inc
 * Narrow-target override: the incremental pin now uses anchor
 * (no +N), so scr12 renders at playfield[0..51] during climb and
 * post-snap alike. Billy's xpos formula collapses to:
@@ -6777,15 +6791,24 @@ scroll_up
  bne :ffs_paint
  jmp :ffs_done
 :ffs_paint
-* --- scr9 fill: scr9[up_src_start..] at cols [up_dst_start..] ---
- lda #$2000
+* --- scr9 fill: geometric position, NOT anchor-derived. scr9 covers
+* world 220..329; for wo, scr9 byte (wo-220) sits at playfield col 0,
+* and scr9 fills through col (329-wo) inclusive (= 330-wo bytes).
+* This decouples the lower band from scr12's anchor so the relative
+* alignment between scr12 (upper) and scr8/scr9 (lower) reflects the
+* true world geometry rather than scr12's source-byte offset.
+ lda world_offset
+ sec
+ sbc #220
  clc
- adc up_src_start
- sta $F0
+ adc #$2000
+ sta $F0                ; src = scr9 byte (wo-220)
  lda #$2000
- clc
- adc up_dst_start
- sta $F3
+ sta $F3                ; dst = col 0
+ lda #330
+ sec
+ sbc world_offset
+ sta :ffs_s9_count      ; count = 330 - wo (= scr9 visible bytes)
  sep $20
  lda #$0C               ; scr9 bank
  sta $F2
@@ -6798,7 +6821,7 @@ scroll_up
  sta [$F3],y
  iny
  iny
- cpy up_count
+ cpy :ffs_s9_count
  bcc :ffs_s9_wrd
  lda $F0
  clc
@@ -6810,25 +6833,22 @@ scroll_up
  sta $F3
  dex
  bne :ffs_s9_row
-* --- scr8 fill: scr8[0..N-1] at cols [up_dst_start+up_count..109]
-* where N = 110 - up_dst_start - up_count ---
+* --- scr8 fill: scr8 covers world 330..439; for wo, scr8 byte 0
+* sits at playfield col (330-wo), filling through col 109 (= wo-220
+* bytes total, mirroring scr9's count). ---
+ lda world_offset
  sec
- lda #110
- sbc up_dst_start
- sec
- sbc up_count
- sta :ffs_count
- bne :ffs_s8_setup
- jmp :ffs_done
-:ffs_s8_setup
+ sbc #220
+ sta :ffs_count         ; count = wo - 220 (= scr8 visible bytes)
+ beq :ffs_s8_jmp_done
  lda #$2000
- sta $F0
- lda up_dst_start
- clc
- adc up_count
+ sta $F0                ; src = scr8 byte 0
+ lda #330
+ sec
+ sbc world_offset
  clc
  adc #$2000
- sta $F3
+ sta $F3                ; dst = col (330 - wo)
  sep $20
  lda #$0B               ; scr8 bank
  sta $F2
@@ -6853,6 +6873,9 @@ scroll_up
  sta $F3
  dex
  bne :ffs_s8_row
+ bra :ffs_done
+:ffs_s8_jmp_done
+ jmp :ffs_done
 :ffs_done
 
 * Step 1: shift rows down by 4 in $50.
@@ -7418,28 +7441,33 @@ scroll_up
 :snap_rgap_done
 
 * Lower-screen fill: after a short (113-row-tall) target copy,
-* fill the remaining 70 playfield rows (113..182) from scr9.
-* scr9 is now full-width and shares the upper target's world
-* origin, so we reuse compute_up_align's results (up_src_start,
-* up_dst_start, up_count) to keep the lower fill horizontally
-* aligned with the upper screen.
+* fill the remaining 70 playfield rows (113..182) from scr9 + scr8,
+* using GEOMETRIC per-screen world origins (mirrors FFS during-climb).
+* scr9 covers world 220..329; scr8 covers world 330..439. For wo=296,
+* scr9 byte 76 lands at col 0 (count 34), scr8 byte 0 lands at col 34
+* (count 76). Decoupling from scr12's anchor keeps the lower band
+* aligned across the during-climb / post-snap boundary.
  lda scroll_up_screen
  and #$00FF
  cmp #12
  beq :snap_lower_go
  jmp :snap_lower_done
 :snap_lower_go
-* scr9 fill — playfield rows 113..182, columns up_dst_start..
-* up_dst_start+up_count-1, sourced from scr9 starting at byte
-* up_src_start. Pulls scr9 rows 0..69 (top of scr9 art).
- lda #$2000
+* scr9 fill — src = scr9 byte (wo-220), dst = col 0,
+* count = 330 - wo (visible scr9 bytes).
+ lda world_offset
+ sec
+ sbc #220
  clc
- adc up_src_start
- sta $F0               ; src = scr9/(2000 + up_src_start)
+ adc #$2000
+ sta $F0               ; src = scr9 byte (wo-220)
  lda #$66A0
- clc
- adc up_dst_start
- sta $F3               ; dst = $50/(row 113, byte up_dst_start)
+ sta $F3               ; dst = $50/(row 113, col 0)
+ lda #330
+ sec
+ sbc world_offset
+ sta :snap_lo_s9_count ; count = 330 - wo
+ beq :snap_lo_s9_done
  sep $20
  lda #$0C              ; scr9 bank
  sta $F2
@@ -7452,7 +7480,7 @@ scroll_up
  sta [$F3],y
  iny
  iny
- cpy up_count
+ cpy :snap_lo_s9_count
  bcc :snap_dwrd
  lda $F0
  clc
@@ -7464,27 +7492,22 @@ scroll_up
  sta $F3
  dex
  bne :snap_drow
-* scr8 lower fill — covers the playfield columns to the right of
-* scr9 in rows 113..182. Without this, those cols show stale
-* shifted-down content (scr10 from the pre-climb playfield).
-* Width = 110 - up_dst_start - up_count (= 82 with anchor=274).
+:snap_lo_s9_done
+* scr8 lower fill — src = scr8 byte 0, dst = col (330-wo),
+* count = wo - 220 (visible scr8 bytes).
+ lda world_offset
  sec
- lda #110
- sbc up_dst_start
- sec
- sbc up_count
- sta :lower_rgap_count
+ sbc #220
+ sta :lower_rgap_count ; count = wo - 220
  beq :no_scr8_fill
-* src = scr8 bank, byte 0 (leftmost)
  lda #$2000
- sta $F0
-* dst = $50 / row 113 / col (up_dst_start + up_count)
- lda up_dst_start
- clc
- adc up_count
+ sta $F0               ; src = scr8 byte 0
+ lda #330
+ sec
+ sbc world_offset
  clc
  adc #$66A0
- sta $F3
+ sta $F3               ; dst = $50/(row 113, col 330-wo)
  sep $20
  lda #$0B               ; scr8 bank
  sta $F2
@@ -7795,8 +7818,10 @@ scroll_up
 :dl_cnt    ds 1         ; disable-ladder: iteration counter
 :ldr_ctr   ds 2         ; narrow-target snap: matched ladder's center
 :lower_rgap_count ds 2  ; lower-fill scr8: bytes-per-row count
+:snap_lo_s9_count ds 2  ; snap_lower scr9: bytes-per-row count (geometric)
 :ffs_count ds 2         ; first-fill scr8 (scr10 region) byte count
 :ffs_dst   ds 2         ; first-fill scr8 (scr10 region) dst column
+:ffs_s9_count ds 2      ; first-fill scr9 byte count (geometric)
 :snap_wo_delta ds 2     ; narrow-target snap: world_offset - anchor
 
 up_src_start ds 2       ; source byte offset within upper screen scanline

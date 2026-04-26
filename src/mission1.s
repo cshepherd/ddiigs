@@ -321,14 +321,14 @@ level_script
 * scr8 (left portion bytes 0..75) at cols 34..109.
     db OP_SNAPSTATE_DEFER
     dw $0128            ; world_offset = 296
-    dw $0145            ; abs_x = 325 (= wo + xpos)
-    db $1D              ; IMAGE01_XPOS = 29 (matches scr12 art alignment)
+    dw $013D            ; abs_x = 317 (= wo + xpos)
+    db $15              ; IMAGE01_XPOS = 21 (snap formula 26 - scr12 nudge 5)
     db $09              ; current_screen = scr9
     db $0C              ; scroll_src_bank (scr9)
     db $00              ; scroll_src_off = 0
     db $0C              ; scroll_lsrc_bank (scr9)
     db $45              ; scroll_lsrc_off = 69
-    dw $00E5            ; scroll_up_anchor = 229 (scr12)
+    dw $00DD            ; scroll_up_anchor = 221 (scr12) — match game.s
     db $70              ; scroll_up_off = 112
     dw $0128            ; scroll_min_wo = 296
     dw $0128            ; scroll_max_wo = 296
@@ -836,12 +836,13 @@ ladders dfb 3                   ; ladder count
  dw 460                         ; x_right
  dfb 0,59                       ; y_top=0, y_bottom=59
 * Ladder 3: screen 12 → screen 10 above.
-* x_left/x_right bracket the visible ladder art at world ~327.
-* With wo locked at 296 (via OP_SCRMIN/MAX), the visible ladder
-* sits at playfield col 31. Snap formula xpos = 327-296-3 = 28
-* puts Billy's sprite center at col 32, ~1 col (2px) right of
-* the visible ladder.
- dw 323                         ; x_left  (center=327, 8-byte wide)
+* Visible scr9 ladder art is centered at world ~321 (col 25 with
+* wo=296). Bounds are asymmetric (319..331, width 12, center=325)
+* so the snap formula center stays at 325 — formula gives
+* 325-296-3 = 26, with -5 scr12 nudge → xpos=21 (Billy center
+* col 25, on visible). x_left=319 widens the left side so
+* check_ladder accepts swx=317 (xpos=21, with LADDER_TOL=2).
+ dw 319                         ; x_left  (center=325, 12-byte wide bounds)
  dw 331                         ; x_right
  dfb 0,68                       ; y_top=0, y_bottom=68
 
