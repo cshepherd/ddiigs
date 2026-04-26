@@ -1829,11 +1829,24 @@ OVERLAY_MASK   = $77          ; transparent byte (shared by POINT_* sprites)
 * leaving the screen frozen until the next ESC tap.
 paused dfb 0                  ; 0 = running, 1 = paused
 
+* PAUSED text geometry. QuickDraw uses pixel coords; erase uses
+* the byte/row coords (1 byte = 2 pixels in 320 mode). Erase rect
+* is sized generously to fully cover the rendered glyphs.
+PAUSE_TEXT_X = 87            ; QuickDraw MoveTo h (pixels)
+PAUSE_TEXT_Y = 100            ; QuickDraw MoveTo v (baseline)
+PAUSE_BX     = 41             ; erase rect left (bytes; pixel 82)
+PAUSE_BY     = 88             ; erase rect top  (rows)
+PAUSE_BW     = 26             ; erase rect width  (bytes = 52 px)
+PAUSE_BH     = 16             ; erase rect height (rows)
+
+pause_str ASC 'PAUSED',00
+
 *----------------------------------------------------------
 * check_pause - If ESC is in the keyboard register, toggle the
-* paused flag and consume the keystroke. Other keys are left in
-* the strobe so process_input (or other handlers) can read them
-* on the next frame this passes through.
+* paused flag, consume the keystroke, and draw or erase the
+* "PAUSED" overlay at the screen's center. Other keys are left
+* in the strobe so process_input picks them up on the next
+* unpaused frame.
 *----------------------------------------------------------
 check_pause
  lda $c000
@@ -1845,7 +1858,65 @@ check_pause
  lda paused
  eor #$01               ; toggle 0↔1
  sta paused
+ beq :cp_unpaused
+ jsr draw_pause_text    ; just paused — render label
+ rts
+:cp_unpaused
+ jsr erase_pause_text   ; just unpaused — restore playfield rect
 :cp_done rts
+
+*----------------------------------------------------------
+* draw_pause_text - Draw "PAUSED" via QuickDraw II _DrawCString.
+* Mirrors the startup HUD draw pattern (MoveTo, SetForeColor,
+* SetBackColor, DrawCString). Switches to native mode, restores
+* emulation before returning.
+*----------------------------------------------------------
+draw_pause_text
+ clc
+ xce                    ; native mode
+ rep $30
+* MoveTo(h, v)
+ lda #PAUSE_TEXT_X
+ pha
+ lda #PAUSE_TEXT_Y
+ pha
+ ldx #$3a04
+ jsl $E10000
+* SetForeColor
+ pea #$0001
+ ldx #$A004
+ jsl $E10000
+* SetBackColor
+ pea #$0000
+ ldx #$A204
+ jsl $E10000
+ pea #$0000         ; normal text style
+ ldx #$9A04
+ jsl $E10000        ; SetTextFace
+* DrawCString
+ pea ^pause_str
+ pea pause_str
+ ldx #$A604
+ jsl $E10000
+ sec
+ xce                    ; back to emulation
+ rts
+
+*----------------------------------------------------------
+* erase_pause_text - Restore the rect under the PAUSED label by
+* copying clean playfield bytes from $50 back to $01 via the
+* standard erase routine.
+*----------------------------------------------------------
+erase_pause_text
+ lda #PAUSE_BY
+ sta IMAGE01_YPOS
+ lda #PAUSE_BX
+ sta IMAGE01_XPOS
+ lda #PAUSE_BW
+ sta FRAME_X
+ lda #PAUSE_BH
+ sta FRAME_Y
+ jmp erase
 
 *----------------------------------------------------------
 * update_overlay - Decrement overlay timer. When it expires,
