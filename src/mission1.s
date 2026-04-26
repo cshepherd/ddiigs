@@ -257,7 +257,7 @@ level_script
     db $09              ; scroll_lsrc_bank (scr6)
     db $6D              ; scroll_lsrc_off = 109
     dw $01B8            ; scroll_up_anchor = 440
-    db $B2              ; scroll_up_off = 178 (per pre-climb GS3)
+    db $B6              ; scroll_up_off = 182 (full-height default)
     dw $0000            ; scroll_min_wo
     dw $FFFF            ; scroll_max_wo
 * Repaint region 1: scr5 (bank $08) byte 42 → cols [0..67].
