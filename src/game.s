@@ -467,9 +467,11 @@ run_script
 :rt_same_bank
  lda #1
  sta scroll_right_enabled
-* Show POINT_RIGHT overlay for 180 frames
+* Show POINT_RIGHT overlay for 180 frames (right side, arrow points right)
  lda #180
  sta overlay_timer
+ lda #0
+ sta overlay_mirror
  lda script_pc
  clc
  adc #2
@@ -503,6 +505,11 @@ run_script
 :op_left_off_done
  lda #1
  sta scroll_left_enabled
+* Show POINT_RIGHT overlay mirrored on the left side for 180 frames
+ lda #180
+ sta overlay_timer
+ lda #1
+ sta overlay_mirror
  lda script_pc
  clc
  adc #2
@@ -1758,9 +1765,12 @@ check_ladder
 
 LADDER_TOL = 2        ; ±2 bytes (±4px) tolerance for ladder entry
 
-* Overlay state (POINT_RIGHT arrow shown on OP_RIGHT)
+* Overlay state (POINT_RIGHT arrow shown on OP_RIGHT / mirrored on OP_LEFT)
 overlay_timer  dfb 0          ; frames remaining (0 = inactive)
-OVERLAY_X      = 100          ; screen byte position (200 pixels / 2)
+overlay_mirror dfb 0          ; 0 = right side (arrow points right),
+                              ; 1 = left side (arrow flipped, points left)
+OVERLAY_X      = 100          ; right-side X (screen byte; 200px in 320 mode)
+OVERLAY_LX     = 0            ; left-side X (mirrored placement)
 OVERLAY_Y      = 120          ; screen scanline
 OVERLAY_W      = $0C          ; POINT_RIGHT width in bytes
 OVERLAY_H      = $10          ; POINT_RIGHT height in rows
@@ -1780,7 +1790,13 @@ update_overlay
 * Timer just hit 0 — erase overlay from screen
  lda #OVERLAY_Y
  sta IMAGE01_YPOS
+ lda overlay_mirror
+ bne :erase_left
  lda #OVERLAY_X
+ bra :erase_setx
+:erase_left
+ lda #OVERLAY_LX
+:erase_setx
  sta IMAGE01_XPOS
  lda #OVERLAY_W
  sta FRAME_X
@@ -1822,10 +1838,19 @@ draw_overlay
 * Set overlay globals
  lda #OVERLAY_Y
  sta IMAGE01_YPOS
+ lda overlay_mirror
+ bne :draw_left
  lda #OVERLAY_X
  sta IMAGE01_XPOS
  lda #0
  sta IMAGE01_MIRROR
+ bra :draw_setrest
+:draw_left
+ lda #OVERLAY_LX
+ sta IMAGE01_XPOS
+ lda #1
+ sta IMAGE01_MIRROR
+:draw_setrest
  lda #OVERLAY_W
  sta FRAME_X
  lda #OVERLAY_H

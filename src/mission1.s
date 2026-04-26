@@ -373,7 +373,7 @@ level_script
     db OP_RIGHT,13        ; enable right-scroll → scr13 after scr11
 
     db OP_WAITX
-    dw $0210
+    dw $01D8              ; wait for player abs X >= 472 (~16 px before 480)
     db OP_SCRLOCK         ; lock scrolling in screen 13 (final screen)
 
     db OP_END           ; end of level
