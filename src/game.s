@@ -15,8 +15,8 @@ NTPgetsongpos           =   NinjaTrackerPlus+18
 NTPsetplayvolume        =   NinjaTrackerPlus+21
 NTPstreamsound          =   NinjaTrackerPlus+24
 
-]IOBUF = $6C00        ; 1024-byte ProDOS I/O buffer (page-aligned)
-]RDBUF = $7000         ; 4KB read buffer
+]IOBUF = $8200        ; 1024-byte ProDOS I/O buffer (page-aligned)
+]RDBUF = $8600         ; 4KB read buffer
 
 * Clear text screen so diagnostic prints start on a fresh page.
  jsr $FC58
