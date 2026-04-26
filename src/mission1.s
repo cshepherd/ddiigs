@@ -347,11 +347,25 @@ level_script
     db $22              ; region 2 dst col = 34
 
     db OP_UP,12,$FF,11    ; enable climb on ladder 3 (scr12→scr10, scr11 rfill)
-
-* Reset scroll-right limit post-climb so OP_WAITX/OP_RIGHT can
-* progress the player off scr12.
-    db OP_SCRMAX
-    dw $FFFF
+* Post-climb golden state for ladder3 (recorded 'g' on scr12 after
+* climb completed). Fires after snap_transition; commits engine
+* state to the recorded post-climb checkpoint and unlocks
+* scroll_max_wo so OP_WAITX/OP_RIGHT can progress off scr12.
+* scroll_min_wo stays at 296 — leftward scroll back through scr12
+* remains locked.
+    db OP_SNAPSTATE
+    dw $0128            ; world_offset = 296
+    dw $013D            ; abs_x = 317
+    db $15              ; IMAGE01_XPOS = 21
+    db $0C              ; current_screen = scr12
+    db $0E              ; scroll_src_bank (scr11)
+    db $4B              ; scroll_src_off = 75
+    db $0E              ; scroll_lsrc_bank (scr11)
+    db $6D              ; scroll_lsrc_off = 109
+    dw $00DD            ; scroll_up_anchor = 221
+    db $1C              ; scroll_up_off = 28
+    dw $0128            ; scroll_min_wo = 296
+    dw $FFFF            ; scroll_max_wo (unlocked)
 
     db OP_WAITX
     dw $0198              ; wait for player abs X >= 600
