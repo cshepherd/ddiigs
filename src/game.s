@@ -225,47 +225,6 @@ NTPstreamsound          =   NinjaTrackerPlus+24
  ldx #$A204
   jsl $E10000        ; SetBackColor
 
- pea ^string1
- pea string1
- ldx #$A604
- jsl $E10000        ; DrawCString
-
- lda #225
- pha
- lda #30
- pha
- ldx #$3a04         ; MoveTo
- jsl $E10000
-
- pea ^string2
- pea string2
- ldx #$A604
- jsl $E10000        ; DrawCString
-
- lda #225
- pha
- lda #40
- pha
- ldx #$3a04         ; MoveTo
- jsl $E10000
-
- pea ^string3
- pea string3
- ldx #$A604
- jsl $E10000        ; DrawCString
-
- lda #225
- pha
- lda #50
- pha
- ldx #$3a04         ; MoveTo
- jsl $E10000
-
- pea ^string4
- pea string4
- ldx #$A604
- jsl $E10000        ; DrawCString
-
  lda #3
  pha
  lda #195
@@ -288,10 +247,6 @@ NTPstreamsound          =   NinjaTrackerPlus+24
 
  bra over1
 
-string1 ASC '   dd II GS',00
-string2 ASC '  2026 [cCc]',00
-string3 ASC '  Devel/Eval',00
-string4 ASC ' Purpose Only',00
 string5 ASC 'PLAYER 1: 0000000       PLAYER 2: 0000000',00
 
 over1
