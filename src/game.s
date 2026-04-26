@@ -327,7 +327,7 @@ game_loop
  jsr erase_all
  jsr draw_all
  jsr draw_overlay
- jsr draw_ladder_debug   ; outline ladders for debug
+; jsr draw_ladder_debug   ; outline ladders for debug
  bra game_loop
 
 *----------------------------------------------------------
@@ -5970,15 +5970,26 @@ scroll_right
 
 * Step 2: Fill rightmost 4 bytes (offsets 106-109) from
 * the scroll source background in scroll_src_bank.
-* If scroll_src_off is near the screen boundary (108),
-* fill 2 bytes from this bank and 2 from the next.
+* off=108 → split via the proven :fill_split (2+2).
+* off ∈ {107,109} → :fill_split_general (3+1 / 1+3) so we never
+* read past byte 109 of the active 110-byte source window;
+* without this, an odd scroll_src_off (e.g. 75 from a post-climb
+* GS where up_count is odd) cycles to 107 and pulls a sidebar
+* byte into playfield col 109 — visible as a 2px black column
+* at the bank transition.
  sep $20
  mx %10
  lda scroll_src_off
+ cmp #107
+ beq :fsg_dispatch
+ cmp #109
+ beq :fsg_dispatch
  cmp #108
  bcc :fill_normal
- bne :fill_normal       ; src_off > 108 shouldn't happen, treat as normal
- jmp :fill_split        ; beq out of range; unconditional jmp
+ bne :fill_normal       ; src_off > 109 shouldn't happen, treat as normal
+ jmp :fill_split        ; off == 108 → existing 2+2 split
+:fsg_dispatch
+ jmp :fill_split_general
 :fill_normal
  rep $20
  mx %00
@@ -6150,6 +6161,140 @@ scroll_right
  mx %10
  lda #2
  sta scroll_src_off
+ jmp :fill_done
+
+* Generalized split for off ∈ {107, 109} only (108 uses the
+* faster word-aligned :fill_split above). count_curr = 110-off
+* (3 or 1) bytes from current bank starting at off, then
+* count_next = 4-count_curr (1 or 3) bytes from the next bank
+* starting at offset 0. Inner loop uses a dec-counter (`:fsg_curr`)
+* so Y's width is irrelevant. Entry: 8-bit A/M, X 16-bit.
+:fill_split_general
+ lda scroll_src_off
+ sta :fsg_off
+ lda #110
+ sec
+ sbc :fsg_off
+ sta :fsg_count1       ; count_curr (1 or 3)
+ lda #4
+ sec
+ sbc :fsg_count1
+ sta :fsg_count2       ; count_next (3 or 1)
+* --- Phase 1 setup ---
+ rep $20
+ mx %00
+ lda :fsg_off
+ and #$00FF
+ clc
+ adc #$2000
+ sta $F0               ; src = current_bank/(2000+off)
+ lda #$206A            ; dst = $50/(2000+106)
+ sta $F3
+ sep $20
+ mx %10
+ lda scroll_src_bank
+ sta $F2
+ lda #$50
+ sta $F5
+ ldx #183
+:fsg_p1_row
+ lda :fsg_count1
+ sta :fsg_curr
+ ldy #0
+:fsg_p1_byte
+ lda [$F0],y
+ sta [$F3],y
+ iny
+ dec :fsg_curr
+ bne :fsg_p1_byte
+ rep $20
+ mx %00
+ lda $F0
+ clc
+ adc #$00A0
+ sta $F0
+ lda $F3
+ clc
+ adc #$00A0
+ sta $F3
+ sep $20
+ mx %10
+ dex
+ bne :fsg_p1_row
+* --- Advance bank (mirrors :fn_wrap: handles linear, scr_right
+* target, and non-linear override cases) ---
+ lda current_screen
+ clc
+ adc #$03
+ cmp scroll_src_bank
+ beq :fsg_to_right
+ lda scroll_right_screen
+ beq :fsg_linear
+ cmp current_screen
+ beq :fsg_linear
+ clc
+ adc #$03
+ cmp scroll_src_bank
+ beq :fsg_linear
+ sta scroll_src_bank          ; non-linear override
+ bra :fsg_bank_done
+:fsg_to_right
+ lda scroll_right_screen
+ clc
+ adc #$03
+ sta scroll_src_bank
+ bra :fsg_bank_done
+:fsg_linear
+ inc scroll_src_bank
+:fsg_bank_done
+ lda #1
+ sta transition_pending
+* --- Phase 2 setup: dst F3 = $50/(2000 + 106 + count_curr) ---
+ lda #$6A
+ clc
+ adc :fsg_count1
+ sta $F3
+ lda #$20
+ adc #0
+ sta $F3+1
+ rep $20
+ mx %00
+ lda #$2000
+ sta $F0               ; src = new_bank/2000
+ sep $20
+ mx %10
+ lda scroll_src_bank
+ sta $F2
+ lda #$50
+ sta $F5
+ ldx #183
+:fsg_p2_row
+ lda :fsg_count2
+ sta :fsg_curr
+ ldy #0
+:fsg_p2_byte
+ lda [$F0],y
+ sta [$F3],y
+ iny
+ dec :fsg_curr
+ bne :fsg_p2_byte
+ rep $20
+ mx %00
+ lda $F0
+ clc
+ adc #$00A0
+ sta $F0
+ lda $F3
+ clc
+ adc #$00A0
+ sta $F3
+ sep $20
+ mx %10
+ dex
+ bne :fsg_p2_row
+* scroll_src_off = count_next (next byte to pull in new bank).
+ lda :fsg_count2
+ sta scroll_src_off
 
 :fill_done
  rep $20
@@ -6270,6 +6415,11 @@ scroll_right
  dex
  bne :irq_wait2
  rts
+
+:fsg_off    ds 1        ; fill_split_general: saved scroll_src_off
+:fsg_count1 ds 1        ; fill_split_general: count from current bank
+:fsg_count2 ds 1        ; fill_split_general: count from next bank
+:fsg_curr   ds 1        ; fill_split_general: per-row dec counter
 
 *----------------------------------------------------------
 * scroll_left - Mirror of scroll_right.
