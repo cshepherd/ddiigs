@@ -4,28 +4,23 @@ A fan-made recreation of D.uble Drag.n II (NES) for the Apple IIgs, written enti
 
 ## Overview
 
-This project is a from-scratch implementation of the classic beat-em-up arcade game for the Apple IIgs personal computer. It takes advantage of the IIgs's 65816 processor, Super Hi-Res 320-mode graphics, SHR hardware shadowing for tear-free rendering, and the Ensoniq DOC sound chip for music playback via the NinjaTrackerPlus (NTP) audio engine.
+As you may know, there are two main lineages for this game: Arcade / PC (including Amiga, ST, et al), and NES / PCE. The former is what the Apple IIGS probably would have gotten in 1990 if the promised port ever happened. The latter is considered to be more playable (by me at least), and I found the assets to be quite useable, so this is a port of the latter, and I'm happy about that.
 
-The game features:
+Despite my well-known fondness for Lucas' GTE tile engine, this is not a tiled game. It is simply captured artworks run through my special branch of ii-pix to lock palettes, then packed with _PackBytes and stitched together by the engine at runtime. You wouldn't guess it, but it works really well.
 
-- Smooth sprite animation with transparency masking and horizontal mirroring
-- Multiple animation types: walking, jumping, kicking, two punch variants, hit reactions, and falling
-- Data-driven animation system using compact bytecode descriptors
-- Real-time combat with bounding-box hit detection, punch combos, and knockdowns
-- Y-sorted sprite rendering for correct overlapping
-- Dirty-flag rendering system that only redraws sprites that have changed
-- SHR shadow register toggling for atomic screen updates
-- Horizontal background scrolling with triple-buffered compositing
-- Stack-based and unrolled blitters for high-performance screen updates
-- PackBytes-compressed background art with runtime decompression
-- Level scripting system for enemy spawning, progression gates, and screen transitions
-- Separate cutscene engine with its own bytecode for narrative sequences
-- Palette fade effects (fade to/from black) using a gamma-corrected lookup table
-- NinjaTrackerPlus integration for background music
+The engine holds a source-of-truth at bank \$18 (currently) that has the background in its currently-scrolled state with no sprites plotted. The rest of the story is something you've heard before: 'Erase' by copying sections of \$18 to \$01 while shadowing is off, then plot (hopefully compiled) sprites in $01, then turn shadowing on, and fast blit \$01 to \$01 after waiting for VBL.
+
+Currently the engine supports both fast (compiled) and slow (not-compiled) sprites. The compiled sprites have a reverse AND mask and therefore support the usual LDA / AND / ORA / STA pipeline. The slow sprites have a designated 'transparent' color in addition to being soft-reversible, which all costs extra cycles. As you'd imagine, you can derive 80% of the benefit of compiled sprites (which are expensive on disk and in RAM) by compiling the 20% most-used sprites.
+
+You should check out camera_drift_problem.md if you want to know about the major problem that anyone would face, tiled or not, when building a push-to-scroll game engine. This was the major problem I had to solve: That the background (art) state actually is not predictable for a given player X position, leading us to define certain "Golden States" and snap to them while climbing ladders. I'm proud of the solution.
 
 ## Status
 
-Although an extensive amount of stuff is implemented and many assets have been mastered into the game, this should still be considered a Proof Of Concept. It is known to be both unoptimized and incomplete, with weeks if not months of work necessary to finish, even with LLM assistance.
+We have a solid game engine with a great graphics pipeline; Make no mistake, the hard part is done and Mission 1 will likely ship in under a month! But boy-oh-boy there's plenty more stuff to do:
+- A lot more character behaviors (sprites and scripts)
+- A lot more encounters
+- Sound engine: To begin with, this will likely be me loading the DOCRAM up with sounds and banging on the DOC registers. I've fiddled with BGM via NTPPlayer but the main problem is that my NES music conversions (made by ad-hoc Python scripts to convert VGM or MID to MOD which is then converted to NTP) are awful. BGM is thus deferred.
+- Store 2 backgrounds per bank instead of one. Currently there's only one per bank which greatly simplifies scrolling math, but is wasteful and I'd like to try to reduce requirements to 1.25MB of RAM (currently we're sitting at 2MB).
 
 You can check on things for yourself by booting the 800KB disk image at out/ddiigs.po, it boots to BASIC.SYSTEM.
 - `-TITLE` to see Title Sequence (PoC)
@@ -33,47 +28,6 @@ You can check on things for yourself by booting the 800KB disk image at out/ddii
 - `-GAME` to see the gameplay (about 25% of assets for Mission 1 are done, uses the new Level Scripting Engine at least)
 
 It is vital that I not be asked about the status of this project, if we wish for it to finish.
-
-## Next Steps 4/12/2026
-
-I think I can get a mostly-complete Level 1 demo complete by May 2026! June at the latest. But there's a whole lot of stuff to do first:
-
-- Finish level scripts for mission 1, with implementation of all necessary operations (this week)
-- Master at least the bare minimum sprites for Mission 1 NPCs: Roper, Linda Lash, Burnov (this is tedious work but at least the sprite sheets exist, 1-3 days)
-- Remaster the terrible music; It sucks and we must do a lot better (1-2 days)
-- (Probably) convert title.s to a cutscene script, implementing whatever cutscene script ops are necessary for that (1 day)
-- Marry cutscene engine to game engine and let them live together in bank $00 from $2000-$8000 (1 day)
-- NPC behavior scripts (this requires ALL of an NPC's sprites to be cut, ugh) (a week)
-- At least try to pack everything into banks $00 through $10, I'd like for this to be a 1-meg game (optional, 1 day)
-- Alternative title sequence with streaming audio (Dead Or Alive from DDII OST), for proposed mass-storage version of game (optional, 2 days)
-
-## Architecture
-
-The game is built with a clean separation between the engine and level data:
-
-- **Game engine** (`game.s`) - The reusable core that handles rendering, input, animation, AI, combat, scrolling, and the level script interpreter. Contains no level-specific data. Runs from bank $00.
-- **Level data** (`mission1.s`) - All data for a specific level: sprite pixel art, animation descriptors, sprite templates, screen map with background references, and the level script that controls enemy spawns and progression. Loaded to bank $02 at runtime.
-- **Cutscene engine** (`cutscene.s`) - A separate bytecode interpreter for narrative sequences between levels, with graphics plotting, text rendering via QuickDraw II, and palette fading.
-- **Cutscene data** (`cutscene1.s`) - Screens, text, graphics, and palettes for the Mission 1 intro cutscene.
-- **Title screen** (`title.s`) - Self-contained title screen with animated logo reveal, palette effects, and music loading.
-
-This architecture means a different beat-em-up game (or additional levels) can be created by providing new level data files — the engine binary doesn't change.
-
-### Memory Layout
-
-The game is designed to fit within a 1MB Apple IIgs RAM configuration:
-
-| Bank(s) | Purpose |
-|---------|---------|
-| $00 | Engine code + runtime state |
-| $01 | SHR screen (shadowed from $E1) |
-| $02 | Level data (scripts, sprites, animation descriptors) |
-| $03-$07 | Background art (2 screens per bank) |
-| $0F | NinjaTrackerPlus audio engine |
-| $10-$12 | Music data |
-| $4F | Temporary decompression buffer |
-| $50 | Playfield shadow (erase source) |
-| $55 | Scroll compositing back buffer |
 
 ### Level Scripting
 
@@ -87,22 +41,6 @@ Levels are controlled by a simple bytecode language that runs one opcode per fra
 - Locking scroll to the current screen
 
 This allows level designers to script enemy encounters, progression gates, and screen transitions entirely through data.
-
-### Rendering Pipeline
-
-Each frame follows this sequence:
-
-1. Wait for vertical blank
-2. Disable SHR shadowing (writes go to bank $01 but aren't mirrored to $E1 yet)
-3. Erase dirty sprites at their **previous** drawn positions using the playfield shadow
-4. Check for overlapping sprites that need redrawing
-5. Process player input
-6. Execute level script (may spawn enemies, enable scrolling)
-7. Advance animation timers and update frames
-8. Draw dirty sprites at their **current** positions
-9. Re-enable SHR shadowing (bank $01 atomically mirrors to $E1)
-
-The dirty flag system ensures only sprites that actually changed are erased and redrawn, reducing flicker. Sprites track their previous position separately from their current position so erasing happens at the correct location.
 
 ## Building
 
@@ -148,26 +86,7 @@ Boot the disk image. BASIC.SYSTEM will load and you can run the programs:
 | 6 | Move right (face right) |
 | j | Jump |
 | k | Kick |
-| p | Punch (type 1) |
-| P | Punch (type 2) |
-| r | Scroll screen right |
-
-## Technical Details
-
-### Sprite System
-
-Sprites use packed 4-bit SHR pixel data with per-sprite transparent colors. Each sprite byte contains two pixels. The renderer handles three transparency cases per byte: fully transparent, half-transparent high nibble, and half-transparent low nibble. The mirrored draw path reverses byte order per scanline and swaps nibbles within each byte.
-
-Sprite data lives in bank $02 (loaded from the level file) and is accessed via indirect long addressing with a configurable bank byte. Animation descriptors define frame sequences with per-frame dimensions, duration, and pixel data pointers.
-
-### Performance Optimizations
-
-- **SHR shadowing**: All screen writes go to bank $01 (fast RAM) instead of bank $E1 (slow RAM with wait states). The hardware shadows writes to the video output.
-- **Dirty flag rendering**: Only changed sprites are erased/redrawn each frame.
-- **Shadow toggle**: Shadowing is disabled during the erase/draw pass and re-enabled after, providing atomic screen updates.
-- **Unrolled blitters**: The scrolling engine uses Merlin's LUP macro to unroll 55 word copies per scanline, eliminating inner loop overhead.
-- **Stack-based blitting**: The scroll compositing back-buffer blit remaps the stack to the SHR screen via WrCardRAM ($C005) and uses PHA for high-throughput writes.
-- **PackBytes compression**: Background art is compressed on disk and decompressed at load time using the IIgs Toolbox `_UnPackBytes` call.
+| p | Punch |
 
 ## Credits
 

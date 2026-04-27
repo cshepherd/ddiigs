@@ -137,7 +137,6 @@ game_loop:
 | $10-$12 | $0000+ | NTP music data |
 | $4F | $0000+ | Temporary buffer for PAK decompression |
 | $18 | $2000-$9FFF | Shadow copy of current playfield (erase source) |
-| $55 | $2000-$9FFF | Back buffer for scroll compositing |
 
 ### Level data format (bank $02)
 

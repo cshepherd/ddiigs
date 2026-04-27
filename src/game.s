@@ -258,9 +258,20 @@ over1
 *==========================================================
 game_loop
  jsr wait_for_vbl
+* Phase 2: shadow stays OFF as the resting state. Each erase/draw
+* writes to $01 tax-free and extends [frame_ymin..frame_ymax].
+* At frame end we briefly enable shadow, push_band over the
+* dirty range to propagate to $E1, then disable shadow again.
+* Reset BEFORE check_pause so erase_pause_text's dirty marks
+* (set on the unpause frame) survive to the frame-end push.
+ lda #$FF
+ sta frame_ymin
+ lda #0
+ sta frame_ymax
  jsr check_pause       ; ESC tap toggles paused
  lda paused
  bne game_loop         ; frozen: skip all per-frame work
+ jsr shadow_off
  jsr update_overlay
  jsr process_input
  jsr run_script
@@ -279,14 +290,29 @@ game_loop
  jsr assert_scroll_lsrc_off
 * erase and draw run back-to-back at the end of the frame so
 * sprites are never left in an "erased but not yet redrawn"
-* state while the CPU is doing per-frame work. With SHR
-* shadowing continuously enabled, any gap here is visible on
-* screen as flicker — especially on moving enemies.
+* state while the CPU is doing per-frame work.
  jsr erase_all
  jsr draw_all
  jsr draw_overlay
  jsr draw_p1_score
 ; jsr draw_ladder_debug   ; outline ladders for debug
+* Frame-end push: if anything was marked dirty (frame_ymax >=
+* frame_ymin), propagate that row band from $01 to $E1.
+ lda frame_ymax
+ cmp frame_ymin
+ bcc :gl_skip_push     ; nothing dirty
+ sta push_ymax
+ lda frame_ymin
+ sta push_ymin
+ clc
+ xce                   ; native mode for push_band
+ rep $30
+ jsr shadow_on
+ jsr push_band
+ jsr shadow_off
+ sec
+ xce                   ; back to emulation
+:gl_skip_push
  bra game_loop
 
 *----------------------------------------------------------
@@ -7241,39 +7267,16 @@ scroll_right
  xce                   ; back to emulation mode
 
 * Step 4: Composite sprite + overlay directly on $01 (shadow off,
-* no per-write tax). draw_bank stays at $01.
+* no per-write tax).
  jsr draw_active_sprite
  jsr draw_overlay
 
-* Step 5: Re-enable shadow and atomically propagate the staged
-* $01 to $E1 via push_band over the full playfield (rows 0..182).
- clc
- xce                   ; native mode
- rep $30
- jsr shadow_on
+* Step 5: Mark the full playfield dirty. game_loop's frame-end
+* push (over [frame_ymin..frame_ymax]) will propagate to $E1.
  lda #0
- sep $20
- sta push_ymin
+ sta frame_ymin
  lda #182
- sta push_ymax
- rep $20
- jsr push_band
-
- sec
- xce                   ; back to emulation mode
-
-* Brief delay after push_band's CLI so pending sound interrupts
-* (NTP) can fire before we return to the caller.
- ldx #0
-:irq_wait
- nop
- dex
- bne :irq_wait
- ldx #0
-:irq_wait2
- nop
- dex
- bne :irq_wait2
+ sta frame_ymax
  rts
 
 :fsg_off    ds 1        ; fill_split_general: saved scroll_src_off
@@ -7548,35 +7551,17 @@ scroll_left
  rep $30
  mx %00
 
-* Steps 3-5: Phase 2 pipeline — same as scroll_right.
+* Steps 3-5: Phase 2 pipeline — same as scroll_right. Mark the
+* full playfield dirty; game_loop pushes at frame end.
  jsr fast_blit_18_01
  sec
  xce
  jsr draw_active_sprite
  jsr draw_overlay
- clc
- xce
- rep $30
- jsr shadow_on
  lda #0
- sep $20
- sta push_ymin
+ sta frame_ymin
  lda #182
- sta push_ymax
- rep $20
- jsr push_band
- sec
- xce
- ldx #0
-:lirq_wait
- nop
- dex
- bne :lirq_wait
- ldx #0
-:lirq_wait2
- nop
- dex
- bne :lirq_wait2
+ sta frame_ymax
  rts
 
 * scroll_left scratch
@@ -7653,8 +7638,8 @@ scroll_up
 * engine state. Two regions; each with its own bank/byte/count/dst.
 * Region with bank=0 is skipped. Both regions paint 183 rows.
 * Writes only to bank $18 (the playfield base); the
-* fast_blit_50_55 → stack_blit_55_e1 pipeline at the end of
-* scroll_up pushes $18 to the visible $E1 atomically.
+* fast_blit_18_01 + frame-end push_band at the end of scroll_up
+* pushes $18→$01→$E1 atomically.
 * --- Region 1 (offsets +17/+18/+19/+20) ---
  lda pending_snap_buf+17
  beq :skip_region1
@@ -8150,35 +8135,17 @@ scroll_up
  rep $30
  mx %00
 
-* Phase 2 pipeline: blit, composite on $01, push to $E1.
+* Phase 2 pipeline: blit, composite on $01. Mark full playfield
+* dirty; game_loop pushes at frame end.
  jsr fast_blit_18_01
  sec
  xce
  jsr draw_active_sprite
  jsr draw_overlay
- clc
- xce
- rep $30
- jsr shadow_on
  lda #0
- sep $20
- sta push_ymin
+ sta frame_ymin
  lda #182
- sta push_ymax
- rep $20
- jsr push_band
- sec
- xce
- ldx #0
-:uirq_wait
- nop
- dex
- bne :uirq_wait
- ldx #0
-:uirq_wait2
- nop
- dex
- bne :uirq_wait2
+ sta frame_ymax
  rts
 
 *----------------------------------------------------------
@@ -8817,7 +8784,8 @@ scroll_up
 * climb-snap is skipped above, so no post-climb adjustment is
 * needed. Any nudge here would be a visible teleport.
 
-* Phase 2 pipeline: blit, composite on $01, push to $E1.
+* Phase 2 pipeline: blit, composite on $01. Mark full playfield
+* dirty; game_loop pushes at frame end.
  clc
  xce
  rep $30
@@ -8827,19 +8795,10 @@ scroll_up
  xce
  jsr draw_active_sprite
  jsr draw_overlay
- clc
- xce
- rep $30
- jsr shadow_on
  lda #0
- sep $20
- sta push_ymin
+ sta frame_ymin
  lda #182
- sta push_ymax
- rep $20
- jsr push_band
- sec
- xce
+ sta frame_ymax
  rts
 
 * scroll_up scratch — must be 2 bytes since 16-bit stores
@@ -8935,7 +8894,7 @@ push_ymax dfb 0
 * at entry; the PHA writes go to bank $01 (via the redirect)
 * and the shadow engine mirrors them to $E1.
 *
-* Generalization of stack_blit_55_e1 — same PHA-blit trick, but
+* Same PHA-blit trick used historically by stack_blit_55_e1, but
 * the source is $01 (which the caller has staged with shadow OFF
 * before calling shadow_on + push_band).
 *
@@ -9078,82 +9037,32 @@ shadow_on
  rts
 
 *----------------------------------------------------------
-* fast_blit_50_55 - Unrolled blit from bank $18 to bank $55
-* 110 bytes (55 words) wide, 183 lines.
-* Entry: native mode, REP $30 (16-bit A/X/Y).
+* mark_dirty_band — Extend [frame_ymin..frame_ymax] to include
+* the rect [IMAGE01_YPOS .. IMAGE01_YPOS+FRAME_Y-1]. Called at
+* the top of erase / draw_sprite / draw_sprite_compiled so the
+* frame-end push covers exactly the rows that changed.
+*
+* Trashes A. Preserves M flag (PHP/PLP). Caller is in any mode.
 *----------------------------------------------------------
-fast_blit_50_55
- rep $30               ; assert 16-bit A/X/Y for assembler MX tracking
- ldx #0                ; line offset from $xx2000
- ldy #183              ; line counter
-
-:line
-]idx = 108
- LUP 55
- LDAL $182000+]idx,x
- STAL $552000+]idx,x
-]idx = ]idx-2
- --^
-
- txa
+mark_dirty_band
+ php
+ sep #$20              ; 8-bit A
+ lda IMAGE01_YPOS
+ cmp frame_ymin
+ bcs :mdb_skip_min
+ sta frame_ymin
+:mdb_skip_min
  clc
- adc #$00A0
- tax
- dey
- beq :done
- jmp :line
-:done rts
-
-*----------------------------------------------------------
-* stack_blit_55_e1 - Stack-based blit from $55 to screen via bank $01
-* SHR shadow is already enabled ($01->$E1). Maps stack writes to
-* bank $01 via WrCardRAM, then uses PHA to write each word.
-* 110 bytes wide, 183 lines.
-* Entry: native mode, REP $30. Trashes A/X/Y/S (S restored).
-*----------------------------------------------------------
-stack_blit_55_e1
- rep $30               ; assert 16-bit A/X/Y for assembler MX tracking
- tsc
- sta :save_s           ; save stack pointer
-
- sei                   ; no interrupts while stack is remapped
- sep $20
- sta $C005             ; WrCardRAM: writes to bank $00 -> bank $01
- rep $20
-
- ldx #0                ; source line offset
- ldy #183              ; line counter
-
-:line txa
- clc
- adc #$206D            ; S = $2000 + line_offset + 109
- tcs
-
-]idx = 108
- LUP 55
- LDAL $552000+]idx,x
- pha
-]idx = ]idx-2
- --^
-
- txa
- clc
- adc #$00A0
- tax
- dey
- beq :done
- jmp :line
-:done
- sep $20
- sta $C004             ; WrMainRAM: restore normal writes
- rep $20
-
- lda :save_s
- tcs                   ; restore stack pointer
- cli                   ; re-enable interrupts
+ adc FRAME_Y
+ sec
+ sbc #1                ; bottom = top + height - 1
+ cmp frame_ymax
+ bcc :mdb_skip_max
+ beq :mdb_skip_max
+ sta frame_ymax
+:mdb_skip_max
+ plp
  rts
-
-:save_s ds 2
 
  mx %11                ; following routines run in emulation mode (8-bit)
 
@@ -10665,6 +10574,7 @@ erase    PHB
  PHK
  PLB
  REP $30
+ jsr mark_dirty_band       ; record [ypos..ypos+frame_y-1] as dirty
  TSC
  SEC
  SBC #10
@@ -10750,6 +10660,7 @@ draw_sprite PHB
  PHK
  PLB
  REP $30
+ jsr mark_dirty_band       ; record [ypos..ypos+frame_y-1] as dirty
  TSC
  SEC
  SBC #10
@@ -10764,7 +10675,7 @@ draw_sprite PHB
  ORA #%01000000
  STAL $E0C029
  REP $20
- LDA draw_bank
+ LDA #$0001            ; destination bank $01 (shadowed to $E1)
  STA 2
  lda IMAGE01_YPOS  ; do our own multiplication by $a0 because address won't always be hardcoded
  asl
@@ -10954,8 +10865,8 @@ draw_active_sprite
 *   FRAME_X / FRAME_Y            sprite size (bytes / rows)
 *   FRAME_ADDR                   pointer to *_DATA  array (bank $02)
 *   MASK_ADDR                    pointer to *_MASK  array (bank $02)
-*   draw_bank                    destination bank ($01 in normal use)
 *   sprite_bank                  bank holding _DATA / _MASK ($02)
+* Destination is hardcoded to bank $01 (shadowed to $E1).
 *
 * Inner loop (per byte) is branchless:
 *   LDA [scr],Y / AND [mask],Y / ORA [data],Y / STA [scr],Y
@@ -10977,6 +10888,7 @@ draw_sprite_compiled
  PHK
  PLB
  REP $30
+ jsr mark_dirty_band       ; record [ypos..ypos+frame_y-1] as dirty
  TSC
  SEC
  SBC #11
@@ -10993,7 +10905,7 @@ draw_sprite_compiled
 
 * Bank bytes (8-bit stores so they don't clobber adjacent DP bytes
 * that the 16-bit offset writes below will overwrite anyway).
- LDA draw_bank
+ LDA #$01              ; destination bank $01 (shadowed to $E1)
  STA 2                 ; DP 2 = screen bank
  LDA sprite_bank
  STA 6                 ; DP 6 = data bank
@@ -11238,7 +11150,11 @@ scroll_src_bank dfb $04    ; current source bank for right scroll (= $03 + scrol
 transition_pending dfb 0   ; set by scroll_right on wrap, consumed by sync_current_screen
 scroll_lsrc_bank dfb $03   ; current source bank for left scroll (= $03 + current_screen - 1, invalid until cs>0)
 scroll_lsrc_off dfb 0      ; offset (counts down from 109 toward 0)
-draw_bank da $0001         ; bank for draw_sprite destination (default $01, shadowed to $E1)
+* Phase 2 dirty-row tracker. Each erase/draw routine extends
+* [frame_ymin..frame_ymax] to include its rect. game_loop pushes
+* exactly that range to $E1 at frame end. $FF/0 = nothing dirty.
+frame_ymin dfb $FF
+frame_ymax dfb 0
 sprite_bank da $0002       ; bank where sprite pixel data lives (16-bit for REP $20 load)
 scroll_src_off HEX 0000   ; byte offset within source bank scanline
 MASKHI HEX 60
