@@ -7249,6 +7249,11 @@ scroll_right
  jsr draw_active_sprite
  jsr draw_overlay
 
+* Align push_band to VBL: shift+fill+blit+composite are tax-free
+* on $01, so we can wait here without losing scan time. Once
+* push starts, its first ~25 rows propagate during VBL itself.
+ jsr wait_for_vbl
+
 * Step 5: Re-enable shadow and propagate the staged $01 to $E1
 * via push_band over the full playfield (rows 0..182). Shadow
 * stays ON after we return so game_loop's erase/draw operations
@@ -7267,19 +7272,6 @@ scroll_right
 
  sec
  xce                   ; back to emulation mode
-
-* Brief delay after push_band's CLI so pending sound interrupts
-* (NTP) can fire before we return to the caller.
- ldx #0
-:irq_wait
- nop
- dex
- bne :irq_wait
- ldx #0
-:irq_wait2
- nop
- dex
- bne :irq_wait2
  rts
 
 :fsg_off    ds 1        ; fill_split_general: saved scroll_src_off
@@ -7560,6 +7552,7 @@ scroll_left
  xce
  jsr draw_active_sprite
  jsr draw_overlay
+ jsr wait_for_vbl       ; align push_band to VBL
  clc
  xce
  rep $30
@@ -7573,16 +7566,6 @@ scroll_left
  jsr push_band
  sec
  xce
- ldx #0
-:lirq_wait
- nop
- dex
- bne :lirq_wait
- ldx #0
-:lirq_wait2
- nop
- dex
- bne :lirq_wait2
  rts
 
 * scroll_left scratch
@@ -8162,6 +8145,7 @@ scroll_up
  xce
  jsr draw_active_sprite
  jsr draw_overlay
+ jsr wait_for_vbl       ; align push_band to VBL
  clc
  xce
  rep $30
@@ -8175,16 +8159,6 @@ scroll_up
  jsr push_band
  sec
  xce
- ldx #0
-:uirq_wait
- nop
- dex
- bne :uirq_wait
- ldx #0
-:uirq_wait2
- nop
- dex
- bne :uirq_wait2
  rts
 
 *----------------------------------------------------------
@@ -8833,6 +8807,7 @@ scroll_up
  xce
  jsr draw_active_sprite
  jsr draw_overlay
+ jsr wait_for_vbl       ; align push_band to VBL
  clc
  xce
  rep $30
