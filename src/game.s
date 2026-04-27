@@ -7249,11 +7249,6 @@ scroll_right
  jsr draw_active_sprite
  jsr draw_overlay
 
-* Align push_band to VBL: shift+fill+blit+composite are tax-free
-* on $01, so we can wait here without losing scan time. Once
-* push starts, its first ~25 rows propagate during VBL itself.
- jsr wait_for_vbl
-
 * Step 5: Re-enable shadow and propagate the staged $01 to $E1
 * via push_band over the full playfield (rows 0..182). Shadow
 * stays ON after we return so game_loop's erase/draw operations
@@ -7552,7 +7547,6 @@ scroll_left
  xce
  jsr draw_active_sprite
  jsr draw_overlay
- jsr wait_for_vbl       ; align push_band to VBL
  clc
  xce
  rep $30
@@ -8145,7 +8139,6 @@ scroll_up
  xce
  jsr draw_active_sprite
  jsr draw_overlay
- jsr wait_for_vbl       ; align push_band to VBL
  clc
  xce
  rep $30
@@ -8807,7 +8800,6 @@ scroll_up
  xce
  jsr draw_active_sprite
  jsr draw_overlay
- jsr wait_for_vbl       ; align push_band to VBL
  clc
  xce
  rep $30
