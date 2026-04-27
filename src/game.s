@@ -6779,15 +6779,13 @@ scroll_right
 * Coarse NES-style scroll: shift in 16-bit mode, then fill
 * the rightmost 4 bytes from the next screen's background.
 *
-* Flicker-cover: erase_all at top of the frame has already
-* wiped the player sprite off $01/$E1. The scroll composite
-* pipeline (fast_blit_50_55 / draw on $55 / stack_blit to $E1)
-* takes several ms and races the video beam, so the sprite
-* would be visibly absent until the stack_blit catches up.
-* Redraw the sprite on $01 now (shadowed to $E1) so it stays
-* visible at its current screen position while we work. The
-* final stack_blit replaces everything atomically at the end.
- jsr draw_active_sprite
+* Phase 2 pipeline: turn shadowing OFF, stage the new playfield
+* + sprite + overlay on $01 (without paying shadow tax on every
+* byte), then turn shadowing ON and atomically propagate to $E1
+* via push_band. $E1 keeps showing the previous frame's content
+* throughout the staging window — no flicker-cover sprite redraw
+* needed because $E1 is decoupled from $01 while shadow is off.
+ jsr shadow_off
 
  lda x_scroll_idx
  clc
@@ -7235,40 +7233,37 @@ scroll_right
  mx %00
 :sr_lower_done
 
-* Step 3: Fast unrolled blit $18 -> $55 (back buffer)
- jsr fast_blit_50_55
+* Step 3: Copy shifted playfield $18 -> $01. Shadow is OFF, so
+* writes don't propagate to $E1 yet.
+ jsr fast_blit_18_01
 
  sec
  xce                   ; back to emulation mode
 
-* Step 4: Draw sprite onto back buffer $55
- lda #$55
- sta draw_bank
- lda #$00
- sta draw_bank+1
+* Step 4: Composite sprite + overlay directly on $01 (shadow off,
+* no per-write tax). draw_bank stays at $01.
  jsr draw_active_sprite
-* Composite the HUD overlay (if active) onto $55 too, so the
-* stack_blit preserves it. Otherwise the scrolled $55 overwrites
-* the overlay on $E1 and it flickers until draw_overlay redraws
-* it at the end of the frame.
  jsr draw_overlay
 
-* Step 5: Stack-blit $55 -> $E1 (screen) for flicker-free update
+* Step 5: Re-enable shadow and atomically propagate the staged
+* $01 to $E1 via push_band over the full playfield (rows 0..182).
  clc
  xce                   ; native mode
  rep $30
- jsr stack_blit_55_e1
+ jsr shadow_on
+ lda #0
+ sep $20
+ sta push_ymin
+ lda #182
+ sta push_ymax
+ rep $20
+ jsr push_band
 
  sec
  xce                   ; back to emulation mode
 
-* Restore draw_bank for normal (non-scroll) draw_sprite calls
- lda #$01
- sta draw_bank
- lda #$00
- sta draw_bank+1
-* Brief delay after stack blit's CLI so pending sound
-* interrupts (NTP) can fire before we return to the caller.
+* Brief delay after push_band's CLI so pending sound interrupts
+* (NTP) can fire before we return to the caller.
  ldx #0
 :irq_wait
  nop
@@ -7313,11 +7308,11 @@ scroll_left
  lda #50
  sta scroll_lsrc_off
 :sl_proceed
-* Flicker-cover: see scroll_right for rationale. Re-draw the
-* player on $01 (shadowed to $E1) before the scroll composite
-* pipeline, so the sprite doesn't visibly vanish in the gap
-* between erase_all and the final stack_blit.
- jsr draw_active_sprite
+* Phase 2 pipeline: shadow off while we stage on $01, then
+* shadow on + push_band to atomically propagate to $E1. No
+* flicker-cover needed because $E1 keeps showing the previous
+* frame's content throughout the staging window.
+ jsr shadow_off
 
  clc
  xce
@@ -7553,26 +7548,25 @@ scroll_left
  rep $30
  mx %00
 
-* Steps 3-5: same blit/draw/blit pipeline as scroll_right
- jsr fast_blit_50_55
+* Steps 3-5: Phase 2 pipeline — same as scroll_right.
+ jsr fast_blit_18_01
  sec
  xce
- lda #$55
- sta draw_bank
- lda #$00
- sta draw_bank+1
  jsr draw_active_sprite
- jsr draw_overlay      ; composite HUD onto $55
+ jsr draw_overlay
  clc
  xce
  rep $30
- jsr stack_blit_55_e1
+ jsr shadow_on
+ lda #0
+ sep $20
+ sta push_ymin
+ lda #182
+ sta push_ymax
+ rep $20
+ jsr push_band
  sec
  xce
- lda #$01
- sta draw_bank
- lda #$00
- sta draw_bank+1
  ldx #0
 :lirq_wait
  nop
@@ -7599,11 +7593,10 @@ scroll_left
 * the entire source bank to $18 and update current_screen.
 *----------------------------------------------------------
 scroll_up
-* Flicker-cover: see scroll_right for rationale. Re-draw the
-* player on $01 (shadowed to $E1) before the scroll composite
-* pipeline. Covers both the incremental (:su_normal) path and
-* the :snap_transition path.
- jsr draw_active_sprite
+* Phase 2 pipeline: shadow off while we stage on $01. Both the
+* incremental (:su_normal) and :snap_transition paths end with
+* shadow_on + push_band to atomically propagate to $E1.
+ jsr shadow_off
 
  lda scroll_up_off
  cmp #30              ; fire snap early so the last ~28 rows of
@@ -8157,26 +8150,25 @@ scroll_up
  rep $30
  mx %00
 
-* Pipeline: blit, draw, blit
- jsr fast_blit_50_55
+* Phase 2 pipeline: blit, composite on $01, push to $E1.
+ jsr fast_blit_18_01
  sec
  xce
- lda #$55
- sta draw_bank
- lda #$00
- sta draw_bank+1
  jsr draw_active_sprite
- jsr draw_overlay      ; composite HUD onto $55
+ jsr draw_overlay
  clc
  xce
  rep $30
- jsr stack_blit_55_e1
+ jsr shadow_on
+ lda #0
+ sep $20
+ sta push_ymin
+ lda #182
+ sta push_ymax
+ rep $20
+ jsr push_band
  sec
  xce
- lda #$01
- sta draw_bank
- lda #$00
- sta draw_bank+1
  ldx #0
 :uirq_wait
  nop
@@ -8825,30 +8817,29 @@ scroll_up
 * climb-snap is skipped above, so no post-climb adjustment is
 * needed. Any nudge here would be a visible teleport.
 
-* Blit the new playfield to screen
+* Phase 2 pipeline: blit, composite on $01, push to $E1.
  clc
  xce
  rep $30
  mx %00
- jsr fast_blit_50_55
+ jsr fast_blit_18_01
  sec
  xce
- lda #$55
- sta draw_bank
- lda #$00
- sta draw_bank+1
  jsr draw_active_sprite
- jsr draw_overlay      ; composite HUD onto $55
+ jsr draw_overlay
  clc
  xce
  rep $30
- jsr stack_blit_55_e1
+ jsr shadow_on
+ lda #0
+ sep $20
+ sta push_ymin
+ lda #182
+ sta push_ymax
+ rep $20
+ jsr push_band
  sec
  xce
- lda #$01
- sta draw_bank
- lda #$00
- sta draw_bank+1
  rts
 
 * scroll_up scratch — must be 2 bytes since 16-bit stores
@@ -8930,6 +8921,161 @@ compute_up_align
  stz up_count
  rts
  mx %11                 ; restore default for following code
+
+*----------------------------------------------------------
+* push_ymin / push_ymax - Inputs to push_band, naming the
+* inclusive row range it operates on. Set before each call.
+push_ymin dfb 0
+push_ymax dfb 0
+
+*----------------------------------------------------------
+* push_band - Atomically propagate rows [push_ymin..push_ymax]
+* of bank $01 to $E1 by re-writing the rows onto themselves
+* through the WrCardRAM-redirected stack. Shadowing must be ON
+* at entry; the PHA writes go to bank $01 (via the redirect)
+* and the shadow engine mirrors them to $E1.
+*
+* Generalization of stack_blit_55_e1 — same PHA-blit trick, but
+* the source is $01 (which the caller has staged with shadow OFF
+* before calling shadow_on + push_band).
+*
+* Entry: native mode, REP $30 (16-bit A/X/Y).
+* Trashes A/X/Y; SP restored.
+*----------------------------------------------------------
+push_band
+ rep $30
+ tsc
+ sta :pb_save_s
+
+* Compute X = push_ymin * $A0 and Y = row count BEFORE enabling
+* WrCardRAM. Once $C005 is set, ANY bank-$00 store in $0200-$BFFF
+* gets redirected to bank $01 — so :pb_tmp would corrupt the SHR
+* display at $5FCC (row 102, bytes 12-13) and the read-back would
+* return stale bank-$00 data, throwing off the row offset entirely.
+ sep $20
+ lda push_ymin
+ rep $20
+ and #$00FF
+ asl
+ asl
+ asl
+ asl
+ asl                   ; *32
+ sta :pb_tmp
+ asl
+ asl                   ; *128
+ clc
+ adc :pb_tmp           ; *160
+ tax
+
+ sep $20
+ lda push_ymax
+ sec
+ sbc push_ymin
+ clc
+ adc #1
+ rep $20
+ and #$00FF
+ tay
+
+* Now safe to enable WrCardRAM — no more bank-$00 stores until restore.
+ sei
+ sep $20
+ sta $C005             ; WrCardRAM: bank-$00 stack writes → $01
+ rep $20
+
+:pb_line
+ txa
+ clc
+ adc #$206D            ; S = $2000 + line_offset + 109
+ tcs
+
+]idx = 108
+ LUP 55
+ LDAL $012000+]idx,x
+ pha
+]idx = ]idx-2
+ --^
+
+ txa
+ clc
+ adc #$00A0
+ tax
+ dey
+ beq :pb_done
+ jmp :pb_line
+
+:pb_done
+ sep $20
+ sta $C004             ; WrMainRAM: restore
+ rep $20
+
+ lda :pb_save_s
+ tcs
+ cli
+ rts
+
+:pb_save_s ds 2
+:pb_tmp    ds 2
+
+*----------------------------------------------------------
+* fast_blit_18_01 - Unrolled blit from $18 to $01. Caller must
+* have shadowing OFF before calling (otherwise each STAL pays
+* the shadow tax, ~3-4× slowdown). 110 bytes × 183 lines.
+* Entry: native mode, REP $30 (16-bit A/X/Y).
+*----------------------------------------------------------
+fast_blit_18_01
+ rep $30
+ ldx #0
+ ldy #183
+
+:f1801_line
+]idx = 108
+ LUP 55
+ LDAL $182000+]idx,x
+ STAL $012000+]idx,x
+]idx = ]idx-2
+ --^
+
+ txa
+ clc
+ adc #$00A0
+ tax
+ dey
+ beq :f1801_done
+ jmp :f1801_line
+:f1801_done rts
+
+*----------------------------------------------------------
+* shadow_off - Disable SHR shadowing ($01 → $E1 mirror) so writes
+* to bank $01 don't pay the ~6-cycle slow-RAM tax that the shadow
+* engine adds. Pair with shadow_on + push_band to atomically
+* propagate the staged $01 to $E1 at end of frame / scroll.
+*
+* Saves and restores the M flag so the helper is safe to call
+* from either 8-bit or 16-bit accumulator contexts. The X flag
+* is left alone (we never touch X/Y here).
+*----------------------------------------------------------
+shadow_off
+ php                   ; preserve M
+ sep #$20              ; force 8-bit A
+ ldal $C035
+ ora #$08              ; set bit 3 → shadowing OFF
+ stal $C035
+ plp                   ; restore M
+ rts
+
+*----------------------------------------------------------
+* shadow_on - Re-enable SHR shadowing.
+*----------------------------------------------------------
+shadow_on
+ php
+ sep #$20
+ ldal $C035
+ and #$F7              ; clear bit 3 → shadowing ON
+ stal $C035
+ plp
+ rts
 
 *----------------------------------------------------------
 * fast_blit_50_55 - Unrolled blit from bank $18 to bank $55

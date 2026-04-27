@@ -266,6 +266,7 @@ level_script
     db $4C              ; region 2 source byte = 76
     db $22              ; region 2 count = 34
     db $00              ; region 2 dst col = 0
+    db OP_WAITCLR
     db OP_UP,5,6,7      ; Up to screen 5, left=screen 6, right=screen 7
 * Post-climb golden state for ladder1 (recorded above first
 * ladder). Fires after OP_UP completes — snap_transition has

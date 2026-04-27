@@ -427,11 +427,62 @@ Pick the cleaner pipeline approach when revisiting. Touch points: descriptor for
 | 1.A1 — POC + Billy walk | ✅ shipped | POINT_RIGHT, POINT_UP, IMAGE01-03 compiled. `draw_sprite_compiled`, `draw_active_sprite`, `MASK_ADDR != 0` dispatch, mirror-aware idle restore, scroll-pipeline wiring all in place and validated. |
 | 1.A2 — Billy animation frames | ✅ shipped | JUMP/KICK/PUNCH/BPUNCHED/BCLIMB compiled; animation-descriptor format extended to 11-byte frames; `update_anims :load_frame` and `start_anim` dispatch on flags bit 7. All three sub-stages (A2.1 BCLIMB, A2.2 anim_punch1, A2.3 remaining anims) validated. Asymmetric-mirror anchor artifact deferred to 3h. |
 | 1.A3 — Cleanup | ✅ shipped | Dead `MASK_ADDR=0` clears removed from `start_anim`'s and `:load_frame`'s legacy branches (Billy never reaches them — every Billy animation is compiled). `MASK / MASKHI / MASKLO` info-block fields stay on Billy — removing them would shift NPC-slot offsets, no real cost to leaving them as ignored bytes. `advance_climb`'s `MASK_ADDR=0` clear was already dropped in A2.1 when BCLIMB became compiled. |
-| 1.A4 — NPCs (future) | later | Convert William/Linda/Roper, retire `draw_sprite`, drop the `controller == 1` gate. Completes Phase 1. |
+| 1.A4 — NPCs | **deferred** | Cost overflows bank `$02` (~14 KB over the 64 KB limit; see § "A4 deferral"). Win-per-byte is low — NPCs are visible in bursts during fights, while Billy is on screen every frame. Pick this back up only if a concrete reason emerges (e.g., the legacy `draw_sprite` becomes a maintenance burden, or another mission with heavier NPC art surfaces). |
 | 2. Shadow-off render + push, eliminate `$55` | not started | Bigger absolute win; cross-cutting (game loop, scroll routines, QuickDraw interactions). |
 | 3a-3g (optional) | not started | Each independent. Pick based on profiling after Phase 2 lands. |
 
 Phases 1 and 2 are independent — neither blocks the other — but Phase 1 is lower-risk, so completing it first builds confidence in the harness and validates the asset compile pipeline before we touch frame timing.
+
+---
+
+## A4 deferral — cost analysis and options
+
+**Status as of A3 completion**: Phase 1 ships with NPCs (William, Linda, Roper) on the legacy `draw_sprite` path. The engine carries both renderers; dispatch in `draw_all` and `draw_active_sprite` gates on `controller == 1` to route Billy to compiled and everyone else to legacy. This is intentional, not an oversight.
+
+### Why A4 was deferred
+
+**Memory cost overflows bank `$02`.** Mission 1 has 26 NPC sprite frames totalling ~10,150 bytes raw:
+
+| NPC | Frames | Approx raw bytes |
+|---|---|---|
+| William | WILLIAM1/2/3, WPUNCH1/2, WPUNCHED, WFALL, WFALLEN | ~3,400 |
+| Roper | ROPER1/2/3, RPUNCH1/2, RPUNCHED, RFALL1/2 | ~3,050 |
+| Linda | LINDA1/2/3, LPUNCH1/2, LPUNCHED, LCLIMB1/2, LFALL1/2 | ~3,700 |
+
+Compiled form is 4× original (`_DATA + _MASK + _DATA_MIRROR + _MASK_MIRROR`):
+
+| | Bytes |
+|---|---|
+| `mission1` after A3 | 48,750 |
+| Replace ~10,150 NPC originals with ~40,600 compiled | +30,500 |
+| **Projected** | **~79,250** |
+
+Bank `$02` ceiling is 65,536 bytes. A4 overflows by ~14 KB. Future levels with more NPC variety would overflow further.
+
+**Win-per-byte is low compared to Billy.** Billy is on screen 100% of the time and his mirror flips constantly with player input. His per-byte cycle savings show up in *every* frame. NPCs are on-screen in bursts during fights — at most three at once in mission 1, often zero — and their mirror state changes only when their behavior pivots them, not per-frame. Phase 1's main goal was getting the inner-loop refactor proven; that goal is met by A1+A2+A3.
+
+**Engine carry-cost is low.** Keeping legacy alongside compiled costs ~200 lines of engine code (`draw_sprite`, `MASK / MASKHI / MASKLO` globals, the controller gate in `draw_all` / `draw_active_sprite`, the legacy 5-byte stride in `:load_frame` / `start_anim`). None of it is hot — once Billy goes through compiled, the legacy path is reached only for NPC draws, which are infrequent.
+
+### Options if A4 becomes worth doing
+
+These are listed roughly cheapest-to-tackle first.
+
+**Option A — Selective NPC frames.** Compile only the walk frames (`WILLIAM1-3`, `ROPER1-3`, `LINDA1-3`), skip everything else. ~3 KB raw → ~12 KB compiled, +9 KB net. Fits comfortably in bank `$02`. Captures most of the on-screen NPC rendering volume since NPCs spend most of their visible time walking. Punched/fall/climb states stay legacy.
+
+**Option B — Skip mirror variants for NPCs.** Emit only `_DATA + _MASK` for NPCs (no `_MIRROR` arrays). Use the legacy `draw_sprite` mirror path (byte-reverse + nibble-swap) for NPC mirrored draws. Cuts NPC compiled-size cost from 4× to 2× → +10 KB net for all NPCs, fits in bank `$02`. Cost: a third draw routine that combines compiled `AND/ORA` with runtime byte-reversal. Medium engine effort.
+
+**Option C — Split mission1 across two banks.** Keep header + script + Billy data in `$02`, push NPC sprite data into a separate bank (e.g., `$03` or wherever fits in the existing bank layout). Engine gains a per-sprite bank field, or a second `sprite_bank` global for NPCs. Cross-bank dispatch in `draw_sprite_compiled` adds ~3-4 cycles per byte (long-indirect load with a different bank). ~50 lines of engine changes, more nuanced because `draw_sprite_compiled` reads via DP `[4]` and `[7]` long-indirect; the bank byte at DP `+6` and `+9` would need to be set per-sprite from the info block. Tractable but the most invasive option.
+
+**Option D — Move NPC sprite art outside `mission1.s` entirely.** Treat NPC sprites like background art — a separate `.PAK`-style file loaded into its own bank at startup. Same engine consequences as Option C plus disk-side packaging changes. Useful long-term if multiple missions share NPC art (William and Roper might appear across many levels), but overkill for current scope.
+
+### Triggers that would prompt picking A4 back up
+
+- A future mission requires significantly more NPC frames or unique NPCs, pushing total sprite art beyond what fits with Billy fully compiled.
+- Profiling shows NPC drawing as a measurable bottleneck during multi-NPC fights (currently it's not — the legacy path is fine for 2-3 NPCs at a time).
+- Eliminating the legacy renderer becomes desirable for code clarity (e.g., before a major engine refactor), at which point Option B looks cleanest because it keeps NPC sprite memory bounded.
+- Phase 2 (shadow-off render) lands and exposes a need for `controller == 1` dispatch removal — currently the `controller == 1 + MASK_ADDR != 0` check is two instructions, but if dispatch becomes part of the per-frame push path, simplifying it might matter.
+
+Until one of those triggers fires, NPCs stay on legacy and Phase 1 is "complete enough."
 
 ---
 
