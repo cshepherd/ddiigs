@@ -257,10 +257,9 @@ over1
 * Main game loop
 *==========================================================
 game_loop
- jsr wait_for_vbl
  jsr check_pause       ; ESC tap toggles paused
  lda paused
- bne game_loop         ; frozen: skip all per-frame work
+ bne :gl_paused_idle   ; frozen: skip all per-frame work
  jsr update_overlay
  jsr process_input
  jsr run_script
@@ -277,16 +276,19 @@ game_loop
 * table (fill in as values become known).
  jsr assert_scroll_src_off
  jsr assert_scroll_lsrc_off
-* erase and draw run back-to-back at the end of the frame so
-* sprites are never left in an "erased but not yet redrawn"
-* state while the CPU is doing per-frame work. Shadow is kept
-* on during the non-scroll path (small per-write tax is cheaper
-* than a frame-end push for the typical ~40-row sprite band).
+* Align $01-write burst to VBL: state work above ran during the
+* previous frame's scan period (CPU was idle anyway); now wait
+* for vertical blanking so erase/draw start at the very top of
+* the next frame's window, well before scan reaches their rows.
+ jsr wait_for_vbl
  jsr erase_all
  jsr draw_all
  jsr draw_overlay
  jsr draw_p1_score
 ; jsr draw_ladder_debug   ; outline ladders for debug
+ bra game_loop
+:gl_paused_idle
+ jsr wait_for_vbl       ; pace pause-detection at 60Hz
  bra game_loop
 
 *----------------------------------------------------------
