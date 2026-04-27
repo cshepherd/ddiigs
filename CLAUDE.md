@@ -256,6 +256,7 @@ NPC sprite blocks copied from bank $02 templates get their animation pointers (`
 - **Cross-bank pointers**: `frame_addr`/`idle_addr` hold bank $02 addresses (for draw_sprite via sprite_bank). `anim_ptr`/`punched_anim`/`fall_anim` must hold bank $00 addresses (read via `(dp),Y`). NPC spawn patching is required.
 - **Local label scope**: Merlin `:` labels are scoped to nearest global label. Data shared across subroutines must use global labels.
 - **Level header indirection**: Always read offsets from the header rather than hardcoding byte positions. Adding fields shifts everything.
+- **16-bit pointer advance**: `script_pc` (and any `[ptr]` long-indirect ZP pointer) is multi-byte. `lda ptr; clc; adc #N; sta ptr` is **wrong** — it only updates the low byte and loses the carry across page boundaries. Always follow with `lda ptr+1; adc #0; sta ptr+1`. Same hazard for `inc ptr` — must `bne :skip; inc ptr+1; :skip` or rewrite as a 16-bit add. Bug example: `OP_NPC` advancing 7 bytes at `$02/00FA` landed at `$02/0001` instead of `$02/0101`, halting the level script silently.
 
 ## ProDOS volume
 

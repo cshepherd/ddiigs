@@ -344,6 +344,9 @@ run_script
  clc
  adc #2                ; opcode(1) + param(1)
  sta script_pc
+ lda script_pc+1
+ adc #0
+ sta script_pc+1
  jmp :exec_loop
 
 :not_screen
@@ -373,6 +376,9 @@ run_script
  clc
  adc #7                ; opcode(1) + ptr(2) + x(1) + y(1) + orient(1) + behavior(1)
  sta script_pc
+ lda script_pc+1
+ adc #0
+ sta script_pc+1
  jmp :exec_loop
 
 :not_npc
@@ -451,6 +457,9 @@ run_script
  clc
  adc #2
  sta script_pc
+ lda script_pc+1
+ adc #0
+ sta script_pc+1
  jmp :exec_loop
 
 :not_right
@@ -506,6 +515,9 @@ run_script
  clc
  adc #2
  sta script_pc
+ lda script_pc+1
+ adc #0
+ sta script_pc+1
  jmp :exec_loop
 
 :not_left
@@ -728,6 +740,9 @@ run_script
  clc
  adc #4                ; opcode + 3 params
  sta script_pc
+ lda script_pc+1
+ adc #0
+ sta script_pc+1
  rts                   ; yield — wait for scroll to complete
 
 :not_up_op
@@ -736,7 +751,13 @@ run_script
  stz scroll_right_enabled
  stz scroll_left_enabled
  stz scroll_up_enabled
- inc script_pc          ; opcode only, no params
+ lda script_pc          ; opcode only, no params (16-bit advance)
+ clc
+ adc #1
+ sta script_pc
+ lda script_pc+1
+ adc #0
+ sta script_pc+1
  jmp :exec_loop
 
 :not_scrlock
@@ -755,6 +776,9 @@ run_script
  clc
  adc #3                ; advance past opcode + 2-byte param
  sta script_pc
+ lda script_pc+1
+ adc #0
+ sta script_pc+1
  rts                   ; yield until condition met
 
 :not_waitx
@@ -773,6 +797,9 @@ run_script
  clc
  adc #3                ; opcode + 2-byte param
  sta script_pc
+ lda script_pc+1
+ adc #0
+ sta script_pc+1
  rts
 
 :not_waitxrev
@@ -790,6 +817,9 @@ run_script
  clc
  adc #3
  sta script_pc
+ lda script_pc+1
+ adc #0
+ sta script_pc+1
  jmp :exec_loop
 :not_scrmin
  cmp #OP_SCRMAX
@@ -806,6 +836,9 @@ run_script
  clc
  adc #3
  sta script_pc
+ lda script_pc+1
+ adc #0
+ sta script_pc+1
  jmp :exec_loop
 :not_scrmax
  cmp #OP_SNAPSTATE
@@ -922,6 +955,9 @@ run_script
  clc
  adc #2
  sta script_pc
+ lda script_pc+1
+ adc #0
+ sta script_pc+1
  rts
 
 :not_waity
@@ -929,7 +965,13 @@ run_script
  bne :not_waitclr
  lda #SCRIPT_WAITCLR
  sta script_state
- inc script_pc          ; opcode only
+ lda script_pc          ; opcode only (16-bit advance)
+ clc
+ adc #1
+ sta script_pc
+ lda script_pc+1
+ adc #0
+ sta script_pc+1
  rts
 
 :not_waitclr
@@ -945,13 +987,22 @@ run_script
  clc
  adc #2                ; opcode + 1 byte param
  sta script_pc
+ lda script_pc+1
+ adc #0
+ sta script_pc+1
  rts
 
 :not_waitnpc
 * OP_NONE — skip 1 byte and continue
  cmp #OP_NONE
  bne :unknown_op
- inc script_pc
+ lda script_pc          ; 16-bit advance
+ clc
+ adc #1
+ sta script_pc
+ lda script_pc+1
+ adc #0
+ sta script_pc+1
  jmp :exec_loop
 :unknown_op
 * Unknown opcode — halt the script rather than march forward
@@ -4484,14 +4535,6 @@ walk_toggle dfb 0
 * alternating each call. Sets FRAME_X/Y/ADDR globals.
 *----------------------------------------------------------
 advance_climb
-* BCLIMB1/2 are uncompiled — clear MASK_ADDR (and billy_sprite+52)
-* so dispatch routes to the legacy draw_sprite. The subsequent
-* save_sprite call in the climb caller will persist info+52=0.
- lda #0
- sta MASK_ADDR
- sta MASK_ADDR+1
- sta billy_sprite+52
- sta billy_sprite+53
  lda climb_toggle
  eor #$01
  sta climb_toggle
@@ -4499,18 +4542,56 @@ advance_climb
  sta FRAME_X
  lda #$28              ; height
  sta FRAME_Y
+* Pick BCLIMB1 vs BCLIMB2 (toggle), then non-mirror vs mirror data
+* + mask pair from IMAGE01_MIRROR. Compiled pipeline — both data
+* and mask pointers must be set in lockstep so dispatch in draw_all
+* routes to draw_sprite_compiled with matching arrays.
  lda climb_toggle
  beq :use_b1
+* BCLIMB2 branch
+ lda IMAGE01_MIRROR
+ bne :ac_b2_mirror
  lda spr_bclimb2
  sta FRAME_ADDR
  lda spr_bclimb2+1
  sta FRAME_ADDR+1
+ lda spr_bclimb2_mask
+ sta MASK_ADDR
+ lda spr_bclimb2_mask+1
+ sta MASK_ADDR+1
+ rts
+:ac_b2_mirror
+ lda spr_bclimb2_data_mirror
+ sta FRAME_ADDR
+ lda spr_bclimb2_data_mirror+1
+ sta FRAME_ADDR+1
+ lda spr_bclimb2_mask_mirror
+ sta MASK_ADDR
+ lda spr_bclimb2_mask_mirror+1
+ sta MASK_ADDR+1
  rts
 :use_b1
+* BCLIMB1 branch
+ lda IMAGE01_MIRROR
+ bne :ac_b1_mirror
  lda spr_bclimb1
  sta FRAME_ADDR
  lda spr_bclimb1+1
  sta FRAME_ADDR+1
+ lda spr_bclimb1_mask
+ sta MASK_ADDR
+ lda spr_bclimb1_mask+1
+ sta MASK_ADDR+1
+ rts
+:ac_b1_mirror
+ lda spr_bclimb1_data_mirror
+ sta FRAME_ADDR
+ lda spr_bclimb1_data_mirror+1
+ sta FRAME_ADDR+1
+ lda spr_bclimb1_mask_mirror
+ sta MASK_ADDR
+ lda spr_bclimb1_mask_mirror+1
+ sta MASK_ADDR+1
  rts
 climb_toggle dfb 0
 
@@ -4723,8 +4804,17 @@ start_anim
  ldy #26
  lda #0
  sta (info_ptr),y     ; anim_frame = 0
-* Load first frame from descriptor
- ldy #3               ; offset to first frame in descriptor
+* Detect compiled-format flag (bit 7 of header flags byte at +2).
+ ldy #2
+ lda (anim_ptr),y
+ and #$80
+ bne :sa_compiled
+* === Legacy 5-byte stride: frame 0 at +3..+7 ===
+* Reached only by NPC animations (anim_wpunched, anim_wfall, etc.)
+* — every Billy animation is compiled (flag bit 7 set). The Billy-
+* specific MASK_ADDR clear that lived here in A1/A2.2 is now dead
+* code and was removed in A3.
+ ldy #3
  lda (anim_ptr),y     ; frame_x
  sta FRAME_X
  iny
@@ -4734,20 +4824,80 @@ start_anim
  lda (anim_ptr),y     ; duration
  ldy #28
  sta (info_ptr),y     ; anim_timer
- ldy #6               ; frame_addr low in descriptor
+ ldy #6               ; frame_addr low
  lda (anim_ptr),y
  sta FRAME_ADDR
  iny
- lda (anim_ptr),y     ; frame_addr high
+ lda (anim_ptr),y
  sta FRAME_ADDR+1
-* Write frame data to block and mark dirty, but DON'T snapshot
-* prev_xpos/ypos — when check_punch_hit triggers this mid-frame
-* on an NPC that fo_approach already moved, save_sprite would
-* clobber the prev snapshot fo_approach took, and erase_all
-* would erase at the (new) current position, leaving the old
-* sprite drawn last frame un-erased. prev_frame_x/y stay at the
-* last drawn frame's size, which the union erase in erase_all
-* accounts for.
+ bra :sa_write_block
+
+:sa_compiled
+* === Compiled 11-byte stride: frame 0 at +3..+13 ===
+* +3 frame_x, +4 frame_y, +5 duration, +6..+9 data+mask,
+* +10..+13 dmir+mmir.
+ ldy #3
+ lda (anim_ptr),y     ; frame_x
+ sta FRAME_X
+ iny
+ lda (anim_ptr),y     ; frame_y
+ sta FRAME_Y
+ iny
+ lda (anim_ptr),y     ; duration
+ ldy #28
+ sta (info_ptr),y     ; anim_timer
+ lda IMAGE01_MIRROR
+ bne :sa_compiled_mirror
+ ldy #6
+ lda (anim_ptr),y     ; data low
+ sta FRAME_ADDR
+ iny
+ lda (anim_ptr),y     ; data high
+ sta FRAME_ADDR+1
+ iny
+ lda (anim_ptr),y     ; mask low
+ sta MASK_ADDR
+ iny
+ lda (anim_ptr),y     ; mask high
+ sta MASK_ADDR+1
+ bra :sa_compiled_persist
+:sa_compiled_mirror
+ ldy #10              ; dmir_lo (past data + mask)
+ lda (anim_ptr),y
+ sta FRAME_ADDR
+ iny
+ lda (anim_ptr),y
+ sta FRAME_ADDR+1
+ iny
+ lda (anim_ptr),y     ; mmir low
+ sta MASK_ADDR
+ iny
+ lda (anim_ptr),y
+ sta MASK_ADDR+1
+:sa_compiled_persist
+* For Billy: persist MASK_ADDR → info+52 so load_sprite picks it
+* up next frame. NPCs would never run a compiled animation under
+* the current model — but if one does, we'd corrupt walk_anim, so
+* gate on controller==1.
+ ldy #22
+ lda (info_ptr),y
+ cmp #$01
+ bne :sa_write_block
+ ldy #52
+ lda MASK_ADDR
+ sta (info_ptr),y
+ iny
+ lda MASK_ADDR+1
+ sta (info_ptr),y
+
+:sa_write_block
+* Write FRAME_X/Y/ADDR back to block. DON'T snapshot prev_xpos/ypos
+* — when check_punch_hit triggers this mid-frame on an NPC that
+* fo_approach already moved, save_sprite would clobber the prev
+* snapshot fo_approach took, and erase_all would erase at the (new)
+* current position, leaving the old sprite drawn last frame un-
+* erased. prev_frame_x/y stay at the last drawn frame's size, which
+* the union erase in erase_all accounts for.
  ldy #10
  lda FRAME_X
  sta (info_ptr),y
@@ -4760,21 +4910,6 @@ start_anim
  iny
  lda FRAME_ADDR+1
  sta (info_ptr),y
-* For Billy: clear MASK_ADDR (and persist to info+52) so the next
-* draw routes to legacy — animation frames are uncompiled. NPCs
-* leave +52 (walk_anim) untouched.
- ldy #22
- lda (info_ptr),y
- cmp #$01
- bne :sa_skip_mask
- lda #0
- sta MASK_ADDR
- sta MASK_ADDR+1
- ldy #52
- sta (info_ptr),y
- iny
- sta (info_ptr),y
-:sa_skip_mask
  ldy #30
  lda #$03
  sta (info_ptr),y
@@ -5122,8 +5257,15 @@ update_anims
  jmp :next
 
 :load_frame
-* Load frame data from descriptor
-* Frame offset = 3 + anim_frame * 5
+* Load frame data from descriptor. Dispatch on flags bit 7:
+*   bit 7 set  → compiled (11-byte stride, data + mask + dmir + mmir)
+*   bit 7 clear → legacy (5-byte stride, single frame_addr)
+ ldy #2
+ lda (anim_ptr),y     ; flags
+ and #$80
+ bne :lf_compiled
+
+* === Legacy 5-byte stride: frame_offset = 3 + anim_frame * 5 ===
  ldy #26
  lda (info_ptr),y     ; anim_frame
  sta :frm
@@ -5151,6 +5293,87 @@ update_anims
  pla
  ldy #28
  sta (info_ptr),y     ; anim_timer = duration
+* Legacy frames are reached only by NPC animations now. The Billy-
+* specific MASK_ADDR clear that lived here in A1/A2 is dead code
+* (every Billy animation is compiled) and was removed in A3.
+ jmp :lf_load_done
+
+:lf_compiled
+* === Compiled 11-byte stride: frame_offset = 3 + anim_frame * 11 ===
+ ldy #26
+ lda (info_ptr),y     ; anim_frame
+ sta :frm
+ asl                  ; *2
+ sta :lf_tmp
+ asl                  ; *4
+ asl                  ; *8
+ clc
+ adc :lf_tmp          ; *10
+ clc
+ adc :frm             ; *11
+ clc
+ adc #3               ; +3 (header size)
+ tay
+ lda (anim_ptr),y     ; frame_x
+ sta FRAME_X
+ iny
+ lda (anim_ptr),y     ; frame_y
+ sta FRAME_Y
+ iny
+ lda (anim_ptr),y     ; duration
+ pha
+ iny                  ; Y now points at +3 (data low) within frame
+ lda IMAGE01_MIRROR
+ bne :lf_compiled_mirror
+* Non-mirror: data at +3..+4, mask at +5..+6
+ lda (anim_ptr),y
+ sta FRAME_ADDR
+ iny
+ lda (anim_ptr),y
+ sta FRAME_ADDR+1
+ iny
+ lda (anim_ptr),y
+ sta MASK_ADDR
+ iny
+ lda (anim_ptr),y
+ sta MASK_ADDR+1
+ bra :lf_compiled_persist
+:lf_compiled_mirror
+* Mirror: skip data + mask (4 bytes), read dmir at +7..+8, mmir at +9..+10
+ iny
+ iny
+ iny
+ iny
+ lda (anim_ptr),y
+ sta FRAME_ADDR
+ iny
+ lda (anim_ptr),y
+ sta FRAME_ADDR+1
+ iny
+ lda (anim_ptr),y
+ sta MASK_ADDR
+ iny
+ lda (anim_ptr),y
+ sta MASK_ADDR+1
+:lf_compiled_persist
+ pla
+ ldy #28
+ sta (info_ptr),y     ; anim_timer = duration
+* For Billy: persist MASK_ADDR → info+52 so load_sprite next frame
+* picks up the matching mask (since save_anim_state hasn't run yet
+* for this frame).
+ ldy #22
+ lda (info_ptr),y
+ cmp #$01
+ bne :lf_load_done
+ ldy #52
+ lda MASK_ADDR
+ sta (info_ptr),y
+ iny
+ lda MASK_ADDR+1
+ sta (info_ptr),y
+
+:lf_load_done
 * Check for punch hit (frame 1 of any punch animation)
  ldy #26
  lda (info_ptr),y     ; anim_frame
@@ -5301,6 +5524,7 @@ update_anims
 
 :frm dfb 0
 :ne_tmp dfb 0
+:lf_tmp dfb 0
 :kick_saved_xpos dfb 0
 :kick_saved_fx   dfb 0
 :kick_saved_fy   dfb 0
@@ -5891,6 +6115,126 @@ init_level
  lda [$F0],y
  sta spr_image03_mask_mirror
 
+* Billy climb frames (offsets +116..+126)
+ ldy #116
+ lda [$F0],y
+ sta spr_bclimb1_mask
+ ldy #118
+ lda [$F0],y
+ sta spr_bclimb1_data_mirror
+ ldy #120
+ lda [$F0],y
+ sta spr_bclimb1_mask_mirror
+ ldy #122
+ lda [$F0],y
+ sta spr_bclimb2_mask
+ ldy #124
+ lda [$F0],y
+ sta spr_bclimb2_data_mirror
+ ldy #126
+ lda [$F0],y
+ sta spr_bclimb2_mask_mirror
+
+* Billy punch1 frames (offsets +128..+138)
+ ldy #128
+ lda [$F0],y
+ sta spr_punch11_mask
+ ldy #130
+ lda [$F0],y
+ sta spr_punch11_data_mirror
+ ldy #132
+ lda [$F0],y
+ sta spr_punch11_mask_mirror
+ ldy #134
+ lda [$F0],y
+ sta spr_punch12_mask
+ ldy #136
+ lda [$F0],y
+ sta spr_punch12_data_mirror
+ ldy #138
+ lda [$F0],y
+ sta spr_punch12_mask_mirror
+
+* Billy punch2 frames (offsets +140..+150)
+ ldy #140
+ lda [$F0],y
+ sta spr_punch21_mask
+ ldy #142
+ lda [$F0],y
+ sta spr_punch21_data_mirror
+ ldy #144
+ lda [$F0],y
+ sta spr_punch21_mask_mirror
+ ldy #146
+ lda [$F0],y
+ sta spr_punch22_mask
+ ldy #148
+ lda [$F0],y
+ sta spr_punch22_data_mirror
+ ldy #150
+ lda [$F0],y
+ sta spr_punch22_mask_mirror
+
+* Billy kick frames (offsets +152..+162)
+ ldy #152
+ lda [$F0],y
+ sta spr_kick1_mask
+ ldy #154
+ lda [$F0],y
+ sta spr_kick1_data_mirror
+ ldy #156
+ lda [$F0],y
+ sta spr_kick1_mask_mirror
+ ldy #158
+ lda [$F0],y
+ sta spr_kick2_mask
+ ldy #160
+ lda [$F0],y
+ sta spr_kick2_data_mirror
+ ldy #162
+ lda [$F0],y
+ sta spr_kick2_mask_mirror
+
+* Billy jump frames (offsets +164..+180)
+ ldy #164
+ lda [$F0],y
+ sta spr_jump1_mask
+ ldy #166
+ lda [$F0],y
+ sta spr_jump1_data_mirror
+ ldy #168
+ lda [$F0],y
+ sta spr_jump1_mask_mirror
+ ldy #170
+ lda [$F0],y
+ sta spr_jump2_mask
+ ldy #172
+ lda [$F0],y
+ sta spr_jump2_data_mirror
+ ldy #174
+ lda [$F0],y
+ sta spr_jump2_mask_mirror
+ ldy #176
+ lda [$F0],y
+ sta spr_jump3_mask
+ ldy #178
+ lda [$F0],y
+ sta spr_jump3_data_mirror
+ ldy #180
+ lda [$F0],y
+ sta spr_jump3_mask_mirror
+
+* Billy hit-reaction frame (offsets +182..+186)
+ ldy #182
+ lda [$F0],y
+ sta spr_bpunched_mask
+ ldy #184
+ lda [$F0],y
+ sta spr_bpunched_data_mirror
+ ldy #186
+ lda [$F0],y
+ sta spr_bpunched_mask_mirror
+
 * Now patch all DA references in animation descriptors
 * and sprite info blocks with bank $02 addresses.
 * Each anim frame has: dfb x,y,dur, DA addr (5 bytes per frame)
@@ -5906,35 +6250,97 @@ init_level
  lda spr_img02
  sta anim_walk+3+18    ; frame 3 addr (IMAGE02)
 
-* Patch anim_jump: 3 frames
+* Patch anim_jump: 3 compiled frames (11-byte stride). Frames at
+* +6/+8/+10/+12, +17/+19/+21/+23, +28/+30/+32/+34.
  lda spr_jump1
- sta anim_jump+3+3
+ sta anim_jump+6
+ lda spr_jump1_mask
+ sta anim_jump+8
+ lda spr_jump1_data_mirror
+ sta anim_jump+10
+ lda spr_jump1_mask_mirror
+ sta anim_jump+12
  lda spr_jump2
- sta anim_jump+3+8
+ sta anim_jump+17
+ lda spr_jump2_mask
+ sta anim_jump+19
+ lda spr_jump2_data_mirror
+ sta anim_jump+21
+ lda spr_jump2_mask_mirror
+ sta anim_jump+23
  lda spr_jump3
- sta anim_jump+3+13
+ sta anim_jump+28
+ lda spr_jump3_mask
+ sta anim_jump+30
+ lda spr_jump3_data_mirror
+ sta anim_jump+32
+ lda spr_jump3_mask_mirror
+ sta anim_jump+34
 
-* Patch anim_kick: 2 frames
+* Patch anim_kick: 2 compiled frames (11-byte stride)
  lda spr_kick1
- sta anim_kick+3+3
+ sta anim_kick+6
+ lda spr_kick1_mask
+ sta anim_kick+8
+ lda spr_kick1_data_mirror
+ sta anim_kick+10
+ lda spr_kick1_mask_mirror
+ sta anim_kick+12
  lda spr_kick2
- sta anim_kick+3+8
+ sta anim_kick+17
+ lda spr_kick2_mask
+ sta anim_kick+19
+ lda spr_kick2_data_mirror
+ sta anim_kick+21
+ lda spr_kick2_mask_mirror
+ sta anim_kick+23
 
-* Patch anim_punch1: 2 frames
+* Patch anim_punch1: 2 compiled frames (11-byte stride). Frame 0
+* pointers at +6/+8/+10/+12, frame 1 at +17/+19/+21/+23.
  lda spr_punch11
- sta anim_punch1+3+3
+ sta anim_punch1+6        ; frame 0 data
+ lda spr_punch11_mask
+ sta anim_punch1+8        ; frame 0 mask
+ lda spr_punch11_data_mirror
+ sta anim_punch1+10       ; frame 0 dmir
+ lda spr_punch11_mask_mirror
+ sta anim_punch1+12       ; frame 0 mmir
  lda spr_punch12
- sta anim_punch1+3+8
+ sta anim_punch1+17       ; frame 1 data
+ lda spr_punch12_mask
+ sta anim_punch1+19       ; frame 1 mask
+ lda spr_punch12_data_mirror
+ sta anim_punch1+21       ; frame 1 dmir
+ lda spr_punch12_mask_mirror
+ sta anim_punch1+23       ; frame 1 mmir
 
-* Patch anim_punch2: 2 frames
+* Patch anim_punch2: 2 compiled frames (11-byte stride)
  lda spr_punch21
- sta anim_punch2+3+3
+ sta anim_punch2+6
+ lda spr_punch21_mask
+ sta anim_punch2+8
+ lda spr_punch21_data_mirror
+ sta anim_punch2+10
+ lda spr_punch21_mask_mirror
+ sta anim_punch2+12
  lda spr_punch22
- sta anim_punch2+3+8
+ sta anim_punch2+17
+ lda spr_punch22_mask
+ sta anim_punch2+19
+ lda spr_punch22_data_mirror
+ sta anim_punch2+21
+ lda spr_punch22_mask_mirror
+ sta anim_punch2+23
 
-* Patch anim_bpunched: 1 frame
+* Patch anim_bpunched: 1 compiled frame (11-byte stride)
  lda spr_bpunched
- sta anim_bpunched+3+3
+ sta anim_bpunched+6
+ lda spr_bpunched_mask
+ sta anim_bpunched+8
+ lda spr_bpunched_data_mirror
+ sta anim_bpunched+10
+ lda spr_bpunched_mask_mirror
+ sta anim_bpunched+12
 
 * Patch anim_wpunched: 1 frame
  lda spr_wpunched
@@ -5946,9 +6352,15 @@ init_level
  lda spr_wfallen
  sta anim_wfall+3+8
 
-* Patch anim_bfall: 1 frame
+* Patch anim_bfall: 1 compiled frame (placeholder uses IMAGE01)
  lda spr_img01
- sta anim_bfall+3+3
+ sta anim_bfall+6
+ lda spr_image01_mask
+ sta anim_bfall+8
+ lda spr_image01_data_mirror
+ sta anim_bfall+10
+ lda spr_image01_mask_mirror
+ sta anim_bfall+12
 
 * Patch anim_wwalk: 4 frames (WILLIAM1, WILLIAM2, WILLIAM3, WILLIAM2)
  lda spr_william1
@@ -6207,6 +6619,48 @@ spr_image02_mask_mirror    ds 2
 spr_image03_mask           ds 2
 spr_image03_data_mirror    ds 2
 spr_image03_mask_mirror    ds 2
+* Billy climb frames — compiled
+spr_bclimb1_mask           ds 2
+spr_bclimb1_data_mirror    ds 2
+spr_bclimb1_mask_mirror    ds 2
+spr_bclimb2_mask           ds 2
+spr_bclimb2_data_mirror    ds 2
+spr_bclimb2_mask_mirror    ds 2
+* Billy punch1 frames — compiled
+spr_punch11_mask           ds 2
+spr_punch11_data_mirror    ds 2
+spr_punch11_mask_mirror    ds 2
+spr_punch12_mask           ds 2
+spr_punch12_data_mirror    ds 2
+spr_punch12_mask_mirror    ds 2
+* Billy punch2 frames — compiled
+spr_punch21_mask           ds 2
+spr_punch21_data_mirror    ds 2
+spr_punch21_mask_mirror    ds 2
+spr_punch22_mask           ds 2
+spr_punch22_data_mirror    ds 2
+spr_punch22_mask_mirror    ds 2
+* Billy kick frames — compiled
+spr_kick1_mask             ds 2
+spr_kick1_data_mirror      ds 2
+spr_kick1_mask_mirror      ds 2
+spr_kick2_mask             ds 2
+spr_kick2_data_mirror      ds 2
+spr_kick2_mask_mirror      ds 2
+* Billy jump frames — compiled
+spr_jump1_mask             ds 2
+spr_jump1_data_mirror      ds 2
+spr_jump1_mask_mirror      ds 2
+spr_jump2_mask             ds 2
+spr_jump2_data_mirror      ds 2
+spr_jump2_mask_mirror      ds 2
+spr_jump3_mask             ds 2
+spr_jump3_data_mirror      ds 2
+spr_jump3_mask_mirror      ds 2
+* Billy hit-reaction frame — compiled
+spr_bpunched_mask          ds 2
+spr_bpunched_data_mirror   ds 2
+spr_bpunched_mask_mirror   ds 2
 
 *----------------------------------------------------------
 * Set ntp_open pathname pointer and ntp_bank before calling.
@@ -9079,47 +9533,77 @@ anim_walk
 anim_jump
  dfb 3               ; num_frames
  dfb $0F             ; max_width (JUMP2 is widest)
- dfb $01             ; flags: advance position
- dfb $0A,$28,3       ; JUMP1
-  hex 0000             ; patched: JUMP1
- dfb $0F,$1E,12      ; JUMP2
-  hex 0000             ; patched: JUMP2
- dfb $0D,$20,3       ; JUMP3
-  hex 0000             ; patched: JUMP3
+ dfb $81             ; flags: bit 7 = compiled, bit 0 = advance position
+ dfb $0A,$28,3       ; JUMP1: x, y, dur
+  hex 0000             ; +6  patched: JUMP1_DATA
+  hex 0000             ; +8  patched: JUMP1_MASK
+  hex 0000             ; +10 patched: JUMP1_DATA_MIRROR
+  hex 0000             ; +12 patched: JUMP1_MASK_MIRROR
+ dfb $0F,$1E,12      ; JUMP2: x, y, dur
+  hex 0000             ; +17 patched: JUMP2_DATA
+  hex 0000             ; +19 patched: JUMP2_MASK
+  hex 0000             ; +21 patched: JUMP2_DATA_MIRROR
+  hex 0000             ; +23 patched: JUMP2_MASK_MIRROR
+ dfb $0D,$20,3       ; JUMP3: x, y, dur
+  hex 0000             ; +28 patched: JUMP3_DATA
+  hex 0000             ; +30 patched: JUMP3_MASK
+  hex 0000             ; +32 patched: JUMP3_DATA_MIRROR
+  hex 0000             ; +34 patched: JUMP3_MASK_MIRROR
 
 anim_kick
  dfb 2               ; num_frames
  dfb $14             ; max_width (KICK2 is widest)
- dfb $00             ; flags: none
- dfb $09,$28,12      ; KICK1
-  hex 0000             ; patched: KICK1
- dfb $14,$22,12      ; KICK2
-  hex 0000             ; patched: KICK2
+ dfb $80             ; flags: bit 7 = compiled
+ dfb $09,$28,12      ; KICK1: x, y, dur
+  hex 0000             ; +6  patched: KICK1_DATA
+  hex 0000             ; +8  patched: KICK1_MASK
+  hex 0000             ; +10 patched: KICK1_DATA_MIRROR
+  hex 0000             ; +12 patched: KICK1_MASK_MIRROR
+ dfb $14,$22,12      ; KICK2: x, y, dur
+  hex 0000             ; +17 patched: KICK2_DATA
+  hex 0000             ; +19 patched: KICK2_MASK
+  hex 0000             ; +21 patched: KICK2_DATA_MIRROR
+  hex 0000             ; +23 patched: KICK2_MASK_MIRROR
 
 anim_punch1
  dfb 2               ; num_frames
  dfb $10             ; max_width (PUNCH12 is widest)
- dfb $00             ; flags: none
- dfb $0B,$28,6       ; PUNCH11
-  hex 0000             ; patched: PUNCH11
- dfb $10,$28,6       ; PUNCH12
-  hex 0000             ; patched: PUNCH12
+ dfb $80             ; flags: bit 7 = compiled (11-byte frame stride)
+ dfb $0B,$28,6       ; PUNCH11: x, y, dur
+  hex 0000             ; +6  patched: PUNCH11_DATA
+  hex 0000             ; +8  patched: PUNCH11_MASK
+  hex 0000             ; +10 patched: PUNCH11_DATA_MIRROR
+  hex 0000             ; +12 patched: PUNCH11_MASK_MIRROR
+ dfb $10,$28,6       ; PUNCH12: x, y, dur
+  hex 0000             ; +17 patched: PUNCH12_DATA
+  hex 0000             ; +19 patched: PUNCH12_MASK
+  hex 0000             ; +21 patched: PUNCH12_DATA_MIRROR
+  hex 0000             ; +23 patched: PUNCH12_MASK_MIRROR
 
 anim_punch2
  dfb 2               ; num_frames
  dfb $10             ; max_width (PUNCH22 is widest)
- dfb $00             ; flags: none
- dfb $0A,$28,6       ; PUNCH21
-  hex 0000             ; patched: PUNCH21
- dfb $10,$28,6       ; PUNCH22
-  hex 0000             ; patched: PUNCH22
+ dfb $80             ; flags: bit 7 = compiled
+ dfb $0A,$28,6       ; PUNCH21: x, y, dur
+  hex 0000             ; +6  patched: PUNCH21_DATA
+  hex 0000             ; +8  patched: PUNCH21_MASK
+  hex 0000             ; +10 patched: PUNCH21_DATA_MIRROR
+  hex 0000             ; +12 patched: PUNCH21_MASK_MIRROR
+ dfb $10,$28,6       ; PUNCH22: x, y, dur
+  hex 0000             ; +17 patched: PUNCH22_DATA
+  hex 0000             ; +19 patched: PUNCH22_MASK
+  hex 0000             ; +21 patched: PUNCH22_DATA_MIRROR
+  hex 0000             ; +23 patched: PUNCH22_MASK_MIRROR
 
 anim_bpunched
  dfb 1               ; num_frames
  dfb $0B             ; max_width
- dfb $00             ; flags: none (one-shot)
- dfb $0B,$28,5       ; BPUNCHED: 11 wide, 40 tall, 5 VBLs
-  hex 0000             ; patched: BPUNCHED
+ dfb $80             ; flags: bit 7 = compiled
+ dfb $0B,$28,5       ; BPUNCHED: x, y, dur
+  hex 0000             ; +6  patched: BPUNCHED_DATA
+  hex 0000             ; +8  patched: BPUNCHED_MASK
+  hex 0000             ; +10 patched: BPUNCHED_DATA_MIRROR
+  hex 0000             ; +12 patched: BPUNCHED_MASK_MIRROR
 
 anim_wpunched
  dfb 1               ; num_frames
@@ -9140,9 +9624,12 @@ anim_wfall
 anim_bfall
  dfb 1               ; num_frames
  dfb $09             ; max_width (IMAGE01)
- dfb $00             ; flags: none (one-shot, placeholder)
- dfb $09,$28,33      ; IMAGE01: 9 wide, 40 tall, 33 VBLs
-  hex 0000             ; patched: IMAGE01
+ dfb $80             ; flags: bit 7 = compiled (placeholder uses IMAGE01)
+ dfb $09,$28,33      ; IMAGE01: x, y, dur
+  hex 0000             ; +6  patched: IMAGE01_DATA
+  hex 0000             ; +8  patched: IMAGE01_MASK
+  hex 0000             ; +10 patched: IMAGE01_DATA_MIRROR
+  hex 0000             ; +12 patched: IMAGE01_MASK_MIRROR
 
 * William walking cycle (WILLIAM1, 2, 3, 2). Looping, no
 * auto-advance — behavior code controls position.
