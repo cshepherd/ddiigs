@@ -69,7 +69,7 @@ NTPstreamsound          =   NinjaTrackerPlus+24
  sta ntp_bank
  jsr load_ntp_file
 
-* Load MISSION11.PAK -> $4F, unpack to $03 (screen 0)
+* Load MISSION11.PAK -> $17, unpack to $03 (screen 0)
  lda #$03
  sta unpack_bank
  jsr load_and_unpack
@@ -5718,8 +5718,10 @@ copy_to_bank
 * unpack_bank must be set to the target bank.
 *----------------------------------------------------------
 load_and_unpack
-* Load PAK file to bank $4F
- lda #$4F
+* Load PAK file to bank $17 (temp scratch — between music data
+* at $12-$13 and the playfield shadow at $18). Was $4F; moved
+* down so the engine fits in 2MB IIgs configurations.
+ lda #$17
  sta load_bank
  jsr load_to_bank
 
@@ -5734,7 +5736,7 @@ load_and_unpack
 
  pha                    ; space for result
 
- pea $004F             ; src bank (high word)
+ pea $0017             ; src bank (high word)
  pea $2000             ; src addr (low word)
 
  lda file_size

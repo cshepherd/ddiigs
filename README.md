@@ -8,7 +8,7 @@ As you may know, there are two main lineages for this game: Arcade / PC (includi
 
 Despite my well-known fondness for Lucas' GTE tile engine, this is not a tiled game. It is simply captured artworks run through my special branch of ii-pix to lock palettes, then packed with _PackBytes and stitched together by the engine at runtime. You wouldn't guess it, but it works really well.
 
-The engine holds a source-of-truth at bank \$18 (currently) that has the background in its currently-scrolled state with no sprites plotted. The rest of the story is something you've heard before: 'Erase' by copying sections of \$18 to \$01 while shadowing is off, then plot (hopefully compiled) sprites in $01, then turn shadowing on, and fast blit \$01 to \$01 after waiting for VBL.
+The engine holds a source-of-truth at bank \$18 (currently) that has the background in its currently-scrolled state with no sprites plotted. Full-screen redraws (as when scrolling) turn off shadowing, do a full blit to $01, then turn shadowing back on and redraw over it. This is not as cycle-economic for narrower bands like a non-scrolling erase-and-redraw so for those, we just leave shadowing on, wvbl, and blit straight to $01.
 
 Currently the engine supports both fast (compiled) and slow (not-compiled) sprites. The compiled sprites have a reverse AND mask and therefore support the usual LDA / AND / ORA / STA pipeline. The slow sprites have a designated 'transparent' color in addition to being soft-reversible, which all costs extra cycles. As you'd imagine, you can derive 80% of the benefit of compiled sprites (which are expensive on disk and in RAM) by compiling the 20% most-used sprites.
 
@@ -87,6 +87,7 @@ Boot the disk image. BASIC.SYSTEM will load and you can run the programs:
 | j | Jump |
 | k | Kick |
 | p | Punch |
+| esc | Pause / Unpause |
 
 ## Credits
 

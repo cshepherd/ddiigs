@@ -135,7 +135,7 @@ game_loop:
 | $06-$07 | $0000/$8000 | Room for more backgrounds |
 | $0F | $0000+ | NTP player code |
 | $10-$12 | $0000+ | NTP music data |
-| $4F | $0000+ | Temporary buffer for PAK decompression |
+| $17 | $2000+ | Temporary buffer for PAK decompression |
 | $18 | $2000-$9FFF | Shadow copy of current playfield (erase source) |
 
 ### Level data format (bank $02)
