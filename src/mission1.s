@@ -942,48 +942,127 @@ bounds_ptrs
  dw bounds_scr12
  dw bounds_scr13
 
-* Screen 0: y<80 blocked, y=80-199 full playfield
+* Screen 0: y<83 blocked, y=83-199 full playfield
 bounds_scr0
- LUP 80
+ LUP 83
  dfb 0,0
  --^
- LUP 120
+ LUP 117
  dfb 0,109
  --^
 
-* Screen 1: same as screen 0
+* Screen 1: boxes form an isometric angle
 bounds_scr1
- LUP 80
+ LUP 40
  dfb 0,0
  --^
- LUP 120
+ dfb $30,109
+ dfb $2f,109
+ dfb $2e,109
+ dfb $2d,109
+ dfb $2c,109
+ dfb $2b,109
+ dfb $2a,109
+ dfb $29,109
+ dfb $28,109
+ dfb $27,109
+ dfb $26,109
+ dfb $25,109
+ dfb $24,109
+ dfb $23,109
+ dfb $22,109
+ dfb $21,109
+ dfb $20,109
+ dfb $1F,109
+ dfb $1E,109
+ dfb $1D,109
+ dfb $1C,109
+ dfb $1B,109
+ dfb $1A,109
+ dfb $19,109
+ dfb $18,109
+ dfb $17,109
+ dfb $16,109
+ dfb $15,109
+ dfb $14,109
+ dfb $13,109
+ dfb $12,109
+ dfb $11,109
+ dfb $10,109
+ dfb $0F,109
+ dfb $0E,109
+ dfb $0D,109
+ dfb $0C,109
+ dfb $0B,109
+ dfb $0A,109
+ dfb $09,109
+ dfb $08,109
+ dfb $07,109
+ dfb $06,109
+ dfb $05,109
+ dfb $04,109
+ dfb $03,109
+ dfb $02,109
+ dfb $01,109
+ dfb $00,109
+ LUP 111
  dfb 0,109
  --^
 
-* Screen 2: walkable y=60-199 (extends to y=60 to connect with ladder y_bottom=59)
+* Screen 2: rows 0-39 blocked, rows 40-68 a rising bmax staircase
+* (bmax $30 → $4C, +1 per row), rows 69-199 fully walkable.
 bounds_scr2
- LUP 60
+ LUP 40
  dfb 0,0
  --^
- LUP 140
+ dfb 0,$30
+ dfb 0,$31
+ dfb 0,$32
+ dfb 0,$33
+ dfb 0,$34
+ dfb 0,$35
+ dfb 0,$36
+ dfb 0,$37
+ dfb 0,$38
+ dfb 0,$39
+ dfb 0,$3A
+ dfb 0,$3B
+ dfb 0,$3C
+ dfb 0,$3D
+ dfb 0,$3E
+ dfb 0,$3F
+ dfb 0,$40
+ dfb 0,$41
+ dfb 0,$42
+ dfb 0,$43
+ dfb 0,$44
+ dfb 0,$45
+ dfb 0,$46
+ dfb 0,$47
+ dfb 0,$48
+ dfb 0,$49
+ dfb 0,$4A
+ dfb 0,$4B
+ dfb 0,$4C
+ LUP 131
  dfb 0,109
  --^
 
-* Screen 3: same as screen 0
+* Screen 3: rows 0-68 blocked, rows 69-199 fully walkable.
 bounds_scr3
- LUP 80
+ LUP 69
  dfb 0,0
  --^
- LUP 120
+ LUP 131
  dfb 0,109
  --^
 
-* Screen 4: walkable y=60-199 (extends to y=60 to connect with ladder y_bottom=59)
+* Screen 4: rows 0-68 blocked, rows 69-199 fully walkable.
 bounds_scr4
- LUP 60
+ LUP 69
  dfb 0,0
  --^
- LUP 140
+ LUP 131
  dfb 0,109
  --^
 
@@ -992,39 +1071,50 @@ bounds_scr4
 * (ypos=53..87) and the ladder-top "landing" range so snap
 * preserve-ypos logic doesn't fall back to the bottom of walkable
 * and teleport Billy after the scroll.
+* Screen 5:
+*   y=$00-$29: blocked (0,0)
+*   y=$2A-$3B: ($32,109) — right-side platform
+*   y=$3C-$47: (0,109)   — full-width corridor
+*   y=$48-$57: (0,$3C)   — left-side ledge w/ right wall (ends at $57)
+*   y=$58-$C7: blocked (0,0)
 bounds_scr5
- LUP 53
+ LUP 42
  dfb 0,0
  --^
- LUP 78
+ LUP 18
+ dfb $32,109
+ --^
+ LUP 12
  dfb 0,109
  --^
- LUP 69
+ LUP 16
+ dfb 0,$3C
+ --^
+ LUP 112
  dfb 0,0
  --^
 
-* Screen 6: same default
+* Screen 6: walkable band y=$2A-$47 only.
 bounds_scr6
- LUP 80
+ LUP 42
  dfb 0,0
  --^
- LUP 120
+ LUP 30
  dfb 0,109
+ --^
+ LUP 128
+ dfb 0,0
  --^
 
-* Screen 7 (upper level): walkable band matches screen 5's
-* upper road (y=40-59). Player transitions in from screen 5
-* at this y band. Ladder at world byte 530..537 extends from
-* y=0..59 (overlaps walkable) so up-climb moves out of the
-* band once scroll_up is enabled.
+* Screen 7: same as screen6
 bounds_scr7
- LUP 40
+ LUP 42
  dfb 0,0
  --^
- LUP 20
+ LUP 30
  dfb 0,109
  --^
- LUP 140
+ LUP 128
  dfb 0,0
  --^
 
@@ -1060,11 +1150,12 @@ bounds_scr10
  dfb 0,0
  --^
 
+* Screens 11-13: walkable band y=$34..$4F (28 rows), else blocked.
 bounds_scr11
- LUP 47
+ LUP 52
  dfb 0,0
  --^
- LUP 33
+ LUP 28
  dfb 0,109
  --^
  LUP 120
@@ -1072,10 +1163,10 @@ bounds_scr11
  --^
 
 bounds_scr12
- LUP 47
+ LUP 52
  dfb 0,0
  --^
- LUP 33
+ LUP 28
  dfb 0,109
  --^
  LUP 120
@@ -1083,10 +1174,10 @@ bounds_scr12
  --^
 
 bounds_scr13
- LUP 47
+ LUP 32
  dfb 0,0
  --^
- LUP 33
+ LUP 48
  dfb 0,109
  --^
  LUP 120

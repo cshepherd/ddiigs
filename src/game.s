@@ -258,6 +258,7 @@ over1
 *==========================================================
 game_loop
  jsr check_pause       ; ESC tap toggles paused
+ jsr check_debug_xy    ; 'd' tap toggles hex xpos/ypos readout
  lda paused
  bne :gl_paused_idle   ; frozen: skip all per-frame work
  jsr update_overlay
@@ -285,6 +286,7 @@ game_loop
  jsr draw_all
  jsr draw_overlay
  jsr draw_p1_score
+ jsr draw_debug_xy
 ; jsr draw_ladder_debug   ; outline ladders for debug
  bra game_loop
 :gl_paused_idle
@@ -1498,11 +1500,50 @@ bounds_tbl_hi                  ; max_x per scanline (0=blocked)
 * Input: A = proposed Y, chk_xpos = sprite's X
 * Output: C=1 blocked, C=0 allowed. Trashes A/X.
 *----------------------------------------------------------
+*----------------------------------------------------------
+* check_x_bounds - Test if a proposed X is allowed at the
+* sprite's current Y_top (IMAGE01_YPOS). Used by walk-right
+* and walk-left so horizontal movement honors per-row X bounds
+* the same way check_y_bounds honors them for vertical movement.
+* No ladder fallback — ladders are vertical-only.
+*
+* Input: A = proposed X. Uses IMAGE01_YPOS as the row to query.
+* Output: C=1 blocked, C=0 allowed. Trashes A/X.
+*----------------------------------------------------------
+check_x_bounds
+ sta :cxb_x
+ lda IMAGE01_YPOS
+ tax
+ lda bounds_tbl_lo,x
+ sta :cxb_min
+ lda bounds_tbl_hi,x
+ beq :cxb_blocked     ; row marked blocked (hi=0) — no walk allowed
+ sta :cxb_max
+ lda :cxb_x
+ cmp :cxb_min
+ bcc :cxb_blocked
+ cmp :cxb_max
+ beq :cxb_ok
+ bcs :cxb_blocked
+:cxb_ok clc
+ rts
+:cxb_blocked sec
+ rts
+:cxb_x dfb 0
+:cxb_min dfb 0
+:cxb_max dfb 0
+
 check_y_bounds
  stz via_ladder
- cmp #200
- bcs :blocked          ; off-screen Y
  sta :proposed
+* Block if the sprite's bottom row would drop out of the playfield.
+* bottom = proposed + FRAME_Y - 1, must be <= 182 (last playfield row);
+* equivalently proposed + FRAME_Y <= 183, i.e., A < 184.
+ clc
+ adc FRAME_Y
+ cmp #184
+ bcs :blocked
+ lda :proposed
  tax
  lda bounds_tbl_lo,x
  sta :bmin
@@ -1592,6 +1633,7 @@ sync_current_screen
  cmp current_screen
  beq :no_change
  sta current_screen
+ jsr inc_border             ; new screen scrolled in
 :apply
 * Update scroll_lsrc_bank = bank of left-neighbor screen.
 * Linear assumption ($03 + (current_screen - 1)); OP_LEFT
@@ -1629,6 +1671,8 @@ sync_current_screen_left
  cmp current_screen
  beq :scl_done
  sta current_screen
+ jsr inc_border             ; new screen scrolled in
+ lda current_screen
  clc
  adc #$03              ; scroll_src_bank = $03 + new current_screen
  sta scroll_src_bank   ; so scroll_right starts by re-showing us
@@ -1987,6 +2031,178 @@ draw_p1_score
  xce                    ; back to emulation
  sep #$30
  rts
+
+*----------------------------------------------------------
+* Debug overlay: tap 'd' to toggle a hex readout of Billy's
+* IMAGE01_XPOS and IMAGE01_YPOS at (225,40)/(225,50). Useful
+* for tuning bounds tables. Also see inc_border below — it
+* steps the SHR border color each time current_screen advances.
+*----------------------------------------------------------
+debug_xy_flag dfb 0
+dbg_xy_buf    dfb 0,0,0           ; 2 hex chars + null terminator
+dbg_xy_blank  ASC '   ',00         ; 3 spaces — overwrites any 2-char label
+
+DBG_XY_X      = 225
+DBG_XY_Y_X    = 40
+DBG_XY_Y_Y    = 50
+
+*----------------------------------------------------------
+* check_debug_xy - 'd' tap toggles debug_xy_flag. On toggle
+* OFF we wipe the labels (QuickDraw drew them straight to $E1,
+* nothing else will overwrite that area otherwise).
+*----------------------------------------------------------
+check_debug_xy
+ lda $c000
+ bpl :cdx_done
+ and #$7f
+ cmp #'d'
+ bne :cdx_done
+ sta $c010                ; consume strobe
+ lda debug_xy_flag
+ eor #$01
+ sta debug_xy_flag
+ bne :cdx_done            ; turned ON — let draw_debug_xy paint
+ jsr clear_debug_xy       ; turned OFF — wipe the labels
+:cdx_done rts
+
+*----------------------------------------------------------
+* draw_debug_xy - Format Billy's xpos/ypos as 2 hex chars and
+* draw via _DrawCString. No-op if flag is off.
+*----------------------------------------------------------
+draw_debug_xy
+ lda debug_xy_flag
+ bne :ddx_active
+ rts
+:ddx_active
+ clc
+ xce                      ; native mode
+ rep $30
+
+* X readout — read directly from billy_sprite block. The
+* IMAGE01_XPOS global holds whatever sprite was loaded last
+* by erase_all/draw_all, which is the last sprite in the
+* Y-sorted table — usually an NPC, not Billy.
+ sep $20
+ lda billy_sprite+2
+ jsr fmt_hex8_to_xy_buf
+ rep $20
+ pea #DBG_XY_X
+ pea #DBG_XY_Y_X
+ ldx #$3a04               ; MoveTo
+ jsl $E10000
+ pea #$0000
+ pea dbg_xy_buf
+ ldx #$A604               ; DrawCString
+ jsl $E10000
+
+* Y readout — billy_sprite[+0] = ypos
+ sep $20
+ lda billy_sprite
+ jsr fmt_hex8_to_xy_buf
+ rep $20
+ pea #DBG_XY_X
+ pea #DBG_XY_Y_Y
+ ldx #$3a04
+ jsl $E10000
+ pea #$0000
+ pea dbg_xy_buf
+ ldx #$A604
+ jsl $E10000
+
+ sec
+ xce                      ; back to emulation
+ sep #$30
+ rts
+
+*----------------------------------------------------------
+* clear_debug_xy - Overwrite the readout area with spaces.
+* Called by check_debug_xy when the flag toggles OFF.
+*----------------------------------------------------------
+clear_debug_xy
+ clc
+ xce
+ rep $30
+
+ pea #DBG_XY_X
+ pea #DBG_XY_Y_X
+ ldx #$3a04
+ jsl $E10000
+ pea #$0000
+ pea dbg_xy_blank
+ ldx #$A604
+ jsl $E10000
+
+ pea #DBG_XY_X
+ pea #DBG_XY_Y_Y
+ ldx #$3a04
+ jsl $E10000
+ pea #$0000
+ pea dbg_xy_blank
+ ldx #$A604
+ jsl $E10000
+
+ sec
+ xce
+ sep #$30
+ rts
+
+*----------------------------------------------------------
+* fmt_hex8_to_xy_buf - 8-bit A → 2 hex chars at dbg_xy_buf.
+* Caller in 8-bit M. Trashes A.
+*----------------------------------------------------------
+fmt_hex8_to_xy_buf
+ pha
+ lsr
+ lsr
+ lsr
+ lsr
+ jsr :fhx_nib
+ sta dbg_xy_buf
+ pla
+ and #$0F
+ jsr :fhx_nib
+ sta dbg_xy_buf+1
+ rts
+:fhx_nib
+ cmp #10
+ bcc :fhx_digit
+ clc
+ adc #'A'-10
+ rts
+:fhx_digit
+ clc
+ adc #'0'
+ rts
+
+*----------------------------------------------------------
+* inc_border - Step SHR border color (low nibble of $C034)
+* by 1, wrapping within $0-$F. Preserves the high nibble
+* (text background). Hooked at every current_screen update
+* site — flashes a visual marker each time a screen finishes
+* scrolling in. No-op when the debug overlay is off so the
+* border only flickers when the developer wants it to.
+*----------------------------------------------------------
+inc_border
+ php
+ sep #$20
+ lda debug_xy_flag
+ beq :ib_done            ; debug off → leave border alone
+ ldal $C034
+ sta :ib_saved
+ and #$0F
+ clc
+ adc #1
+ and #$0F
+ sta :ib_nib
+ lda :ib_saved
+ and #$F0
+ ora :ib_nib
+ stal $C034
+:ib_done
+ plp
+ rts
+:ib_saved dfb 0
+:ib_nib   dfb 0
 
 *----------------------------------------------------------
 * update_overlay - Decrement overlay timer. When it expires,
@@ -4303,7 +4519,9 @@ process_input
  jsr resort_sprite_table
 :skip_down rts
 :not_down cmp #'4'
- bne :not_left
+ beq :do_left          ; '4' → handle left below
+ jmp :not_left         ; far jump (out of branch range after walk_x bounds added)
+:do_left
 * If at left scroll threshold AND scroll_left enabled AND
 * there's a screen to the left, scroll. Otherwise walk.
  lda scroll_left_enabled
@@ -4355,6 +4573,10 @@ process_input
  lda IMAGE01_XPOS
  cmp #2
  bcc :skip_left        ; already at minimum (1)
+ sec
+ sbc #1                ; proposed new xpos
+ jsr check_x_bounds
+ bcs :skip_left        ; bounds at current Y_top reject this X
  dec IMAGE01_XPOS
 * Decrement absolute X (16-bit)
  lda abs_x
@@ -4422,6 +4644,10 @@ process_input
  lda IMAGE01_XPOS
  cmp #PLAYER_MAX_X
  bcs :clamp_right      ; at right edge of playfield
+ clc
+ adc #1                ; proposed new xpos
+ jsr check_x_bounds
+ bcs :clamp_right      ; bounds at current Y_top reject this X
  inc IMAGE01_XPOS
  inc abs_x
  bne :finish_right
@@ -8547,7 +8773,8 @@ scroll_up
  lda scroll_up_screen
  sta current_screen
  stz scroll_up_enabled
- jsr load_screen_bounds
+ jsr load_screen_bounds     ; needs A = screen index — call before inc_border
+ jsr inc_border             ; new screen scrolled in (vertical)
  lda up_dst_start
  beq :snap_pos_src       ; dst_start=0 means :pos or :no_overlap
  lda scroll_up_bank
