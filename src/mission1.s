@@ -1118,27 +1118,31 @@ bounds_scr7
  dfb 0,0
  --^
 
-* Screen 8: same default
+* Screen 8: High platform, no Y movement
 bounds_scr8
- LUP 80
+ LUP 47
  dfb 0,0
  --^
- LUP 120
+ LUP 1
  dfb 0,109
  --^
+ LUP 152
+ dfb 0,0
+ --^
 
-* Screen 9: same default
+* Screen 9: High platform, no Y movement
 bounds_scr9
- LUP 80
+ LUP 47
  dfb 0,0
  --^
- LUP 120
+ LUP 1
  dfb 0,109
  --^
+ LUP 152
+ dfb 0,0
+ --^
 
-* Screen 10: narrow upper-level platform at top of second ladder.
-* Walkable ypos=27..47 (21 rows). snap_transition's fallback scan
-* places Billy at ypos=47 (landing at the platform).
+* Screen 10: High platform, no Y movement
 bounds_scr10
  LUP 47
  dfb 0,0
@@ -1150,7 +1154,7 @@ bounds_scr10
  dfb 0,0
  --^
 
-* Screens 11-13: walkable band y=$34..$4F (28 rows), else blocked.
+* Screens 11-13: Top of level
 bounds_scr11
  LUP 52
  dfb 0,0

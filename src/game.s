@@ -387,11 +387,18 @@ run_script
 
 :not_npc
  cmp #OP_RIGHT
- bne :not_right
+ beq :do_op_right       ; branch to OP_RIGHT body below
+ jmp :not_right         ; far jump (body grew beyond branch range)
+:do_op_right
 * OP_RIGHT: param = 1 byte screen index
  ldy #1
  lda [script_pc],y
  sta scroll_right_screen
+ jsr load_right_neighbor_bounds
+ ldy #1                ; reload Y — neighbor loader runs in 16-bit and
+                       ; leaves Y at $90 (low byte of 400) when emulation
+                       ; truncates it on return.
+ lda [script_pc],y     ; reload A; bank logic below expects idx in A
 * scroll_src_bank represents "next content to bring in on right
 * scroll". Each screen N is loaded into bank $03+N.
 *
@@ -472,6 +479,9 @@ run_script
  ldy #1
  lda [script_pc],y
  sta scroll_left_screen
+ jsr load_left_neighbor_bounds
+ ldy #1                ; reload Y (loader leaves Y in a high state)
+ lda [script_pc],y     ; reload A — load_left_neighbor_bounds trashed it
 * Configure left source: bank of target screen, offset starts at
 * rightmost byte (109) so first fill pulls real pixels. scr9 is
 * now full-width art so the previous narrow special-case is gone.
@@ -1494,6 +1504,31 @@ bounds_tbl_hi                  ; max_x per scanline (0=blocked)
  dfb 109
  --^
 
+* Neighbor bounds tables: pre-loaded by OP_RIGHT and OP_LEFT so
+* walk-right / walk-left can refuse moves that would land Billy
+* in a row that's blocked on the screen scrolling in. Without
+* these checks, Billy ends up "stuck" once the bounds table swaps
+* on transition. Invalidated on screen transitions and reset by
+* the next OP_RIGHT/OP_LEFT in the new screen's script.
+bounds_tbl_right_lo
+ LUP 200
+ dfb 0
+ --^
+bounds_tbl_right_hi
+ LUP 200
+ dfb 0
+ --^
+bounds_tbl_left_lo
+ LUP 200
+ dfb 0
+ --^
+bounds_tbl_left_hi
+ LUP 200
+ dfb 0
+ --^
+bounds_right_valid dfb 0
+bounds_left_valid  dfb 0
+
 *----------------------------------------------------------
 * check_y_bounds - Test if a sprite at X position chk_xpos
 * is allowed at the proposed Y in A.
@@ -1502,13 +1537,14 @@ bounds_tbl_hi                  ; max_x per scanline (0=blocked)
 *----------------------------------------------------------
 *----------------------------------------------------------
 * check_x_bounds - Test if a proposed X is allowed at the
-* sprite's current Y_top (IMAGE01_YPOS). Used by walk-right
-* and walk-left so horizontal movement honors per-row X bounds
-* the same way check_y_bounds honors them for vertical movement.
-* No ladder fallback — ladders are vertical-only.
-*
-* Input: A = proposed X. Uses IMAGE01_YPOS as the row to query.
+* sprite's current Y_top (IMAGE01_YPOS) on the CURRENT screen.
 * Output: C=1 blocked, C=0 allowed. Trashes A/X.
+*
+* Walk-right and walk-left should use check_x_bounds_walk_right
+* / _walk_left wrappers below, which intersect with the relevant
+* neighbor screen's bounds (loaded by OP_RIGHT / OP_LEFT) to
+* prevent Billy from walking into rows that will be blocked
+* once the bounds table swaps on transition.
 *----------------------------------------------------------
 check_x_bounds
  sta :cxb_x
@@ -1517,7 +1553,7 @@ check_x_bounds
  lda bounds_tbl_lo,x
  sta :cxb_min
  lda bounds_tbl_hi,x
- beq :cxb_blocked     ; row marked blocked (hi=0) — no walk allowed
+ beq :cxb_blocked
  sta :cxb_max
  lda :cxb_x
  cmp :cxb_min
@@ -1532,6 +1568,218 @@ check_x_bounds
 :cxb_x dfb 0
 :cxb_min dfb 0
 :cxb_max dfb 0
+
+* Shared scratch — wrappers below stash the proposed X here
+* before delegating to check_x_bounds, so it survives the call.
+proposed_walk_x dfb 0
+
+*----------------------------------------------------------
+* check_x_bounds_walk_right - Like check_x_bounds, but also
+* requires the proposed X to be valid in the right-neighbor
+* screen's bounds (if loaded). Prevents Billy from advancing
+* into a row that's blocked on the screen scrolling in.
+*----------------------------------------------------------
+check_x_bounds_walk_right
+ sta proposed_walk_x
+ jsr check_x_bounds
+ bcs :cxbR_blocked
+ lda bounds_right_valid
+ beq :cxbR_ok                  ; no neighbor known — current bounds suffice
+ lda IMAGE01_YPOS
+ tax
+ lda bounds_tbl_right_hi,x
+ beq :cxbR_ok                  ; neighbor row fully blocked = Y-mismatch
+                               ; (different walkable Y bands between screens);
+                               ; skip neighbor check, let walk proceed and rely
+                               ; on snap-on-transition (TODO) to fix Billy's Y.
+ sta :cxbR_max
+ lda proposed_walk_x
+ cmp bounds_tbl_right_lo,x
+ bcc :cxbR_blocked
+ cmp :cxbR_max
+ beq :cxbR_ok
+ bcs :cxbR_blocked
+:cxbR_ok clc
+ rts
+:cxbR_blocked sec
+ rts
+:cxbR_max dfb 0
+
+*----------------------------------------------------------
+* check_x_bounds_walk_left - Mirror of _walk_right for the left.
+*----------------------------------------------------------
+check_x_bounds_walk_left
+ sta proposed_walk_x
+ jsr check_x_bounds
+ bcs :cxbL_blocked
+ lda bounds_left_valid
+ beq :cxbL_ok
+ lda IMAGE01_YPOS
+ tax
+ lda bounds_tbl_left_hi,x
+ beq :cxbL_ok                  ; neighbor row fully blocked = Y-mismatch
+                               ; (skip neighbor check, allow walk, rely on
+                               ; eventual snap-on-transition).
+ sta :cxbL_max
+ lda proposed_walk_x
+ cmp bounds_tbl_left_lo,x
+ bcc :cxbL_blocked
+ cmp :cxbL_max
+ beq :cxbL_ok
+ bcs :cxbL_blocked
+:cxbL_ok clc
+ rts
+:cxbL_blocked sec
+ rts
+:cxbL_max dfb 0
+
+*----------------------------------------------------------
+* load_right_neighbor_bounds / load_left_neighbor_bounds -
+* Copy screen A's bounds data from bank $02 into the right
+* or left neighbor table and mark the table valid. Called by
+* OP_RIGHT / OP_LEFT handlers.
+*----------------------------------------------------------
+load_right_neighbor_bounds
+ sta :lrnb_idx
+ clc
+ xce
+ rep $30
+ mx %00
+ lda :lrnb_idx
+ and #$00FF
+ asl
+ clc
+ adc bounds_base
+ sta $F0
+ sep $20
+ lda #$02
+ sta $F2
+ rep $20
+ ldy #0
+ lda [$F0],y
+ sta $F0                     ; F0/F2 = bank $02 addr of source table
+ sep $20
+ lda #$02
+ sta $F2
+ rep $20
+ ldy #0                      ; source byte index
+ ldx #0                      ; dest row index
+:lrnb_loop sep $20
+ lda [$F0],y
+ sta bounds_tbl_right_lo,x
+ rep $20
+ iny
+ sep $20
+ lda [$F0],y
+ sta bounds_tbl_right_hi,x
+ rep $20
+ iny
+ inx
+ cpx #200
+ bcc :lrnb_loop
+ sec
+ xce
+ lda #1
+ sta bounds_right_valid
+ rts
+:lrnb_idx ds 2
+
+*----------------------------------------------------------
+* snap_billy_to_valid_y - After a horizontal screen transition,
+* if Billy's current Y_top lands in a row that's blocked on the
+* new bounds (Y-band mismatch between old/new screens), find a
+* walkable row by scanning bounds_tbl_hi from Y=199 downward,
+* and set IMAGE01_YPOS to that row. Also updates billy_sprite
+* ypos/prev_ypos and marks Billy dirty so the next frame's
+* erase/draw repaints him at the new position.
+*
+* Caller: emulation 8-bit mode, info_ptr already set to
+* billy_sprite (process_input does this at frame start).
+* Trashes A/X/Y if a snap is needed; otherwise no-op.
+*----------------------------------------------------------
+snap_billy_to_valid_y
+* Quick exit if current Y_top is walkable AND its sprite stays
+* within the playfield (Y_top + FRAME_Y <= 183).
+ lda IMAGE01_YPOS
+ tax
+ lda bounds_tbl_hi,x
+ beq :sbtv_scan_setup
+ txa
+ clc
+ adc FRAME_Y
+ cmp #184
+ bcc :sbtv_done            ; bottom < 184 → still on playfield, no snap
+:sbtv_scan_setup
+* Scan from the highest legal Y_top (= 183 - FRAME_Y) downward
+* so Billy lands on the LOWEST walkable row whose sprite fits.
+ lda #183
+ sec
+ sbc FRAME_Y
+ tax
+:sbtv_scan
+ lda bounds_tbl_hi,x
+ bne :sbtv_use
+ cpx #0
+ beq :sbtv_done            ; no valid row found — leave Y alone
+ dex
+ bra :sbtv_scan
+:sbtv_use
+ txa
+ sta IMAGE01_YPOS
+ ldy #0
+ sta (info_ptr),y          ; +0 ypos
+ ldy #32
+ sta (info_ptr),y          ; +32 prev_ypos (avoid stale erase)
+ ldy #30
+ lda #$03
+ sta (info_ptr),y          ; dirty = erase + draw
+:sbtv_done
+ rts
+
+load_left_neighbor_bounds
+ sta :llnb_idx
+ clc
+ xce
+ rep $30
+ mx %00
+ lda :llnb_idx
+ and #$00FF
+ asl
+ clc
+ adc bounds_base
+ sta $F0
+ sep $20
+ lda #$02
+ sta $F2
+ rep $20
+ ldy #0
+ lda [$F0],y
+ sta $F0
+ sep $20
+ lda #$02
+ sta $F2
+ rep $20
+ ldy #0
+ ldx #0
+:llnb_loop sep $20
+ lda [$F0],y
+ sta bounds_tbl_left_lo,x
+ rep $20
+ iny
+ sep $20
+ lda [$F0],y
+ sta bounds_tbl_left_hi,x
+ rep $20
+ iny
+ inx
+ cpx #200
+ bcc :llnb_loop
+ sec
+ xce
+ lda #1
+ sta bounds_left_valid
+ rts
+:llnb_idx ds 2
 
 check_y_bounds
  stz via_ladder
@@ -1633,6 +1881,8 @@ sync_current_screen
  cmp current_screen
  beq :no_change
  sta current_screen
+ stz bounds_right_valid     ; neighbor table is for old screen now
+ stz bounds_left_valid
  jsr inc_border             ; new screen scrolled in
 :apply
 * Update scroll_lsrc_bank = bank of left-neighbor screen.
@@ -1653,6 +1903,7 @@ sync_current_screen
 :loaded
  lda current_screen    ; reload before calling — A had been clobbered
  jsr load_screen_bounds
+ jsr snap_billy_to_valid_y  ; rescue Y if new screen blocks current Y_top
 :no_change rts
 
 *----------------------------------------------------------
@@ -1671,6 +1922,8 @@ sync_current_screen_left
  cmp current_screen
  beq :scl_done
  sta current_screen
+ stz bounds_right_valid     ; neighbor tables are stale on transition
+ stz bounds_left_valid
  jsr inc_border             ; new screen scrolled in
  lda current_screen
  clc
@@ -1679,6 +1932,7 @@ sync_current_screen_left
  stz scroll_src_off
  lda current_screen
  jsr load_screen_bounds
+ jsr snap_billy_to_valid_y  ; rescue Y if new screen blocks current Y_top
 :scl_done rts
 
 load_screen_bounds
@@ -4575,8 +4829,8 @@ process_input
  bcc :skip_left        ; already at minimum (1)
  sec
  sbc #1                ; proposed new xpos
- jsr check_x_bounds
- bcs :skip_left        ; bounds at current Y_top reject this X
+ jsr check_x_bounds_walk_left
+ bcs :skip_left        ; bounds (curr ∩ left-neighbor) reject this X
  dec IMAGE01_XPOS
 * Decrement absolute X (16-bit)
  lda abs_x
@@ -4646,8 +4900,8 @@ process_input
  bcs :clamp_right      ; at right edge of playfield
  clc
  adc #1                ; proposed new xpos
- jsr check_x_bounds
- bcs :clamp_right      ; bounds at current Y_top reject this X
+ jsr check_x_bounds_walk_right
+ bcs :clamp_right      ; bounds (curr ∩ right-neighbor) reject this X
  inc IMAGE01_XPOS
  inc abs_x
  bne :finish_right
@@ -8772,6 +9026,8 @@ scroll_up
 * wrap logic) for the eventual transition to the right neighbor.
  lda scroll_up_screen
  sta current_screen
+ stz bounds_right_valid     ; neighbor tables are stale on transition
+ stz bounds_left_valid
  stz scroll_up_enabled
  jsr load_screen_bounds     ; needs A = screen index — call before inc_border
  jsr inc_border             ; new screen scrolled in (vertical)
