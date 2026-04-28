@@ -35,6 +35,7 @@ $(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.sh
 	mkdir -p out
 	rm -f $(IMGFILE)
 	cadius CREATEVOLUME $(IMGFILE) $(VOLNAME) 800KB --quiet
+	cadius CREATEFOLDER $(IMGFILE) /$(VOLNAME)/MISSION1 --quiet
 	cp res/PRODOS out/PRODOS\#FF0000
 	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/PRODOS\#FF0000 --quiet
 	rm out/PRODOS\#FF0000
@@ -42,50 +43,50 @@ $(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.sh
 	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/BASIC.SYSTEM\#FF2000 --quiet
 	rm out/BASIC.SYSTEM\#FF2000
 	python3 tools/packbytes.py pack assets/mission11.shr out/MISSION11.PAK\#C00000
-	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/MISSION11.PAK\#C00000 --quiet
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/MISSION1/ out/MISSION11.PAK\#C00000 --quiet
 	rm out/MISSION11.PAK\#C00000
 	# Use --length 32000 on subsequent bg art because we don't need the palettes and SCBs
 	python3 tools/packbytes.py pack --length 32000 assets/mission12.shr out/MISSION12.PAK\#C00000
-	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/MISSION12.PAK\#C00000 --quiet
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/MISSION1/ out/MISSION12.PAK\#C00000 --quiet
 	rm out/MISSION12.PAK\#C00000
 	python3 tools/packbytes.py pack --length 32000 assets/mission13.shr out/MISSION13.PAK\#C00000
-	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/MISSION13.PAK\#C00000 --quiet
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/MISSION1/ out/MISSION13.PAK\#C00000 --quiet
 	rm out/MISSION13.PAK\#C00000
 	python3 tools/packbytes.py pack --length 32000 assets/mission14.shr out/MISSION14.PAK\#C00000
-	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/MISSION14.PAK\#C00000 --quiet
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/MISSION1/ out/MISSION14.PAK\#C00000 --quiet
 	rm out/MISSION14.PAK\#C00000
 	python3 tools/packbytes.py pack --length 32000 assets/mission15.shr out/MISSION15.PAK\#C00000
-	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/MISSION15.PAK\#C00000 --quiet
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/MISSION1/ out/MISSION15.PAK\#C00000 --quiet
 	rm out/MISSION15.PAK\#C00000
 	python3 tools/packbytes.py pack --length 32000 assets/mission16.shr out/MISSION16.PAK\#C00000
-	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/MISSION16.PAK\#C00000 --quiet
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/MISSION1/ out/MISSION16.PAK\#C00000 --quiet
 	rm out/MISSION16.PAK\#C00000
 	python3 tools/packbytes.py pack --length 32000 assets/mission17.shr out/MISSION17.PAK\#C00000
-	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/MISSION17.PAK\#C00000 --quiet
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/MISSION1/ out/MISSION17.PAK\#C00000 --quiet
 	rm out/MISSION17.PAK\#C00000
 	python3 tools/packbytes.py pack --length 32000 assets/mission18.shr out/MISSION18.PAK\#C00000
-	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/MISSION18.PAK\#C00000 --quiet
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/MISSION1/ out/MISSION18.PAK\#C00000 --quiet
 	rm out/MISSION18.PAK\#C00000
 	python3 tools/packbytes.py pack --length 32000 assets/mission19.shr out/MISSION19.PAK\#C00000
-	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/MISSION19.PAK\#C00000 --quiet
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/MISSION1/ out/MISSION19.PAK\#C00000 --quiet
 	rm out/MISSION19.PAK\#C00000
 	python3 tools/packbytes.py pack --length 32000 assets/mission110.shr out/MISSION110.PAK\#C00000
-	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/MISSION110.PAK\#C00000 --quiet
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/MISSION1/ out/MISSION110.PAK\#C00000 --quiet
 	rm out/MISSION110.PAK\#C00000
 	python3 tools/packbytes.py pack --length 32000 assets/mission111.shr out/MISSION111.PAK\#C00000
-	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/MISSION111.PAK\#C00000 --quiet
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/MISSION1/ out/MISSION111.PAK\#C00000 --quiet
 	rm out/MISSION111.PAK\#C00000
 	python3 tools/packbytes.py pack --length 32000 assets/mission112.shr out/MISSION112.PAK\#C00000
-	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/MISSION112.PAK\#C00000 --quiet
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/MISSION1/ out/MISSION112.PAK\#C00000 --quiet
 	rm out/MISSION112.PAK\#C00000
 	python3 tools/packbytes.py pack --length 32000 assets/mission113.shr out/MISSION113.PAK\#C00000
-	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/MISSION113.PAK\#C00000 --quiet
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/MISSION1/ out/MISSION113.PAK\#C00000 --quiet
 	rm out/MISSION113.PAK\#C00000
 	python3 tools/packbytes.py pack --length 32000 assets/mission114.shr out/MISSION114.PAK\#C00000
-	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/MISSION114.PAK\#C00000 --quiet
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/MISSION1/ out/MISSION114.PAK\#C00000 --quiet
 	rm out/MISSION114.PAK\#C00000
 	cp out/mission1 out/MISSION1\#060000
-	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/MISSION1\#060000 --quiet
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/MISSION1/ out/MISSION1\#060000 --quiet
 	rm out/MISSION1\#060000
 	cp out/game out/GAME\#FF2000
 	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/GAME\#FF2000 --quiet
@@ -105,7 +106,7 @@ $(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.sh
 	# Add NTP music assets
 	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ res/ntpplayer\#060000 --quiet
 	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ assets/audio/TITLE.NTP#000000 --quiet
-	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ assets/audio/MISSION1.NTP\#000000 --quiet
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/MISSION1/ assets/audio/MISSION1.NTP\#000000 --quiet
 	# Add sound effect RAW files
 	cp assets/audio/punch.raw out/PUNCH.RAW\#060000
 	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/PUNCH.RAW\#060000 --quiet

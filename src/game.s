@@ -7245,11 +7245,11 @@ ntp_cref dfb 0
 ntpp_path dfb 17
  asc '/DDIIGS/NTPPLAYER'
 
-m1ntp_path dfb 20
- asc '/DDIIGS/MISSION1.NTP'
+m1ntp_path dfb 29
+ asc '/DDIIGS/MISSION1/MISSION1.NTP'
 
-mission1_path dfb 16
- asc '/DDIIGS/MISSION1'
+mission1_path dfb 25
+ asc '/DDIIGS/MISSION1/MISSION1'
 
 *----------------------------------------------------------
 * scroll_right - Scroll playfield 1 byte (2 pixels) right.
@@ -11493,47 +11493,47 @@ eof_size ds 3          ; 3-byte EOF (file size)
 
 file_size ds 3        ; 24-bit file size (for UnPackBytes)
 
-pathname dfb 21
- asc '/DDIIGS/MISSION11.PAK'
+pathname dfb 30
+ asc '/DDIIGS/MISSION1/MISSION11.PAK'
 
-path12 dfb 21
- asc '/DDIIGS/MISSION12.PAK'
+path12 dfb 30
+ asc '/DDIIGS/MISSION1/MISSION12.PAK'
 
-path13 dfb 21
- asc '/DDIIGS/MISSION13.PAK'
+path13 dfb 30
+ asc '/DDIIGS/MISSION1/MISSION13.PAK'
 
-path14 dfb 21
- asc '/DDIIGS/MISSION14.PAK'
+path14 dfb 30
+ asc '/DDIIGS/MISSION1/MISSION14.PAK'
 
-path15 dfb 21
- asc '/DDIIGS/MISSION15.PAK'
+path15 dfb 30
+ asc '/DDIIGS/MISSION1/MISSION15.PAK'
 
-path16 dfb 21
- asc '/DDIIGS/MISSION16.PAK'
+path16 dfb 30
+ asc '/DDIIGS/MISSION1/MISSION16.PAK'
 
-path17 dfb 21
- asc '/DDIIGS/MISSION17.PAK'
+path17 dfb 30
+ asc '/DDIIGS/MISSION1/MISSION17.PAK'
 
-path18 dfb 21
- asc '/DDIIGS/MISSION18.PAK'
+path18 dfb 30
+ asc '/DDIIGS/MISSION1/MISSION18.PAK'
 
-path19 dfb 21
- asc '/DDIIGS/MISSION19.PAK'
+path19 dfb 30
+ asc '/DDIIGS/MISSION1/MISSION19.PAK'
 
-path110 dfb 22
- asc '/DDIIGS/MISSION110.PAK'
+path110 dfb 31
+ asc '/DDIIGS/MISSION1/MISSION110.PAK'
 
-path111 dfb 22
- asc '/DDIIGS/MISSION111.PAK'
+path111 dfb 31
+ asc '/DDIIGS/MISSION1/MISSION111.PAK'
 
-path112 dfb 22
- asc '/DDIIGS/MISSION112.PAK'
+path112 dfb 31
+ asc '/DDIIGS/MISSION1/MISSION112.PAK'
 
-path113 dfb 22
- asc '/DDIIGS/MISSION113.PAK'
+path113 dfb 31
+ asc '/DDIIGS/MISSION1/MISSION113.PAK'
 
-path114 dfb 22
- asc '/DDIIGS/MISSION114.PAK'
+path114 dfb 31
+ asc '/DDIIGS/MISSION1/MISSION114.PAK'
 
 * master sprite table
 sprite_table
