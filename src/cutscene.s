@@ -13,8 +13,6 @@ NTPgetsongpos           =   NinjaTrackerPlus+18
 NTPsetplayvolume        =   NinjaTrackerPlus+21
 NTPstreamsound          =   NinjaTrackerPlus+24
 
-  jsr toolbox_init
-
   clc
   xce
   rep $30
@@ -111,6 +109,9 @@ OP_PALETTE  EQU 7
 
  mx %00
 run_cutscene
+* Clear the keyboard strobe so any prior keypress (e.g. the
+* ENTER from the title screen) doesn't immediately skip us.
+ ldal $00C010
 * Set up script_ptr to playlist at $02/0000
  lda #$0000
  sta script_ptr
@@ -124,7 +125,7 @@ run_cutscene
  ldy #0
  lda [script_ptr],y    ; read screen pointer (2 bytes)
  bne :has_screen
- jmp :cutscene_done    ; $0000 = end of playlist
+ jmp cutscene_done     ; $0000 = end of playlist
 :has_screen
  sta :screen_addr       ; save screen address
 
@@ -141,6 +142,7 @@ run_cutscene
 
 * Execute opcodes for this screen
 :next_op
+ jsr check_skip         ; key press? -> jmp cutscene_done
  lda :exec_ptr
  sta script_ptr         ; point script_ptr to current opcode
  ldy #0
@@ -207,6 +209,7 @@ run_cutscene
  sta :exec_ptr          ; advance past parameter
 :wait_loop
  jsr wait_for_vbl
+ jsr check_skip         ; key press? -> jmp cutscene_done
  lda :wait_count
  sec
  sbc #1
@@ -345,7 +348,31 @@ run_cutscene
  sta script_ptr
  jmp :next_screen
 
-:cutscene_done
+cutscene_done
+ jsl NTPstop
+* DDII.SYSTEM is assembled in emulation 8-bit mode, so we
+* have to drop the CPU back to that before jumping in (we
+* arrive here from run_cutscene which is mx %00 / native).
+ sec
+ xce
+ sep $30
+ mx %11
+ jmp $1004 ; run the main game
+
+*----------------------------------------------------------
+* check_skip - poll the keyboard. If bit 7 of $C000 is set
+* (a key has been pressed since the last strobe clear),
+* clear the strobe and JMP cutscene_done. Otherwise return.
+* Caller must be in mx %00 (16-bit A).
+*----------------------------------------------------------
+ mx %00
+check_skip
+ ldal $00C000
+ and #$0080            ; bit 7 = "key pressed since last strobe"
+ beq :no_key
+ ldal $00C010          ; clear strobe
+ jmp cutscene_done
+:no_key
  rts
 
 :screen_addr dw 0
@@ -412,96 +439,6 @@ cls
   bpl :clstgt
 
   rts
-
-*----------------------------------------------------------
-* toolbox_init - Start IIgs Toolbox tools
-* (So we can have DrawCString)
-* TL, MT, MM, then allocate DP for QD and start QD.
-*----------------------------------------------------------
-errorspot
-  hex 00000000
-  hex 00000000
-
-toolbox_init
- clc
- xce                   ; native mode
- rep $30               ; 16-bit A, X/Y
-
-* _TLStartup
- ldx #$0201
- jsl $E10000
- bcs errorspot
-
-* _MTStartup
- ldx #$0203
- jsl $E10000
- bcs errorspot+2
-
-* _GetNewID
- pha
- pea $1000
- ldx #$2003
- jsl $E10000
- pla
- sta myID
-
-* Allocate ourselves
- pha                   ; result space (handle high)
- pha                   ; result space (handle low)
- pea $0000             ; size high word
- pea $2000             ; size low word (8KB)
- lda myID
- pha                   ; userID
- pea $C003             ; attributes (locked, bank 0, not page-aligned)
- pea $0000
- pea $2000             ; preferred address ($8000-$FFFF, but ignored if page-aligned)
- ldx #$0902            ; _NewHandle
- jsl $E10000
- bcs errorspot+3
- pla                   ; handle low word
- pla                   ; handle high word
-
-* Allocate 3 pages of direct page for QuickDraw II
- pha                   ; result space (handle high)
- pha                   ; result space (handle low)
- pea $0000             ; size high word
- pea $0300             ; size low word (3 pages)
- lda myID
- pha                   ; userID
- pea $C003             ; attributes (locked, bank 0, not page-aligned)
- pea $0000
- pea $8000             ; preferred address ($8000-$FFFF, but ignored if page-aligned)
- ldx #$0902            ; _NewHandle
- jsl $E10000
- bcs errorspot+4
- pla                   ; handle low word
- sta $00
- pla                   ; handle high word
- sta $02
- lda [$00]             ; dereference handle to get DP address
- sta qdDP
-
-* _QDStartup
-* NOTE we are hardwiring this buffer address
-* but we did request it and receive it already
- pea $8000             ; dpAddress (still in A from above)
- pea $0000             ; master SCB (320 mode)
- pea $00A0             ; max width (160 bytes)
- lda myID
- pha                   ; userID
- ldx #$0204            ; _QDStartup
- jsl $E10000
- bcs errorspot2
-
- sec
- xce                   ; back to emulation mode
- rts
-
-myID ds 2
-qdDP ds 2
-
-errorspot2
-  hex 00000000
 
 *----------------------------------------------------------
 * half_sec - Delay for 30 VBLs (~0.5 seconds at 60Hz)

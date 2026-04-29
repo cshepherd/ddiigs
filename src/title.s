@@ -13,10 +13,14 @@ NTPgetsongpos           =   NinjaTrackerPlus+18
 NTPsetplayvolume        =   NinjaTrackerPlus+21
 NTPstreamsound          =   NinjaTrackerPlus+24
 
+  lda $1100
+  bne :already
   jsr toolbox_init
+  inc $1100
 
 * Load CCC.SHR to bank $02 starting at $02/2000
 * NOTE ccc.pak (PackBytes) is 32309 bytes, so no sense compressing it
+:already
   jsr load_ccc
 
   clc
@@ -292,11 +296,13 @@ NTPstreamsound          =   NinjaTrackerPlus+24
   cpx #$7d00
   bne :cls
 
+  jsl NTPstop
+
   sec
   xce
   sep $30
 
-  rts
+  jmp $1002 ; jump to cutscene
 
 s_pressany ASC 'Press any key to start',00
 

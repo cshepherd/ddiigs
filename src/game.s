@@ -19,10 +19,13 @@ NTPstreamsound          =   NinjaTrackerPlus+24
 ]RDBUF = $8600         ; 4KB read buffer
 
 * Clear text screen so diagnostic prints start on a fresh page.
+ sec
+ xce
+ sep $20
  jsr $FC58
 
 * Initialize IIgs Toolbox
- jsr toolbox_init
+; jsr toolbox_init
 
 * Enable SHR shadowing (bank $01 -> $E1) before loading
  clc
@@ -399,8 +402,10 @@ run_script
 
  cmp #OP_END
  bne :not_end
-* Stop the boss/level music and start the COMPLETE fanfare
-* (loaded into bank $15 by init). NTP routines need native+16.
+* Stop the boss/level music and start the COMPLETE fanfare in
+* play-once mode (NTP zeros the playing flag via stop_playing
+* at end of pattern list when play_song_once != 0). Spin until
+* it stops, then fade the SHR palette to black.
  clc
  xce
  rep $30
@@ -409,15 +414,26 @@ run_script
  ldx #$00
  txa
  jsl NTPprepare
- lda #$0000
+ lda #$0001            ; non-zero -> play once, then auto-stop
  jsl NTPplay
+
+:wait_song
+ jsl NTPgetsongpos     ; X=songinfo low addr, Y=NTP bank
+ stx $F0               ; long pointer scratch (no concurrent
+ sty $F2               ; users while the script is blocked here)
+ ldy #0
+ lda [$F0],y           ; songinfo[0..1] = playing flag
+ bne :wait_song
+ jsl NTPstop           ; full stop
+
+ jsr fade_palette_to_black
  sec
  xce
  sep $30
  mx %11
  lda #SCRIPT_DONE
  sta script_state
-:rs_rts rts
+:rs_rts jmp $1000
 
 :not_end
  cmp #OP_SCREEN
@@ -6376,6 +6392,70 @@ unpack_bank dfb 0      ; target bank for unpacking
 unpack_offset hex 0020   ; in-bank offset to unpack at (default $2000)
 unpack_size hex ffff     ; size of unpacked data (set by UnPackBytes)
 unpack_addr hex 0020E100 ; unpacking destination address (bank/offset)
+
+*----------------------------------------------------------
+* fade_palette_to_black - fade SHR palette 0 ($E19E00, 16
+* words / 32 bytes) to $0000 over 15 frames. Each frame
+* subtracts 1 from each non-zero nibble (R/G/B) of every
+* palette word. Caller must be in native + 16-bit on entry;
+* mode is preserved on exit. Other palettes (1-15) are
+* already black at startup so we don't touch them.
+*----------------------------------------------------------
+ mx %00
+fade_palette_to_black
+ lda #15
+ sta fade_step
+:step_loop
+* Pace at one step per VBL. Inline to stay in native mode
+* (the engine's wait_for_vbl assumes emulation-mode 8-bit).
+ sep $20
+ mx %10
+:wvbl1 ldal $00C019
+ bmi :wvbl1
+:wvbl2 ldal $00C019
+ bpl :wvbl2
+ rep $20
+ mx %00
+
+ ldx #$0000
+:word_loop
+ ldal $E19E00,x
+ sta fade_tmp
+* Decrement B nibble (bits 0-3) if non-zero.
+ and #$000F
+ beq :b_done
+ dec fade_tmp
+:b_done
+* Decrement G nibble (bits 4-7) if non-zero.
+ lda fade_tmp
+ and #$00F0
+ beq :g_done
+ lda fade_tmp
+ sec
+ sbc #$0010
+ sta fade_tmp
+:g_done
+* Decrement R nibble (bits 8-11) if non-zero.
+ lda fade_tmp
+ and #$0F00
+ beq :r_done
+ lda fade_tmp
+ sec
+ sbc #$0100
+ sta fade_tmp
+:r_done
+ lda fade_tmp
+ stal $E19E00,x
+ inx
+ inx
+ cpx #$0020           ; 16 entries x 2 bytes = palette 0 only
+ bne :word_loop
+ dec fade_step
+ bne :step_loop
+ rts
+
+fade_step dw 0
+fade_tmp dw 0
 
 *----------------------------------------------------------
 * copy_50_to_01 - Copy 32KB from $18/2000 to $01/2000
