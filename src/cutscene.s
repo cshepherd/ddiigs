@@ -2,6 +2,17 @@
 
   ORG $2000
 
+NinjaTrackerPlus        =   $120000
+NTPprepare              =   NinjaTrackerPlus
+NTPplay                 =   NinjaTrackerPlus+3
+NTPstop                 =   NinjaTrackerPlus+6
+NTPgetvuptr             =   NinjaTrackerPlus+9
+NTPgete8ptr             =   NinjaTrackerPlus+12
+NTPforcesongpos         =   NinjaTrackerPlus+15
+NTPgetsongpos           =   NinjaTrackerPlus+18
+NTPsetplayvolume        =   NinjaTrackerPlus+21
+NTPstreamsound          =   NinjaTrackerPlus+24
+
   jsr toolbox_init
 
   clc
@@ -29,13 +40,54 @@
   stal $e0c034
   rep $20
 
-* Load cutscene1 data to bank $02
+* Switch to emulation mode for ProDOS calls
   sec
-  xce                   ; emulation mode for ProDOS
+  xce
+
+* Load CUTSCENE1 script data to bank $02
+  lda #<cs_path
+  sta cs_open+1
+  lda #>cs_path
+  sta cs_open+2
+  lda #$02
+  sta cs_bank
+  stz cs_dest
+  stz cs_dest+1
   jsr load_cutscene1
+
+* Load ntpplayer code to bank $12 starting at $12/0000
+  lda #<ntpplayer_path
+  sta cs_open+1
+  lda #>ntpplayer_path
+  sta cs_open+2
+  lda #$12
+  sta cs_bank
+  stz cs_dest
+  stz cs_dest+1
+  jsr load_cutscene1
+
+* Load CUTSCENE.NTP music data to bank $13 starting at $13/0000
+  lda #<cutscenentp_path
+  sta cs_open+1
+  lda #>cutscenentp_path
+  sta cs_open+2
+  lda #$13
+  sta cs_bank
+  stz cs_dest
+  stz cs_dest+1
+  jsr load_cutscene1
+
   clc
   xce                   ; back to native
   rep $30
+
+  ldy #$13
+  ldx #$00
+  txa
+  jsl NTPprepare
+
+  lda #00
+  jsl NTPplay
 
 * Execute cutscene script from bank $02
   jsr run_cutscene
@@ -854,6 +906,10 @@ fadeBlack
 * Must be called in emulation mode.
 *----------------------------------------------------------
  mx %11
+* Caller sets cs_open's path pointer (+1/+2), cs_bank, and
+* cs_dest before calling. (Originally hardcoded for CUTSCENE1
+* to bank $02 — generalised so the same loader handles
+* ntpplayer and CUTSCENE.NTP loads too.)
 load_cutscene1
  jsr $BF00
  dfb $C8              ; OPEN
@@ -862,12 +918,6 @@ load_cutscene1
  lda cs_oref
  sta cs_rref
  sta cs_cref
-
- lda #$00
- sta cs_dest
- sta cs_dest+1         ; destination starts at $xx/0000
- lda #$02
- sta cs_bank
 
 :readlp
  jsr $BF00
@@ -949,3 +999,9 @@ cs_cref dfb 0
 
 cs_path dfb 17
  asc '/DDIIGS/CUTSCENE1'
+
+ntpplayer_path dfb 17
+ asc '/DDIIGS/ntpplayer'
+
+cutscenentp_path dfb 20
+ asc '/DDIIGS/CUTSCENE.NTP'

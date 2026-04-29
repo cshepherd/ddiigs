@@ -4,6 +4,17 @@
 *----------------------------------------------------------
     org $2000
 
+NinjaTrackerPlus        =   $120000
+NTPprepare              =   NinjaTrackerPlus
+NTPplay                 =   NinjaTrackerPlus+3
+NTPstop                 =   NinjaTrackerPlus+6
+NTPgetvuptr             =   NinjaTrackerPlus+9
+NTPgete8ptr             =   NinjaTrackerPlus+12
+NTPforcesongpos         =   NinjaTrackerPlus+15
+NTPgetsongpos           =   NinjaTrackerPlus+18
+NTPsetplayvolume        =   NinjaTrackerPlus+21
+NTPstreamsound          =   NinjaTrackerPlus+24
+
 ]IOBUF = $8200        ; 1024-byte ProDOS I/O buffer (page-aligned)
 ]RDBUF = $8600         ; 4KB read buffer
 
@@ -43,8 +54,41 @@
 * Sound system: silence DOC, then install every sound from
 * the table (load each from disk via bank $11 scratch, upload
 * to its DOC RAM slot).
- jsr init_doc
+; jsr init_doc
  jsr sound_install_all
+
+* Load NTP player code to bank $12 starting at $12/0000
+ lda #<ntpplayer_path
+ sta file_open+1
+ lda #>ntpplayer_path
+ sta file_open+2
+ lda #$12
+ sta file_bank
+ stz file_dest
+ stz file_dest+1
+ jsr load_file
+
+* Load MISSION1.NTP to bank $13 starting at $13/0000
+ lda #<m1ntp_path
+ sta file_open+1
+ lda #>m1ntp_path
+ sta file_open+2
+ lda #$13
+ sta file_bank
+ stz file_dest
+ stz file_dest+1
+ jsr load_file
+
+* Load BOSS.NTP to bank $14 starting at $14/0000
+ lda #<bossntp_path
+ sta file_open+1
+ lda #>bossntp_path
+ sta file_open+2
+ lda #$14
+ sta file_bank
+ stz file_dest
+ stz file_dest+1
+ jsr load_file
 
 * Load MISSION11.PAK -> $17, unpack to $03 (screen 0)
  lda #$03
@@ -221,6 +265,20 @@ string5 ASC 'PLAYER 1: 0000000       PLAYER 2: 0000000',00
 over1
 * Initial draw of all sprites
  jsr draw_all
+
+ clc
+ xce
+ rep $30
+ ldy #$13
+ ldx #$00
+ txa
+ jsl NTPprepare
+
+ lda #00
+ jsl NTPplay
+ sec
+ xce
+ sep $30
 
 *==========================================================
 * Main game loop
@@ -7180,12 +7238,14 @@ init_doc
  lda $C03D
  bpl :drain
 
-* Enable 1 oscillator (write $02 = count*2 to $E1)
+* Enable 9 oscillators (write $12 = count*2 to $E1) so we
+* can address osc 8 — the chip can't skip lower indices.
+* Lowering osc-update rate to 894886/(9+2) = ~81 kHz/osc.
  jsr doc_wait
  lda #$E1
  sta $C03E
  jsr doc_wait
- lda #$02
+ lda #$12
  sta $C03D
 
  plp
@@ -7215,7 +7275,10 @@ doc_wait
 * Wavetable pointer (high byte of base addr) must be aligned
 * to wavetable size: 4K table → ptr % $10 == 0; 8K → % $20.
 *
-* All sounds use oscillator 0; SFX are mutually exclusive.
+* DOC RAM base for our sounds is $1000 ($0000-$0FFF reserved).
+* All sounds use oscillator 8; SFX are mutually exclusive.
+* init_doc enables 9 oscillators ($E1 = $12) so osc 8 is
+* reachable — per-osc rate becomes ~81 kHz.
 * Bank $11 is reused as scratch for each sound install.
 *----------------------------------------------------------
 
@@ -7240,31 +7303,31 @@ sound_table
  dw sound_finger
 
 sound_punch
- dfb $00            ; doc_ptr = $00 → DOC RAM $0000
+ dfb $60            ; doc_ptr = $60 → DOC RAM $6000
  dfb $27            ; wt_size: 4K wavetable + every-byte res
- dw $00DC           ; fc (~8 kHz: scale inversely w/ wt size)
+ dw $0326           ; fc (~8 kHz at OSC=9, RES=4)
  dw $03C6           ; length 966
  dw $0C3A           ; zfill 4096-966 = 3130
- dfb 17
- asc '/DDIIGS/PUNCH.RAW'
+ dfb 21
+ asc '/DDIIGS/SFX/PUNCH.RAW'
 
 sound_punchlanded
- dfb $10            ; doc_ptr = $10 → DOC RAM $1000
+ dfb $70            ; doc_ptr = $70 → DOC RAM $7000
  dfb $27            ; wt_size: 4K wavetable + every-byte res
- dw $00DC           ; fc (~8 kHz)
+ dw $0326           ; fc (~8 kHz at OSC=9, RES=4)
  dw $0474           ; length 1140
  dw $0B8C           ; zfill 4096-1140 = 2956
- dfb 23
- asc '/DDIIGS/PUNCHLANDED.RAW'
+ dfb 27
+ asc '/DDIIGS/SFX/PUNCHLANDED.RAW'
 
 sound_finger
- dfb $20            ; doc_ptr = $20 → DOC RAM $2000
+ dfb $40            ; doc_ptr = $40 → DOC RAM $4000 (8K-aligned)
  dfb $2F            ; wt_size: 8K wavetable + every-byte res
- dw $006E           ; fc (~8 kHz: scale inversely w/ wt size)
+ dw $0193           ; fc (~8 kHz at OSC=9, RES=5)
  dw $1650           ; length 5712
  dw $09B0           ; zfill 8192-5712 = 2480
- dfb 18
- asc '/DDIIGS/FINGER.RAW'
+ dfb 22
+ asc '/DDIIGS/SFX/FINGER.RAW'
 
 sound_len   ds 2
 sound_zfill ds 2
@@ -7432,9 +7495,13 @@ sound_play
  lda #$2F
  sta $C03C
 
-* Halt osc 0 before re-programming
+* All per-osc register accesses target oscillator 8 (regs
+* at base+8: $08 freq-lo, $28 freq-hi, $48 vol, $88 wt-ptr,
+* $C8 wt-size, $A8 control).
+
+* Halt osc 8 before re-programming
  jsr doc_wait
- lda #$A0
+ lda #$A8
  sta $C03E
  jsr doc_wait
  lda #$01
@@ -7442,7 +7509,7 @@ sound_play
 
 * Freq Lo
  jsr doc_wait
- lda #$00
+ lda #$08
  sta $C03E
  jsr doc_wait
  ldy #SR_FC
@@ -7451,7 +7518,7 @@ sound_play
 
 * Freq Hi
  jsr doc_wait
- lda #$20
+ lda #$28
  sta $C03E
  jsr doc_wait
  ldy #SR_FC+1
@@ -7460,7 +7527,7 @@ sound_play
 
 * Per-osc volume = $FF
  jsr doc_wait
- lda #$40
+ lda #$48
  sta $C03E
  jsr doc_wait
  lda #$FF
@@ -7468,7 +7535,7 @@ sound_play
 
 * Wavetable Pointer
  jsr doc_wait
- lda #$80
+ lda #$88
  sta $C03E
  jsr doc_wait
  ldy #SR_DOC_PTR
@@ -7477,7 +7544,7 @@ sound_play
 
 * Wavetable Size
  jsr doc_wait
- lda #$C0
+ lda #$C8
  sta $C03E
  jsr doc_wait
  ldy #SR_WT_SIZE
@@ -7487,7 +7554,7 @@ sound_play
 * Start: Control = $02 → one-shot, IRQ off, run
 *   bit 0=halt, bits 2-1=mode (01=OneShot), bit 3=IRQ
  jsr doc_wait
- lda #$A0
+ lda #$A8
  sta $C03E
  jsr doc_wait
  lda #$02
@@ -7597,6 +7664,15 @@ file_cref dfb 0
 
 mission1_path dfb 25
  asc '/DDIIGS/MISSION1/MISSION1'
+
+ntpplayer_path dfb 17
+ asc '/DDIIGS/ntpplayer'
+
+m1ntp_path dfb 29
+ asc '/DDIIGS/MISSION1/MISSION1.NTP'
+
+bossntp_path dfb 16
+ asc '/DDIIGS/BOSS.NTP'
 
 
 *----------------------------------------------------------

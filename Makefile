@@ -36,6 +36,7 @@ $(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.sh
 	rm -f $(IMGFILE)
 	cadius CREATEVOLUME $(IMGFILE) $(VOLNAME) 800KB --quiet
 	cadius CREATEFOLDER $(IMGFILE) /$(VOLNAME)/MISSION1 --quiet
+	cadius CREATEFOLDER $(IMGFILE) /$(VOLNAME)/SFX --quiet
 	cp res/PRODOS out/PRODOS\#FF0000
 	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/PRODOS\#FF0000 --quiet
 	rm out/PRODOS\#FF0000
@@ -106,19 +107,21 @@ $(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.sh
 	# Add NTP music assets
 	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ res/ntpplayer\#060000 --quiet
 	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ assets/audio/TITLE.NTP#000000 --quiet
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ assets/audio/BOSS.NTP#000000 --quiet
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ assets/audio/CUTSCENE.NTP#000000 --quiet
 	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/MISSION1/ assets/audio/MISSION1.NTP\#000000 --quiet
-	# Add sound effect RAW files
+	# Add sound effect RAW files (in /SFX/ subfolder)
 	cp assets/audio/punch.raw out/PUNCH.RAW\#060000
-	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/PUNCH.RAW\#060000 --quiet
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/SFX/ out/PUNCH.RAW\#060000 --quiet
 	rm out/PUNCH.RAW\#060000
 	cp assets/audio/finger.raw out/FINGER.RAW\#060000
-	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/FINGER.RAW\#060000 --quiet
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/SFX/ out/FINGER.RAW\#060000 --quiet
 	rm out/FINGER.RAW\#060000
 	cp assets/audio/fall.raw out/FALL.RAW\#060000
-	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/FALL.RAW\#060000 --quiet
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/SFX/ out/FALL.RAW\#060000 --quiet
 	rm out/FALL.RAW\#060000
 	cp assets/audio/punchlanded.raw out/PUNCHLANDED.RAW\#060000
-	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/PUNCHLANDED.RAW\#060000 --quiet
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/SFX/ out/PUNCHLANDED.RAW\#060000 --quiet
 	rm out/PUNCHLANDED.RAW\#060000
 	cadius CATALOG $(IMGFILE)
 

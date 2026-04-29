@@ -2,7 +2,7 @@
 
   ORG $2000
 
-NinjaTrackerPlus        =   $0F0000
+NinjaTrackerPlus        =   $120000
 NTPprepare              =   NinjaTrackerPlus
 NTPplay                 =   NinjaTrackerPlus+3
 NTPstop                 =   NinjaTrackerPlus+6
@@ -62,7 +62,7 @@ NTPstreamsound          =   NinjaTrackerPlus+24
   xce
   sep $30
 
-* Load NTPPLAYER to bank $0F starting at $0F/0000
+* Load NTPPLAYER to bank $12 starting at $12/0000
   jsr load_ntpplayer
 
 * Load TITLE.NTP to banks $10-$12 starting at $10/0000
@@ -1388,7 +1388,7 @@ load_ccc
 
 *----------------------------------------------------------
 * load_ntpplayer - Load NTPPLAYER file from disk via ProDOS 8
-* in 4KB chunks to ]RDBUF, copying each chunk to $0F/xxxx.
+* in 4KB chunks to ]RDBUF, copying each chunk to $12/xxxx.
 *----------------------------------------------------------
  mx %11                ; emulation mode for ProDOS 8 calls
 load_ntpplayer
@@ -1402,8 +1402,8 @@ load_ntpplayer
 
  lda #$00
  sta t_dest
- sta t_dest+1          ; destination starts at $0F/0000
- lda #$0F
+ sta t_dest+1          ; destination starts at $12/0000
+ lda #$12
  sta t_bank
 
 :readlp
