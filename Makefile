@@ -106,10 +106,33 @@ $(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.sh
 	rm out/CCC.SHR\#C10000
 	# Add NTP music assets
 	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ res/ntpplayer\#060000 --quiet
-	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ assets/audio/TITLE.NTP#000000 --quiet
-	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ assets/audio/BOSS.NTP#000000 --quiet
-	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ assets/audio/CUTSCENE.NTP#000000 --quiet
-	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/MISSION1/ assets/audio/MISSION1.NTP\#000000 --quiet
+	# TITLE.NTP is 68308 bytes — exceeds one bank, so split it
+	# into three 32 KB-or-smaller chunks at half-bank boundaries
+	# and pack each. title.s reconstructs the original layout by
+	# unpacking part 1 to $10/$0000, part 2 to $10/$8000, and
+	# part 3 to $11/$0000 (each call stays within one bank, so
+	# we don't need _UnPackBytes to cross bank boundaries).
+	python3 -c "d=open('assets/audio/TITLE.NTP#000000','rb').read(); open('out/title_part1.bin','wb').write(d[:32768]); open('out/title_part2.bin','wb').write(d[32768:65536]); open('out/title_part3.bin','wb').write(d[65536:])"
+	python3 tools/packbytes.py pack out/title_part1.bin out/TITLE.NTP1.PAK\#C00000
+	python3 tools/packbytes.py pack out/title_part2.bin out/TITLE.NTP2.PAK\#C00000
+	python3 tools/packbytes.py pack out/title_part3.bin out/TITLE.NTP3.PAK\#C00000
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/TITLE.NTP1.PAK\#C00000 --quiet
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/TITLE.NTP2.PAK\#C00000 --quiet
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/TITLE.NTP3.PAK\#C00000 --quiet
+	rm out/title_part1.bin out/title_part2.bin out/title_part3.bin out/TITLE.NTP1.PAK\#C00000 out/TITLE.NTP2.PAK\#C00000 out/TITLE.NTP3.PAK\#C00000
+	python3 tools/packbytes.py pack assets/audio/CUTSCENE.NTP\#000000 out/CUTSCENENTP.PAK\#C00000
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/CUTSCENENTP.PAK\#C00000 --quiet
+	rm out/CUTSCENENTP.PAK\#C00000
+	# In-game music: pre-pack with PackBytes — the engine loads
+	# them through load_and_unpack the same way it does SHR
+	# backgrounds. (Filenames trimmed to fit the ProDOS 15-char
+	# limit: MISSION1NTP.PAK instead of MISSION1.NTP.PAK.)
+	python3 tools/packbytes.py pack assets/audio/MISSION1.NTP\#000000 out/MISSION1NTP.PAK\#C00000
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/MISSION1/ out/MISSION1NTP.PAK\#C00000 --quiet
+	rm out/MISSION1NTP.PAK\#C00000
+	python3 tools/packbytes.py pack assets/audio/BOSS.NTP\#000000 out/BOSS.NTP.PAK\#C00000
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/BOSS.NTP.PAK\#C00000 --quiet
+	rm out/BOSS.NTP.PAK\#C00000
 	# Add sound effect RAW files (in /SFX/ subfolder)
 	cp assets/audio/punch.raw out/PUNCH.RAW\#060000
 	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/SFX/ out/PUNCH.RAW\#060000 --quiet

@@ -66,16 +66,14 @@ NTPstreamsound          =   NinjaTrackerPlus+24
   stz cs_dest+1
   jsr load_cutscene1
 
-* Load CUTSCENE.NTP music data to bank $13 starting at $13/0000
+* Load CUTSCENE.NTP.PAK -> $17/$2000, unpack to $13/0000
   lda #<cutscenentp_path
   sta cs_open+1
   lda #>cutscenentp_path
   sta cs_open+2
   lda #$13
-  sta cs_bank
-  stz cs_dest
-  stz cs_dest+1
-  jsr load_cutscene1
+  sta cs_unpack_bank
+  jsr cs_load_and_unpack
 
   clc
   xce                   ; back to native
@@ -978,6 +976,94 @@ cs_copy_chunk
  rts
 
 *----------------------------------------------------------
+* cs_load_and_unpack - Load a .PAK file to bank $17/$2000
+* via ProDOS 8, then call _UnPackBytes to decompress it to
+* cs_unpack_bank/$0000.
+* Caller must set cs_open's pathname pointer (+1/+2) and
+* cs_unpack_bank before calling. Emulation mode on entry.
+*----------------------------------------------------------
+ mx %11
+cs_load_and_unpack
+ jsr $BF00
+ dfb $C8              ; OPEN
+ da cs_open
+ bcc :ok
+ jmp :err
+:ok
+ lda cs_oref
+ sta cs_rref
+ sta cs_cref
+ sta cs_eofref
+
+* Capture file size for the UnPackBytes source-length param.
+ jsr $BF00
+ dfb $D1              ; GET_EOF
+ da cs_get_eof
+ lda cs_eof_size
+ sta cs_file_size
+ lda cs_eof_size+1
+ sta cs_file_size+1
+
+* Read PAK into bank $17 starting at $2000, 4KB chunks.
+ lda #$00
+ sta cs_dest
+ lda #$20
+ sta cs_dest+1
+ lda #$17
+ sta cs_bank
+
+:readlp
+ jsr $BF00
+ dfb $CA              ; READ
+ da cs_read
+ bcs :close
+ jsr cs_copy_chunk
+ lda cs_dest+1
+ clc
+ adc #$10
+ sta cs_dest+1
+ bcc :readlp
+ lda #$00
+ sta cs_dest+1
+ inc cs_bank
+ bra :readlp
+
+:close
+ jsr $BF00
+ dfb $CC              ; CLOSE
+ da cs_close
+
+* Unpack from $17/$2000 to cs_unpack_bank/$0000.
+ clc
+ xce                   ; native mode
+ rep $30
+
+ lda #$ffff
+ sta cs_unpack_size
+ stz cs_unpack_addr    ; dest addr low word = $0000
+
+ pha                   ; result space
+ pea $0017             ; src bank (high word of long ptr)
+ pea $2000             ; src addr (low word)
+ lda cs_file_size
+ pha                   ; src length (low word)
+ lda cs_unpack_bank
+ and #$00FF
+ sta cs_unpack_addr+2  ; dest bank byte
+ pea #0000             ; high word of long ptr to dest
+ pea #cs_unpack_addr   ; low word of long ptr to dest
+ pea #0000             ; high word of long ptr to size
+ pea #cs_unpack_size   ; low word of long ptr to size
+
+ ldx #$2703            ; _UnPackBytes
+ jsl $E10000
+ pla                   ; discard result
+
+ sec
+ xce                   ; back to emulation
+:err rts
+
+*----------------------------------------------------------
 * ProDOS 8 parameter blocks
 *----------------------------------------------------------
 cs_dest ds 2
@@ -1003,5 +1089,19 @@ cs_path dfb 17
 ntpplayer_path dfb 17
  asc '/DDIIGS/ntpplayer'
 
-cutscenentp_path dfb 20
- asc '/DDIIGS/CUTSCENE.NTP'
+* CUTSCENENTP.PAK rather than CUTSCENE.NTP.PAK because ProDOS
+* limits each filename component to 15 chars.
+cutscenentp_path dfb 23
+ asc '/DDIIGS/CUTSCENENTP.PAK'
+
+*----------------------------------------------------------
+* Extra ProDOS / UnPackBytes scratch for cs_load_and_unpack.
+*----------------------------------------------------------
+cs_get_eof dfb 2       ; param count
+cs_eofref  dfb 0
+cs_eof_size ds 3
+
+cs_file_size  ds 3     ; file size captured from GET_EOF
+cs_unpack_bank dfb 0
+cs_unpack_size hex ffff
+cs_unpack_addr hex 00000000  ; long pointer (set per call)

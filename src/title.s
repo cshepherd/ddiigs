@@ -65,8 +65,44 @@ NTPstreamsound          =   NinjaTrackerPlus+24
 * Load NTPPLAYER to bank $12 starting at $12/0000
   jsr load_ntpplayer
 
-* Load TITLE.NTP to banks $10-$12 starting at $10/0000
-  jsr load_titlentp
+* TITLE.NTP is 68308 bytes. _UnPackBytes correctly crosses
+* bank boundaries on its destination, but its buffer-size
+* counter is 16-bit (max $FFFF = 65535), so a single-call
+* unpack of >64 KB stops short. Ship the music as three
+* PackBytes chunks and unpack each into its own slot:
+*   part 1 (32 KB) -> $10/$0000
+*   part 2 (32 KB) -> $10/$8000
+*   part 3 (rem.)  -> $11/$0000
+  lda #<titlentp1_path
+  sta t2_open+1
+  lda #>titlentp1_path
+  sta t2_open+2
+  lda #$10
+  sta t_unpack_bank
+  stz t_unpack_offset
+  stz t_unpack_offset+1
+  jsr load_titlentp_pak
+
+  lda #<titlentp2_path
+  sta t2_open+1
+  lda #>titlentp2_path
+  sta t2_open+2
+  lda #$10
+  sta t_unpack_bank
+  stz t_unpack_offset
+  lda #$80
+  sta t_unpack_offset+1
+  jsr load_titlentp_pak
+
+  lda #<titlentp3_path
+  sta t2_open+1
+  lda #>titlentp3_path
+  sta t2_open+2
+  lda #$11
+  sta t_unpack_bank
+  stz t_unpack_offset
+  stz t_unpack_offset+1
+  jsr load_titlentp_pak
   
   lda #$C1
   sta $E0C029
@@ -1254,51 +1290,94 @@ load_ntpplayer
 :err rts
 
 *----------------------------------------------------------
-* load_titlentp - Load TITLE.NTP to banks $10+ starting
-* at $10/0000. File spans multiple banks; bank increments
-* when address wraps past $FFFF.
+* load_titlentp_pak - Load a TITLE.NTPx.PAK file to bank
+* $17/$2000 via ProDOS, then call _UnPackBytes to decompress
+* it to t_unpack_bank/$0000.
+* Caller must set t2_open's pathname pointer (+1/+2) and
+* t_unpack_bank before calling. Emulation mode on entry.
 *----------------------------------------------------------
-load_titlentp
+load_titlentp_pak
  jsr $BF00
  dfb $C8              ; OPEN
  da t2_open
- bcs :err
+ bcc :ok
+ jmp :err
+:ok
  lda t2_oref
  sta t2_rref
  sta t2_cref
+ sta t_eofref
 
+* Capture file size for the UnPackBytes source-length param.
+ jsr $BF00
+ dfb $D1              ; GET_EOF
+ da t_get_eof
+ lda t_eof_size
+ sta t_file_size
+ lda t_eof_size+1
+ sta t_file_size+1
+
+* Read PAK into bank $17 starting at $2000, 4KB chunks.
  lda #$00
  sta t_dest
- sta t_dest+1          ; destination starts at $xx/0000
- lda #$10
- sta t_bank            ; starting bank
+ lda #$20
+ sta t_dest+1
+ lda #$17
+ sta t_bank
 
 :readlp
  jsr $BF00
  dfb $CA              ; READ
  da t2_read
  bcs :close
-
  jsr copy_chunk_bank
-
-* Advance destination by $1000
  lda t_dest+1
  clc
  adc #$10
  sta t_dest+1
- bcc :readlp           ; no wrap, continue
-* Address wrapped past $FFFF — reset to $0000, next bank
+ bcc :readlp
  lda #$00
  sta t_dest+1
  inc t_bank
  bra :readlp
 
 :close
- php
  jsr $BF00
  dfb $CC              ; CLOSE
  da t2_close
- plp
+
+* Unpack from $17/$2000 to t_unpack_bank/t_unpack_offset.
+ clc
+ xce                   ; native mode
+ rep $30
+
+ lda #$ffff
+ sta t_unpack_size
+ lda t_unpack_offset
+ sta t_unpack_addr     ; dest addr low word
+
+ pha                   ; result space
+ pea $0017             ; src bank
+ pea $2000             ; src addr
+ lda t_file_size
+ pha                   ; src length (low word)
+ lda t_unpack_bank
+ and #$00FF
+ sta t_unpack_addr+2   ; dest bank byte
+ pea #0000
+ pea #t_unpack_addr
+ pea #0000
+ pea #t_unpack_size
+
+ ldx #$2703            ; _UnPackBytes
+ jsl $E10000
+ pla                   ; discard result
+
+ sec
+ xce                   ; back to emulation
+ mx %11
+ rts
+
 :err rts
 
 *----------------------------------------------------------
@@ -1356,7 +1435,7 @@ t_path dfb 17
  asc '/DDIIGS/NTPPLAYER'
 
 t2_open dfb 3          ; param count
- da t2_path            ; pathname pointer
+ da titlentp1_path     ; pathname pointer (overwritten per call)
  da ]IOBUF             ; I/O buffer
 t2_oref dfb 0          ; ref_num
 
@@ -1369,8 +1448,28 @@ t2_rref dfb 0          ; ref_num
 t2_close dfb 1         ; param count
 t2_cref dfb 0          ; ref_num
 
-t2_path dfb 17
- asc '/DDIIGS/TITLE.NTP'
+* TITLE.NTPx.PAK is the convention for the 3-part split (each
+* filename component must fit ProDOS 8's 15-char limit).
+titlentp1_path dfb 22
+ asc '/DDIIGS/TITLE.NTP1.PAK'
+titlentp2_path dfb 22
+ asc '/DDIIGS/TITLE.NTP2.PAK'
+titlentp3_path dfb 22
+ asc '/DDIIGS/TITLE.NTP3.PAK'
+
+*----------------------------------------------------------
+* GET_EOF + UnPackBytes scratch for load_titlentp_pak.
+*----------------------------------------------------------
+t_get_eof dfb 2        ; param count
+t_eofref  dfb 0
+t_eof_size ds 3
+
+t_file_size  ds 3
+t_unpack_bank dfb 0
+t_unpack_offset hex 0000        ; in-bank target offset
+t_unpack_size hex ffff          ; 16-bit buffer-size cap (ROM
+                                ; reads only the low word)
+t_unpack_addr hex 00000000      ; long pointer (set per call)
 
 ccc_open dfb 3
  da ccc_path

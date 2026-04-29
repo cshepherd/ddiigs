@@ -68,29 +68,43 @@ NTPstreamsound          =   NinjaTrackerPlus+24
  stz file_dest+1
  jsr load_file
 
-* Load MISSION1.NTP to bank $13 starting at $13/0000
+* NTP music data is pre-packed with PackBytes. Switch
+* unpack_offset to $0000 so each .PAK lands at bank/$0000
+* (matching the layout NTPprepare expects), then restore to
+* $2000 below for the SHR background loads.
+ stz unpack_offset
+ stz unpack_offset+1
+
+* Load MISSION1NTP.PAK -> $17, unpack to $13/0000
  lda #<m1ntp_path
- sta file_open+1
+ sta p_open+1
  lda #>m1ntp_path
- sta file_open+2
+ sta p_open+2
  lda #$13
- sta file_bank
- stz file_dest
- stz file_dest+1
- jsr load_file
+ sta unpack_bank
+ jsr load_and_unpack
 
-* Load BOSS.NTP to bank $14 starting at $14/0000
+* Load BOSS.NTP.PAK -> $17, unpack to $14/0000
  lda #<bossntp_path
- sta file_open+1
+ sta p_open+1
  lda #>bossntp_path
- sta file_open+2
+ sta p_open+2
  lda #$14
- sta file_bank
- stz file_dest
- stz file_dest+1
- jsr load_file
+ sta unpack_bank
+ jsr load_and_unpack
 
-* Load MISSION11.PAK -> $17, unpack to $03 (screen 0)
+* Restore default unpack offset for the SHR PAK loads below.
+ stz unpack_offset
+ lda #$20
+ sta unpack_offset+1
+
+* Load MISSION11.PAK -> $17, unpack to $03 (screen 0).
+* The NTP loads above clobbered p_open's pathname pointer, so
+* point it back at MISSION11.PAK explicitly.
+ lda #<pathname
+ sta p_open+1
+ lda #>pathname
+ sta p_open+2
  lda #$03
  sta unpack_bank
  jsr load_and_unpack
@@ -6276,7 +6290,7 @@ load_and_unpack
 
  lda #$ffff             ; NOTE _UnPackBytes will alter this data
  sta unpack_size        ; so rewrite it before each call
- lda #$2000
+ lda unpack_offset      ; default $2000; NTP loaders set $0000
  sta unpack_addr
 
  pha                    ; space for result
@@ -6304,8 +6318,9 @@ load_and_unpack
  rts
 
 unpack_bank dfb 0      ; target bank for unpacking
+unpack_offset hex 0020   ; in-bank offset to unpack at (default $2000)
 unpack_size hex ffff     ; size of unpacked data (set by UnPackBytes)
-unpack_addr hex 0020E100 ; unpacking destination address (bank/2000)
+unpack_addr hex 0020E100 ; unpacking destination address (bank/offset)
 
 *----------------------------------------------------------
 * copy_50_to_01 - Copy 32KB from $18/2000 to $01/2000
@@ -7910,11 +7925,13 @@ mission1_path dfb 25
 ntpplayer_path dfb 17
  asc '/DDIIGS/ntpplayer'
 
-m1ntp_path dfb 29
- asc '/DDIIGS/MISSION1/MISSION1.NTP'
+* MISSION1NTP.PAK rather than MISSION1.NTP.PAK because ProDOS
+* limits each filename component to 15 chars.
+m1ntp_path dfb 32
+ asc '/DDIIGS/MISSION1/MISSION1NTP.PAK'
 
-bossntp_path dfb 16
- asc '/DDIIGS/BOSS.NTP'
+bossntp_path dfb 20
+ asc '/DDIIGS/BOSS.NTP.PAK'
 
 
 *----------------------------------------------------------
