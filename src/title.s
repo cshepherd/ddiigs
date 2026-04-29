@@ -65,40 +65,17 @@ NTPstreamsound          =   NinjaTrackerPlus+24
 * Load NTPPLAYER to bank $12 starting at $12/0000
   jsr load_ntpplayer
 
-* TITLE.NTP is 68308 bytes. _UnPackBytes correctly crosses
-* bank boundaries on its destination, but its buffer-size
-* counter is 16-bit (max $FFFF = 65535), so a single-call
-* unpack of >64 KB stops short. Ship the music as three
-* PackBytes chunks and unpack each into its own slot:
-*   part 1 (32 KB) -> $10/$0000
-*   part 2 (32 KB) -> $10/$8000
-*   part 3 (rem.)  -> $11/$0000
-  lda #<titlentp1_path
+* TITLE.NTP is 68308 bytes. The ROM's destSize counter is
+* 16-bit (max $FFFF per call), but it returns RESULT = bytes
+* consumed from input and auto-updates *t_unpack_addr past the
+* last byte written (carrying into the bank byte). load_-
+* titlentp_pak loops _UnPackBytes calls until the source is
+* exhausted, so a single PAK works fine.
+  lda #<titlentp_path
   sta t2_open+1
-  lda #>titlentp1_path
+  lda #>titlentp_path
   sta t2_open+2
   lda #$10
-  sta t_unpack_bank
-  stz t_unpack_offset
-  stz t_unpack_offset+1
-  jsr load_titlentp_pak
-
-  lda #<titlentp2_path
-  sta t2_open+1
-  lda #>titlentp2_path
-  sta t2_open+2
-  lda #$10
-  sta t_unpack_bank
-  stz t_unpack_offset
-  lda #$80
-  sta t_unpack_offset+1
-  jsr load_titlentp_pak
-
-  lda #<titlentp3_path
-  sta t2_open+1
-  lda #>titlentp3_path
-  sta t2_open+2
-  lda #$11
   sta t_unpack_bank
   stz t_unpack_offset
   stz t_unpack_offset+1
@@ -339,9 +316,8 @@ writing_on
   stal $E19E02         ; $1: writing-blue
   lda #$020A
   stal $E19E04         ; $2: writing-highlight
-  lda #$0DC4
-  stal $E19E06         ; $3: writing red-edge
-  lda #$06AE
+  lda #$06AE           ; was $0DC4 (TITLE7's gold edge); recoloured
+  stal $E19E06         ; $3: writing-blue (override gold fringing)
   stal $E19E08         ; $4: writing-blue
   stal $E19E0A         ; $5: writing-blue
   stal $E19E18         ; $C: writing-blue
@@ -627,7 +603,7 @@ wait_for_vbl
 ; The values here are the WRITING-ON state; writing_off rewrites
 ; them to reveal the II colour beneath each writing pixel.
 PALETTE
- HEX 0000ae060a02c40dae06ae06ff0f310d
+ HEX 0000ae060a02ae06ae06ae06ff0f310d
  HEX c40da206e509ae06ae060a020a020a02
 
 ; first center sprite (+)
@@ -1346,24 +1322,47 @@ load_titlentp_pak
  dfb $CC              ; CLOSE
  da t2_close
 
-* Unpack from $17/$2000 to t_unpack_bank/t_unpack_offset.
+* Unpack from $17/$2000 to t_unpack_bank/t_unpack_offset via a
+* multi-call _UnPackBytes loop. The ROM's destSize counter is
+* 16-bit so each call writes at most $FFFF bytes, but it
+* returns RESULT = bytes consumed from input and writes the
+* updated dest long pointer back to *t_unpack_addr (carrying
+* into the bank byte). We resume the source by advancing
+* t_src_addr/t_src_size by RESULT and looping.
  clc
  xce                   ; native mode
  rep $30
 
+* Initialise the long dest pointer once. The ROM updates it
+* in place across calls, so subsequent iterations pick up at
+* the next byte to write.
+ lda t_unpack_offset
+ sta t_unpack_addr
+ lda t_unpack_bank
+ and #$00FF
+ sta t_unpack_addr+2
+
+* Initialise source low word and remaining bytes. PAK lives
+* in bank $17 (its bank byte is hard-coded in the PEA below),
+* file size came from GET_EOF.
+ lda #$2000
+ sta t_src_addr
+ lda t_file_size
+ sta t_src_size
+
+:unpack_loop
+ lda t_src_size
+ beq :unpack_done
+
  lda #$ffff
  sta t_unpack_size
- lda t_unpack_offset
- sta t_unpack_addr     ; dest addr low word
 
  pha                   ; result space
  pea $0017             ; src bank
- pea $2000             ; src addr
- lda t_file_size
- pha                   ; src length (low word)
- lda t_unpack_bank
- and #$00FF
- sta t_unpack_addr+2   ; dest bank byte
+ lda t_src_addr
+ pha                   ; src addr low word
+ lda t_src_size
+ pha                   ; src length (16-bit)
  pea #0000
  pea #t_unpack_addr
  pea #0000
@@ -1371,8 +1370,21 @@ load_titlentp_pak
 
  ldx #$2703            ; _UnPackBytes
  jsl $E10000
- pla                   ; discard result
+ pla                   ; A = RESULT (input bytes consumed)
+ beq :unpack_done      ; no progress -> done (safety)
 
+ sta t_consumed
+ clc
+ adc t_src_addr
+ sta t_src_addr        ; src += consumed
+
+ sec
+ lda t_src_size
+ sbc t_consumed
+ sta t_src_size        ; src_size -= consumed
+ bne :unpack_loop
+
+:unpack_done
  sec
  xce                   ; back to emulation
  mx %11
@@ -1435,7 +1447,7 @@ t_path dfb 17
  asc '/DDIIGS/NTPPLAYER'
 
 t2_open dfb 3          ; param count
- da titlentp1_path     ; pathname pointer (overwritten per call)
+ da titlentp_path      ; pathname pointer (overwritten per call)
  da ]IOBUF             ; I/O buffer
 t2_oref dfb 0          ; ref_num
 
@@ -1448,14 +1460,8 @@ t2_rref dfb 0          ; ref_num
 t2_close dfb 1         ; param count
 t2_cref dfb 0          ; ref_num
 
-* TITLE.NTPx.PAK is the convention for the 3-part split (each
-* filename component must fit ProDOS 8's 15-char limit).
-titlentp1_path dfb 22
- asc '/DDIIGS/TITLE.NTP1.PAK'
-titlentp2_path dfb 22
- asc '/DDIIGS/TITLE.NTP2.PAK'
-titlentp3_path dfb 22
- asc '/DDIIGS/TITLE.NTP3.PAK'
+titlentp_path dfb 21
+ asc '/DDIIGS/TITLE.NTP.PAK'
 
 *----------------------------------------------------------
 * GET_EOF + UnPackBytes scratch for load_titlentp_pak.
@@ -1466,10 +1472,17 @@ t_eof_size ds 3
 
 t_file_size  ds 3
 t_unpack_bank dfb 0
-t_unpack_offset hex 0000        ; in-bank target offset
-t_unpack_size hex ffff          ; 16-bit buffer-size cap (ROM
-                                ; reads only the low word)
-t_unpack_addr hex 00000000      ; long pointer (set per call)
+t_unpack_offset hex 0000        ; initial in-bank target offset
+t_unpack_size hex ffff          ; 16-bit per-call buffer-size cap
+t_unpack_addr hex 00000000      ; long dest pointer (updated by ROM)
+
+* Multi-call unpack scratch. Source is always in bank $17
+* starting at $2000, so we only track the low word and the
+* remaining size. The PAK is < 64KB (we read the whole thing
+* into one bank), so 16-bit arithmetic is enough.
+t_src_addr ds 2
+t_src_size ds 2
+t_consumed ds 2
 
 ccc_open dfb 3
  da ccc_path
