@@ -33,28 +33,18 @@
  sta file_open+2
  lda #$02
  sta file_bank
+ stz file_dest
+ stz file_dest+1
  jsr load_file
 
 * Initialize level from bank $02 data
  jsr init_level
 
-* Load PUNCH.RAW to bank $11 starting at $11/0000
- lda #<punch_path
- sta file_open+1
- lda #>punch_path
- sta file_open+2
- lda #$11
- sta file_bank
- jsr load_file
-
-* Silence and reset all DOC oscillators to a known state
+* Sound system: silence DOC, then install every sound from
+* the table (load each from disk via bank $11 scratch, upload
+* to its DOC RAM slot).
  jsr init_doc
-
-* Upload PUNCH.RAW from $11/0000 to DOC sound RAM at $0000
- jsr upload_punch
-
-* Verify DOC RAM upload (prints to text screen behind SHR)
- jsr verify_doc
+ jsr sound_install_all
 
 * Load MISSION11.PAK -> $17, unpack to $03 (screen 0)
  lda #$03
@@ -424,6 +414,8 @@ run_script
  sta scroll_right_enabled
 * Show POINT_RIGHT overlay (right side, arrow points right) for 180 frames
  jsr clear_active_overlay
+ ldx #SND_FINGER
+ jsr sound_trigger
  lda #180
  sta overlay_timer
  lda #100
@@ -484,6 +476,8 @@ run_script
  sta scroll_left_enabled
 * Show POINT_RIGHT overlay on the left side (using pre-mirrored sprite)
  jsr clear_active_overlay
+ ldx #SND_FINGER
+ jsr sound_trigger
  lda #180
  sta overlay_timer
  lda #0
@@ -706,6 +700,8 @@ run_script
 * Show POINT_UP overlay (centered, top of playfield) for 180 frames.
 * Playfield is 110 bytes; POINT_UP is 8 bytes wide → x = (110-8)/2 = 51.
  jsr clear_active_overlay
+ ldx #SND_FINGER
+ jsr sound_trigger
  lda #180
  sta overlay_timer
  lda #51
@@ -4907,7 +4903,8 @@ process_input
  rts
 :not_punch cmp #'p'
  bne :not_invuln
- jsr play_punch
+ ldx #SND_PUNCH
+ jsr sound_trigger
 * Alternate between punch1 and punch2 each press
  lda punch_toggle
  eor #$01
@@ -7136,6 +7133,13 @@ init_doc
  php
  sei
 
+* Force the system master-volume shadow ($E100CA, low nybble)
+* to $F. The IIgs firmware re-writes $C03C's master volume
+* from this location periodically, so without this our $C03C
+* writes silently get reset to whatever the Control Panel has.
+ lda #$0F
+ stal $E100CA
+
 * GLU control: DOC reg space, auto-inc, master volume = 0
  jsr doc_wait
  lda #$20
@@ -7193,17 +7197,138 @@ doc_wait
  rts
 
 *----------------------------------------------------------
-* upload_punch - Copy PUNCH.RAW from $11/0000 to DOC sound
-* RAM at $0000. Length = 966 ($03C6) bytes. Source bytes
-* valued $00 are remapped to $01 (the DOC halts and IRQs on
-* a $00 sample). Called in emulation mode; restored on exit.
+* Sound system - table-driven SFX playback.
+*
+* Each sound is a record in sound_table:
+*   +0   doc_ptr   wavetable pointer (high byte of DOC RAM addr)
+*   +1   wt_size   wavetable size register value
+*   +2   fc        16-bit playback frequency (Fc)
+*   +4   length    16-bit sample length in bytes
+*   +6   zfill     16-bit zero-fill bytes after sample
+*                  (= wavetable_size_bytes - length)
+*   +8   pathlen   ProDOS pathname length byte
+*   +9+  path      pathname characters
+*
+* Wavetable size register value:
+*   bits 5-3 = size code (4=4K, 5=8K, 6=16K, 7=32K)
+*   bits 2-0 = address resolution (must be 7 for every-byte)
+* Wavetable pointer (high byte of base addr) must be aligned
+* to wavetable size: 4K table → ptr % $10 == 0; 8K → % $20.
+*
+* All sounds use oscillator 0; SFX are mutually exclusive.
+* Bank $11 is reused as scratch for each sound install.
+*----------------------------------------------------------
+
+SR_DOC_PTR   equ 0
+SR_WT_SIZE   equ 1
+SR_FC        equ 2
+SR_LEN       equ 4
+SR_ZFILL     equ 6
+SR_PATHLEN   equ 8
+
+* Sound IDs (indices into sound_table)
+SND_PUNCH        equ 0
+SND_PUNCHLANDED  equ 1
+SND_FINGER       equ 2
+SND_COUNT        equ 3
+
+sound_ptr    equ $F6   ; ZP: 2-byte ptr to current sound record
+
+sound_table
+ dw sound_punch
+ dw sound_punchlanded
+ dw sound_finger
+
+sound_punch
+ dfb $00            ; doc_ptr = $00 → DOC RAM $0000
+ dfb $27            ; wt_size: 4K wavetable + every-byte res
+ dw $00DC           ; fc (~8 kHz: scale inversely w/ wt size)
+ dw $03C6           ; length 966
+ dw $0C3A           ; zfill 4096-966 = 3130
+ dfb 17
+ asc '/DDIIGS/PUNCH.RAW'
+
+sound_punchlanded
+ dfb $10            ; doc_ptr = $10 → DOC RAM $1000
+ dfb $27            ; wt_size: 4K wavetable + every-byte res
+ dw $00DC           ; fc (~8 kHz)
+ dw $0474           ; length 1140
+ dw $0B8C           ; zfill 4096-1140 = 2956
+ dfb 23
+ asc '/DDIIGS/PUNCHLANDED.RAW'
+
+sound_finger
+ dfb $20            ; doc_ptr = $20 → DOC RAM $2000
+ dfb $2F            ; wt_size: 8K wavetable + every-byte res
+ dw $006E           ; fc (~8 kHz: scale inversely w/ wt size)
+ dw $1650           ; length 5712
+ dw $09B0           ; zfill 8192-5712 = 2480
+ dfb 18
+ asc '/DDIIGS/FINGER.RAW'
+
+sound_len   ds 2
+sound_zfill ds 2
+
+*----------------------------------------------------------
+* sound_select - X = sound index, sets sound_ptr to record.
 *----------------------------------------------------------
  mx %11
-upload_punch
+sound_select
+ txa
+ asl
+ tax
+ lda sound_table,x
+ sta sound_ptr
+ lda sound_table+1,x
+ sta sound_ptr+1
+ rts
+
+*----------------------------------------------------------
+* sound_load - Load current sound's file from disk to
+* $11/0000 via load_file. sound_ptr must be set first.
+*----------------------------------------------------------
+sound_load
+ lda sound_ptr
+ clc
+ adc #SR_PATHLEN
+ sta file_open+1
+ lda sound_ptr+1
+ adc #0
+ sta file_open+2
+ lda #$11
+ sta file_bank
+ stz file_dest
+ stz file_dest+1
+ jsr load_file
+ rts
+
+*----------------------------------------------------------
+* sound_upload - Copy from $11/0000 to DOC RAM at doc_ptr.
+* Length and zero-fill come from the record at sound_ptr.
+* $00 source bytes are remapped to $01 to keep the chip
+* from halting on a zero sample.
+*----------------------------------------------------------
+sound_upload
+ mx %11
  php
  sei
 
-* Source long pointer in $F0-$F2: $11/0000
+* Cache length and zfill into 16-bit globals so the inner
+* loops can compare against them with cpy/dex (16-bit X).
+ ldy #SR_LEN
+ lda (sound_ptr),y
+ sta sound_len
+ iny
+ lda (sound_ptr),y
+ sta sound_len+1
+ ldy #SR_ZFILL
+ lda (sound_ptr),y
+ sta sound_zfill
+ iny
+ lda (sound_ptr),y
+ sta sound_zfill+1
+
+* Source long pointer = $11/0000
  lda #$00
  sta $F0
  sta $F1
@@ -7215,39 +7340,39 @@ upload_punch
  lda #$60
  sta $C03C
 
-* DOC RAM address pointer = $0000
+* DOC RAM addr ptr: low = $00, high = doc_ptr from record
  jsr doc_wait
  lda #$00
  sta $C03E
  jsr doc_wait
+ ldy #SR_DOC_PTR
+ lda (sound_ptr),y
  sta $C03F
 
-* Switch to native: 8-bit A, 16-bit X/Y for the byte loop
+* Switch to native: 8-bit A, 16-bit X/Y for the byte loops
  clc
  xce
  sep #$20
  rep #$10
  mx %10
 
+* Sample copy loop
  ldy #$0000
 :loop
  lda [$F0],y
  bne :nz
- lda #$01            ; remap $00 → $01 to avoid halt marker
+ lda #$01           ; remap $00 → $01
 :nz
 :wb
  bit $C03C
  bmi :wb
- sta $C03D           ; auto-inc walks DOC RAM pointer
+ sta $C03D
  iny
- cpy #$03C6          ; 966 bytes
+ cpy sound_len
  bne :loop
 
-* Zero-fill the rest of the 16K wavetable ($03C6..$3FFF =
-* 15418 bytes). Combined with One-Shot mode in play_punch,
-* this guarantees the oscillator plays the sample then
-* outputs silence to the natural end-of-wavetable halt.
- ldx #$3C3A           ; 16384 - 966 = 15418 = $3C3A
+* Zero-fill loop (count from record)
+ ldx sound_zfill
 :zlp
 :zwb
  bit $C03C
@@ -7256,7 +7381,7 @@ upload_punch
  dex
  bne :zlp
 
-* Restore emulation mode for the caller
+* Restore emulation
  sep #$30
  sec
  xce
@@ -7266,120 +7391,74 @@ upload_punch
  rts
 
 *----------------------------------------------------------
-* verify_doc - Read back known DOC RAM bytes and print them
-* via the dbg_print path. Compare to expected values from
-* punch.raw to confirm upload_punch landed correctly.
-*   Expected: DOC [0]=80 [100]=7A [200]=77 [500]=71
-* If readback shows zeros or garbage, upload path is broken.
+* sound_install - Load + upload current sound (sound_ptr).
 *----------------------------------------------------------
- mx %11
-verify_doc
- php
- sei
-
- jsr doc_wait
- lda #$60              ; CTL: RAM, auto-inc, vol=0
- sta $C03C
-
- lda #$C4              ; 'D'
- jsr dbg_print_char
- lda #$CF              ; 'O'
- jsr dbg_print_char
- lda #$C3              ; 'C'
- jsr dbg_print_char
- lda #$A0              ; ' '
- jsr dbg_print_char
-
- lda #$00
- ldx #$00
- jsr doc_read_byte
- jsr dbg_print_hex8
- lda #$A0
- jsr dbg_print_char
-
- lda #$64              ; 100
- ldx #$00
- jsr doc_read_byte
- jsr dbg_print_hex8
- lda #$A0
- jsr dbg_print_char
-
- lda #$C8              ; 200
- ldx #$00
- jsr doc_read_byte
- jsr dbg_print_hex8
- lda #$A0
- jsr dbg_print_char
-
- lda #$F4              ; 500
- ldx #$01
- jsr doc_read_byte
- jsr dbg_print_hex8
-
- jsr dbg_print_nl
-
- plp
- rts
-
-* doc_read_byte - Read one byte from DOC RAM.
-*   A = address lo, X = address hi
-*   GLU CTL must already be in RAM mode + auto-inc.
-*   Returns byte in A.
-doc_read_byte
- jsr doc_wait
- sta $C03E
- jsr doc_wait
- stx $C03F
- jsr doc_wait
- lda $C03D             ; dummy (RAM read lags by 1)
- jsr doc_wait
- lda $C03D             ; real read
+sound_install
+ jsr sound_load
+ jsr sound_upload
  rts
 
 *----------------------------------------------------------
-* play_punch - Trigger oscillator 0 to play the PUNCH sample
-* uploaded at DOC RAM $0000.
-*   Mode  : one-shot (halts at end of 16K wavetable)
-*   Rate  : Fc=$37 with OSC=1 / RES=6 (16K) → ~8011 Hz
-*   Vol   : per-osc $FF, master $0F
-* Side effect: bumps master volume to $0F. Called in
-* emulation mode.
+* sound_install_all - Walk sound_table and install each.
+* Called once at boot after init_doc.
 *----------------------------------------------------------
+sound_install_all
+ ldx #0
+:loop
+ cpx #SND_COUNT
+ bcs :done
+ phx
+ jsr sound_select
+ jsr sound_install
+ plx
+ inx
+ bra :loop
+:done
+ rts
+
+*----------------------------------------------------------
+* sound_play - Trigger osc 0 to play current sound.
+* sound_ptr must be set. Configures Fc, volume, wavetable
+* pointer, and size from the record, then starts in
+* one-shot mode.
+*----------------------------------------------------------
+sound_play
  mx %11
-play_punch
  php
  sei
 
-* GLU CTL: DOC reg space, auto-inc, master vol = 0
+* GLU CTL: DOC reg space, auto-inc, master vol $F
  jsr doc_wait
- lda #$20
+ lda #$2F
  sta $C03C
 
-* Halt osc 0 (defensive) before re-programming
+* Halt osc 0 before re-programming
  jsr doc_wait
- lda #$A0           ; control reg, osc 0
+ lda #$A0
  sta $C03E
  jsr doc_wait
- lda #$01           ; halt
+ lda #$01
  sta $C03D
 
-* Freq Lo ($00+0) = $37 (target ~8011 Hz)
+* Freq Lo
  jsr doc_wait
  lda #$00
  sta $C03E
  jsr doc_wait
- lda #$37
+ ldy #SR_FC
+ lda (sound_ptr),y
  sta $C03D
 
-* Freq Hi ($20+0) = $00
+* Freq Hi
  jsr doc_wait
  lda #$20
  sta $C03E
  jsr doc_wait
- lda #$00
+ ldy #SR_FC+1
+ lda (sound_ptr),y
  sta $C03D
 
-* Volume ($40+0) = $FF (per-osc max)
+* Per-osc volume = $FF
  jsr doc_wait
  lda #$40
  sta $C03E
@@ -7387,102 +7466,42 @@ play_punch
  lda #$FF
  sta $C03D
 
-* Wavetable Pointer ($80+0) = $00 (base = DOC $0000)
+* Wavetable Pointer
  jsr doc_wait
  lda #$80
  sta $C03E
  jsr doc_wait
- lda #$00
+ ldy #SR_DOC_PTR
+ lda (sound_ptr),y
  sta $C03D
 
-* Wavetable Size ($C0+0) = $30 (RES=6 → 16K, addr res = 0)
+* Wavetable Size
  jsr doc_wait
  lda #$C0
  sta $C03E
  jsr doc_wait
- lda #$30
+ ldy #SR_WT_SIZE
+ lda (sound_ptr),y
  sta $C03D
 
-* Bump master volume to $0F (CTL low nybble)
- jsr doc_wait
- lda #$2F           ; b5=auto-inc, b3-0=vol $F
- sta $C03C
-
-* Start: Control ($A0+0) = $04 → one-shot, IRQ off, halt=0
+* Start: Control = $02 → one-shot, IRQ off, run
+*   bit 0=halt, bits 2-1=mode (01=OneShot), bit 3=IRQ
  jsr doc_wait
  lda #$A0
  sta $C03E
  jsr doc_wait
- lda #$04
+ lda #$02
  sta $C03D
-
-* DEBUG: dump osc 0 state. Expected: W=00 S=30 C=04 D=??
-*   W = wavetable pointer ($80+0): base=pointer*256, want $00
-*   S = wavetable size    ($C0+0): want $30 (RES=6, addr-res=0)
-*   C = control register  ($A0+0): $04=running, $05=halted
-*   D = osc data register ($60+0): last sample byte read.
-*       Read after a ~1 ms delay; should be a value from the
-*       middle of the punch sample (e.g. ~$7F-$8E).
- lda #$D7              ; 'W'
- jsr dbg_print_char
- lda #$BD
- jsr dbg_print_char
- lda #$80
- jsr dbg_read_doc_reg
- jsr dbg_print_hex8
- lda #$A0
- jsr dbg_print_char
-
- lda #$D3              ; 'S'
- jsr dbg_print_char
- lda #$BD
- jsr dbg_print_char
- lda #$C0
- jsr dbg_read_doc_reg
- jsr dbg_print_hex8
- lda #$A0
- jsr dbg_print_char
-
- lda #$C3              ; 'C'
- jsr dbg_print_char
- lda #$BD
- jsr dbg_print_char
- lda #$A0
- jsr dbg_read_doc_reg
- jsr dbg_print_hex8
- lda #$A0
- jsr dbg_print_char
-
-* delay ~1 ms (~1024 cycles in slow mode)
- ldx #$00
-:dly dex
- bne :dly
-
- lda #$C4              ; 'D'
- jsr dbg_print_char
- lda #$BD
- jsr dbg_print_char
- lda #$60
- jsr dbg_read_doc_reg
- jsr dbg_print_hex8
- jsr dbg_print_nl
 
  plp
  rts
 
-* dbg_read_doc_reg — read DOC reg whose addr is in A.
-* GLU CTL must already be in DOC-reg mode + auto-inc.
-* High byte of addr ptr is forced to $00.
-dbg_read_doc_reg
- jsr doc_wait
- sta $C03E
- jsr doc_wait
- lda #$00
- sta $C03F
- jsr doc_wait
- lda $C03D             ; dummy (be safe)
- jsr doc_wait
- lda $C03D             ; real
+*----------------------------------------------------------
+* sound_trigger - X = sound index. Convenience: select+play.
+*----------------------------------------------------------
+sound_trigger
+ jsr sound_select
+ jsr sound_play
  rts
 
 *----------------------------------------------------------
@@ -7497,10 +7516,6 @@ load_file
  lda file_oref
  sta file_rref
  sta file_cref
-
- lda #$00
- sta file_dest
- sta file_dest+1
 
 :readlp
  jsr $BF00
@@ -7583,8 +7598,6 @@ file_cref dfb 0
 mission1_path dfb 25
  asc '/DDIIGS/MISSION1/MISSION1'
 
-punch_path dfb 17
- asc '/DDIIGS/PUNCH.RAW'
 
 *----------------------------------------------------------
 * scroll_right - Scroll playfield 1 byte (2 pixels) right.
@@ -11219,6 +11232,9 @@ check_punch_hit
  bne :do_punched
  jmp :advance
 :do_punched
+* Confirmed hit — fire the punch-landed SFX
+ ldx #SND_PUNCHLANDED
+ jsr sound_trigger
 * Save puncher's globals before overwriting with target's
  lda IMAGE01_YPOS
  pha
@@ -11791,10 +11807,17 @@ draw_sprite_compiled
  RTS
 
 wait_for_vbl
+  sep $20
 :lp1 bit $c019
  bmi :lp1 ; wait for current VBL to end
 :lp2 bit $c019
  bpl :lp2 ; wait for next VBL to start
+;  lda $c02e
+;  lsr
+;  lsr
+;  cmp #$38
+;  bne wait_for_vbl
+  rep $30
  rts
 
 ; scores (hex, starting at 0)
