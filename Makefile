@@ -112,6 +112,9 @@ $(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.sh
 	python3 tools/packbytes.py pack assets/audio/CUTSCENE.NTP\#000000 out/CUTSCENENTP.PAK\#C00000
 	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/CUTSCENENTP.PAK\#C00000 --quiet
 	rm out/CUTSCENENTP.PAK\#C00000
+	python3 tools/packbytes.py pack assets/audio/COMPLETE.NTP\#000000 out/COMPLETENTP.PAK\#C00000
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/COMPLETENTP.PAK\#C00000 --quiet
+	rm out/COMPLETENTP.PAK\#C00000
 	# In-game music: pre-pack with PackBytes — the engine loads
 	# them through load_and_unpack the same way it does SHR
 	# backgrounds. (Filenames trimmed to fit the ProDOS 15-char

@@ -28,6 +28,7 @@ OP_SNAPSTATE EQU 16 ; restore engine to a "golden" state (17-byte payload)
                     ; db ssrc_bank, db ssrc_off, db lsrc_bank, db lsrc_off,
                     ; dw up_anchor, db up_off, dw min_wo, dw max_wo
 OP_SNAPSTATE_DEFER EQU 17 ; same as OP_SNAPSTATE but applied at next scroll_up
+OP_BOSSMUSIC EQU 18 ; trigger boss music (no params)
 ; NOTE OP_WAITX and OP_WAITY use 'absolute X' (level-wide) not screen xpos/ypos
 ;  so it's easier to use for game logic
 ; NOTE OP_NPC params are: sprite_ptr (2b), xpos (1b), ypos (1b), orient (1b), behavior (1b)
@@ -436,6 +437,13 @@ level_script
     db OP_WAITX
     dw $01D8              ; wait for player abs X >= 472 (~16 px before 480)
     db OP_SCRLOCK         ; lock scrolling in screen 13 (final screen)
+    db OP_BOSSMUSIC
+
+* Note this is a placehodlder until Boss is here
+    db OP_NPC           ; William on upper level
+    dw william_sprite
+    db $58,$32,$01,BEHAV_FACEOFF  ; y=$32 (50) within walkable band
+    db OP_WAITCLR       ; wait for enemies defeated
 
     db OP_END           ; end of level
 

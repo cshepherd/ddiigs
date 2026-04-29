@@ -93,6 +93,16 @@ NTPstreamsound          =   NinjaTrackerPlus+24
  sta unpack_bank
  jsr load_and_unpack
 
+* Load COMPLETENTP.PAK -> $17, unpack to $15/0000
+* (level-completion fanfare; will get wired up to OP_END later).
+ lda #<completentp_path
+ sta p_open+1
+ lda #>completentp_path
+ sta p_open+2
+ lda #$15
+ sta unpack_bank
+ jsr load_and_unpack
+
 * Restore default unpack offset for the SHR PAK loads below.
  stz unpack_offset
  lda #$20
@@ -389,6 +399,22 @@ run_script
 
  cmp #OP_END
  bne :not_end
+* Stop the boss/level music and start the COMPLETE fanfare
+* (loaded into bank $15 by init). NTP routines need native+16.
+ clc
+ xce
+ rep $30
+ jsl NTPstop
+ ldy #$15              ; COMPLETE music bank
+ ldx #$00
+ txa
+ jsl NTPprepare
+ lda #$0000
+ jsl NTPplay
+ sec
+ xce
+ sep $30
+ mx %11
  lda #SCRIPT_DONE
  sta script_state
 :rs_rts rts
@@ -1069,6 +1095,34 @@ run_script
  rts
 
 :not_waitnpc
+ cmp #OP_BOSSMUSIC
+ bne :not_bossmusic
+* OP_BOSSMUSIC: stop the current song and start BOSS.NTP from
+* bank $14/$0000. NTP routines need native + 16-bit.
+ clc
+ xce                   ; native mode
+ rep $30
+ jsl NTPstop
+ ldy #$14              ; BOSS music bank
+ ldx #$00
+ txa
+ jsl NTPprepare
+ lda #$0000
+ jsl NTPplay
+ sec
+ xce                   ; back to emulation
+ sep $30
+ mx %11
+ lda script_pc          ; opcode only (1 byte)
+ clc
+ adc #1
+ sta script_pc
+ lda script_pc+1
+ adc #0
+ sta script_pc+1
+ jmp :exec_loop
+
+:not_bossmusic
 * OP_NONE — skip 1 byte and continue
  cmp #OP_NONE
  bne :unknown_op
@@ -4410,6 +4464,7 @@ OP_SNAPSTATE_DEFER = 17 ; like OP_SNAPSTATE but applied at next
                       ;   db bank, db byte, db count, db dst (region 2)
                       ; Engine repaints 183 rows from bank/byte+row*$A0
                       ; to $18/(dst + row*$A0). Bank=0 skips that region.
+OP_BOSSMUSIC = 18     ; switch to BOSS.NTP music (no params).
 
 * Script interpreter state
 SCRIPT_RUN  = 0       ; executing opcodes
@@ -7932,6 +7987,9 @@ m1ntp_path dfb 32
 
 bossntp_path dfb 20
  asc '/DDIIGS/BOSS.NTP.PAK'
+
+completentp_path dfb 23
+ asc '/DDIIGS/COMPLETENTP.PAK'
 
 
 *----------------------------------------------------------
