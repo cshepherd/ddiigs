@@ -4,17 +4,6 @@
 *----------------------------------------------------------
     org $2000
 
-NinjaTrackerPlus        =   $110000
-NTPprepare              =   NinjaTrackerPlus
-NTPplay                 =   NinjaTrackerPlus+3
-NTPstop                 =   NinjaTrackerPlus+6
-NTPgetvuptr             =   NinjaTrackerPlus+9
-NTPgete8ptr             =   NinjaTrackerPlus+12
-NTPforcesongpos         =   NinjaTrackerPlus+15
-NTPgetsongpos           =   NinjaTrackerPlus+18
-NTPsetplayvolume        =   NinjaTrackerPlus+21
-NTPstreamsound          =   NinjaTrackerPlus+24
-
 ]IOBUF = $8200        ; 1024-byte ProDOS I/O buffer (page-aligned)
 ]RDBUF = $8600         ; 4KB read buffer
 
@@ -39,35 +28,33 @@ NTPstreamsound          =   NinjaTrackerPlus+24
 
 * Load MISSION1 level data to bank $02
  lda #<mission1_path
- sta ntp_open+1
+ sta file_open+1
  lda #>mission1_path
- sta ntp_open+2
+ sta file_open+2
  lda #$02
- sta ntp_bank
- jsr load_ntp_file
+ sta file_bank
+ jsr load_file
 
 * Initialize level from bank $02 data
  jsr init_level
 
-* Load NTPPLAYER to bank $11 starting at $11/0000 (moved from
-* $0F to make room for MISSION112/113/114 at $0E/$0F/$10).
- lda #<ntpp_path
- sta ntp_open+1
- lda #>ntpp_path
- sta ntp_open+2
+* Load PUNCH.RAW to bank $11 starting at $11/0000
+ lda #<punch_path
+ sta file_open+1
+ lda #>punch_path
+ sta file_open+2
  lda #$11
- sta ntp_bank
- jsr load_ntp_file
+ sta file_bank
+ jsr load_file
 
-* Load MISSION1.NTP to banks $12+ starting at $12/0000 (moved
-* from $10 to clear room for the new scr13 load).
- lda #<m1ntp_path
- sta ntp_open+1
- lda #>m1ntp_path
- sta ntp_open+2
- lda #$12
- sta ntp_bank
- jsr load_ntp_file
+* Silence and reset all DOC oscillators to a known state
+ jsr init_doc
+
+* Upload PUNCH.RAW from $11/0000 to DOC sound RAM at $0000
+ jsr upload_punch
+
+* Verify DOC RAM upload (prints to text screen behind SHR)
+ jsr verify_doc
 
 * Load MISSION11.PAK -> $17, unpack to $03 (screen 0)
  lda #$03
@@ -201,14 +188,6 @@ NTPstreamsound          =   NinjaTrackerPlus+24
  clc
  xce
  rep $30
-
-  ldy #$12              ; music banks start at $12
-  ldx #$00
-  txa
-  jsl NTPprepare
-
-  lda #00
-  jsl NTPplay
 
  lda #225
  pha
@@ -4928,6 +4907,7 @@ process_input
  rts
 :not_punch cmp #'p'
  bne :not_invuln
+ jsr play_punch
 * Alternate between punch1 and punch2 each press
  lda punch_toggle
  eor #$01
@@ -6307,7 +6287,7 @@ copy_03_to_50
  rts
 
 *----------------------------------------------------------
-* load_ntp_file - Load a file to ntp_bank+ via ProDOS 8
+* load_file - Load a file to file_bank+ via ProDOS 8
 * in 4KB chunks. Bank increments when address wraps.
 *----------------------------------------------------------
 * init_level - Read level data header from bank $02 and
@@ -7147,64 +7127,422 @@ spr_bpunched_data_mirror   ds 2
 spr_bpunched_mask_mirror   ds 2
 
 *----------------------------------------------------------
-* Set ntp_open pathname pointer and ntp_bank before calling.
-* First call uses default pathname (NTPPLAYER) and bank $0F.
+* init_doc - Idle and reset Ensoniq DOC oscillators.
+* Halts all 32 oscillators, zeros volumes, drains pending
+* IRQs, sets enabled count to 1. Called in emulation mode.
 *----------------------------------------------------------
- mx %11                ; emulation mode
-load_ntp_file
- jsr $BF00
- dfb $C8              ; OPEN
- da ntp_open
- bcs :err
- lda ntp_oref
- sta ntp_rref
- sta ntp_cref
+ mx %11
+init_doc
+ php
+ sei
+
+* GLU control: DOC reg space, auto-inc, master volume = 0
+ jsr doc_wait
+ lda #$20
+ sta $C03C
+
+* Halt all 32 oscillators: write $01 to control regs $A0-$BF
+ jsr doc_wait
+ lda #$A0
+ sta $C03E
+ jsr doc_wait
+ lda #$00
+ sta $C03F
+ ldx #32
+:halt
+ jsr doc_wait
+ lda #$01
+ sta $C03D
+ dex
+ bne :halt
+
+* Zero all 32 volumes: $40-$5F
+ jsr doc_wait
+ lda #$40
+ sta $C03E
+ ldx #32
+:vol
+ jsr doc_wait
+ stz $C03D
+ dex
+ bne :vol
+
+* Drain any latched oscillator IRQ. Read $E0 until b7=1.
+ jsr doc_wait
+ lda #$E0
+ sta $C03E
+:drain
+ jsr doc_wait
+ lda $C03D
+ bpl :drain
+
+* Enable 1 oscillator (write $02 = count*2 to $E1)
+ jsr doc_wait
+ lda #$E1
+ sta $C03E
+ jsr doc_wait
+ lda #$02
+ sta $C03D
+
+ plp
+ rts
+
+doc_wait
+ bit $C03C
+ bmi doc_wait
+ rts
+
+*----------------------------------------------------------
+* upload_punch - Copy PUNCH.RAW from $11/0000 to DOC sound
+* RAM at $0000. Length = 966 ($03C6) bytes. Source bytes
+* valued $00 are remapped to $01 (the DOC halts and IRQs on
+* a $00 sample). Called in emulation mode; restored on exit.
+*----------------------------------------------------------
+ mx %11
+upload_punch
+ php
+ sei
+
+* Source long pointer in $F0-$F2: $11/0000
+ lda #$00
+ sta $F0
+ sta $F1
+ lda #$11
+ sta $F2
+
+* GLU CTL: RAM access (b6=1), auto-inc (b5=1), master vol = 0
+ jsr doc_wait
+ lda #$60
+ sta $C03C
+
+* DOC RAM address pointer = $0000
+ jsr doc_wait
+ lda #$00
+ sta $C03E
+ jsr doc_wait
+ sta $C03F
+
+* Switch to native: 8-bit A, 16-bit X/Y for the byte loop
+ clc
+ xce
+ sep #$20
+ rep #$10
+ mx %10
+
+ ldy #$0000
+:loop
+ lda [$F0],y
+ bne :nz
+ lda #$01            ; remap $00 → $01 to avoid halt marker
+:nz
+:wb
+ bit $C03C
+ bmi :wb
+ sta $C03D           ; auto-inc walks DOC RAM pointer
+ iny
+ cpy #$03C6          ; 966 bytes
+ bne :loop
+
+* Zero-fill the rest of the 16K wavetable ($03C6..$3FFF =
+* 15418 bytes). Combined with One-Shot mode in play_punch,
+* this guarantees the oscillator plays the sample then
+* outputs silence to the natural end-of-wavetable halt.
+ ldx #$3C3A           ; 16384 - 966 = 15418 = $3C3A
+:zlp
+:zwb
+ bit $C03C
+ bmi :zwb
+ stz $C03D
+ dex
+ bne :zlp
+
+* Restore emulation mode for the caller
+ sep #$30
+ sec
+ xce
+ mx %11
+
+ plp
+ rts
+
+*----------------------------------------------------------
+* verify_doc - Read back known DOC RAM bytes and print them
+* via the dbg_print path. Compare to expected values from
+* punch.raw to confirm upload_punch landed correctly.
+*   Expected: DOC [0]=80 [100]=7A [200]=77 [500]=71
+* If readback shows zeros or garbage, upload path is broken.
+*----------------------------------------------------------
+ mx %11
+verify_doc
+ php
+ sei
+
+ jsr doc_wait
+ lda #$60              ; CTL: RAM, auto-inc, vol=0
+ sta $C03C
+
+ lda #$C4              ; 'D'
+ jsr dbg_print_char
+ lda #$CF              ; 'O'
+ jsr dbg_print_char
+ lda #$C3              ; 'C'
+ jsr dbg_print_char
+ lda #$A0              ; ' '
+ jsr dbg_print_char
 
  lda #$00
- sta ntp_dest
- sta ntp_dest+1
+ ldx #$00
+ jsr doc_read_byte
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+
+ lda #$64              ; 100
+ ldx #$00
+ jsr doc_read_byte
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+
+ lda #$C8              ; 200
+ ldx #$00
+ jsr doc_read_byte
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+
+ lda #$F4              ; 500
+ ldx #$01
+ jsr doc_read_byte
+ jsr dbg_print_hex8
+
+ jsr dbg_print_nl
+
+ plp
+ rts
+
+* doc_read_byte - Read one byte from DOC RAM.
+*   A = address lo, X = address hi
+*   GLU CTL must already be in RAM mode + auto-inc.
+*   Returns byte in A.
+doc_read_byte
+ jsr doc_wait
+ sta $C03E
+ jsr doc_wait
+ stx $C03F
+ jsr doc_wait
+ lda $C03D             ; dummy (RAM read lags by 1)
+ jsr doc_wait
+ lda $C03D             ; real read
+ rts
+
+*----------------------------------------------------------
+* play_punch - Trigger oscillator 0 to play the PUNCH sample
+* uploaded at DOC RAM $0000.
+*   Mode  : one-shot (halts at end of 16K wavetable)
+*   Rate  : Fc=$37 with OSC=1 / RES=6 (16K) → ~8011 Hz
+*   Vol   : per-osc $FF, master $0F
+* Side effect: bumps master volume to $0F. Called in
+* emulation mode.
+*----------------------------------------------------------
+ mx %11
+play_punch
+ php
+ sei
+
+* GLU CTL: DOC reg space, auto-inc, master vol = 0
+ jsr doc_wait
+ lda #$20
+ sta $C03C
+
+* Halt osc 0 (defensive) before re-programming
+ jsr doc_wait
+ lda #$A0           ; control reg, osc 0
+ sta $C03E
+ jsr doc_wait
+ lda #$01           ; halt
+ sta $C03D
+
+* Freq Lo ($00+0) = $37 (target ~8011 Hz)
+ jsr doc_wait
+ lda #$00
+ sta $C03E
+ jsr doc_wait
+ lda #$37
+ sta $C03D
+
+* Freq Hi ($20+0) = $00
+ jsr doc_wait
+ lda #$20
+ sta $C03E
+ jsr doc_wait
+ lda #$00
+ sta $C03D
+
+* Volume ($40+0) = $FF (per-osc max)
+ jsr doc_wait
+ lda #$40
+ sta $C03E
+ jsr doc_wait
+ lda #$FF
+ sta $C03D
+
+* Wavetable Pointer ($80+0) = $00 (base = DOC $0000)
+ jsr doc_wait
+ lda #$80
+ sta $C03E
+ jsr doc_wait
+ lda #$00
+ sta $C03D
+
+* Wavetable Size ($C0+0) = $30 (RES=6 → 16K, addr res = 0)
+ jsr doc_wait
+ lda #$C0
+ sta $C03E
+ jsr doc_wait
+ lda #$30
+ sta $C03D
+
+* Bump master volume to $0F (CTL low nybble)
+ jsr doc_wait
+ lda #$2F           ; b5=auto-inc, b3-0=vol $F
+ sta $C03C
+
+* Start: Control ($A0+0) = $04 → one-shot, IRQ off, halt=0
+ jsr doc_wait
+ lda #$A0
+ sta $C03E
+ jsr doc_wait
+ lda #$04
+ sta $C03D
+
+* DEBUG: dump osc 0 state. Expected: W=00 S=30 C=04 D=??
+*   W = wavetable pointer ($80+0): base=pointer*256, want $00
+*   S = wavetable size    ($C0+0): want $30 (RES=6, addr-res=0)
+*   C = control register  ($A0+0): $04=running, $05=halted
+*   D = osc data register ($60+0): last sample byte read.
+*       Read after a ~1 ms delay; should be a value from the
+*       middle of the punch sample (e.g. ~$7F-$8E).
+ lda #$D7              ; 'W'
+ jsr dbg_print_char
+ lda #$BD
+ jsr dbg_print_char
+ lda #$80
+ jsr dbg_read_doc_reg
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+
+ lda #$D3              ; 'S'
+ jsr dbg_print_char
+ lda #$BD
+ jsr dbg_print_char
+ lda #$C0
+ jsr dbg_read_doc_reg
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+
+ lda #$C3              ; 'C'
+ jsr dbg_print_char
+ lda #$BD
+ jsr dbg_print_char
+ lda #$A0
+ jsr dbg_read_doc_reg
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+
+* delay ~1 ms (~1024 cycles in slow mode)
+ ldx #$00
+:dly dex
+ bne :dly
+
+ lda #$C4              ; 'D'
+ jsr dbg_print_char
+ lda #$BD
+ jsr dbg_print_char
+ lda #$60
+ jsr dbg_read_doc_reg
+ jsr dbg_print_hex8
+ jsr dbg_print_nl
+
+ plp
+ rts
+
+* dbg_read_doc_reg — read DOC reg whose addr is in A.
+* GLU CTL must already be in DOC-reg mode + auto-inc.
+* High byte of addr ptr is forced to $00.
+dbg_read_doc_reg
+ jsr doc_wait
+ sta $C03E
+ jsr doc_wait
+ lda #$00
+ sta $C03F
+ jsr doc_wait
+ lda $C03D             ; dummy (be safe)
+ jsr doc_wait
+ lda $C03D             ; real
+ rts
+
+*----------------------------------------------------------
+* Set file_open pathname pointer and file_bank before calling.
+*----------------------------------------------------------
+ mx %11                ; emulation mode
+load_file
+ jsr $BF00
+ dfb $C8              ; OPEN
+ da file_open
+ bcs :err
+ lda file_oref
+ sta file_rref
+ sta file_cref
+
+ lda #$00
+ sta file_dest
+ sta file_dest+1
 
 :readlp
  jsr $BF00
  dfb $CA              ; READ
- da ntp_read
+ da file_read
  bcs :close
 
- jsr ntp_copy_chunk
+ jsr file_copy_chunk
 
 * Advance destination by $1000
- lda ntp_dest+1
+ lda file_dest+1
  clc
  adc #$10
- sta ntp_dest+1
+ sta file_dest+1
  bcc :readlp
 * Address wrapped — next bank
  lda #$00
- sta ntp_dest+1
- inc ntp_bank
+ sta file_dest+1
+ inc file_bank
  bra :readlp
 
 :close
  php
  jsr $BF00
  dfb $CC              ; CLOSE
- da ntp_close
+ da file_close
  plp
 :err rts
 
 *----------------------------------------------------------
-* ntp_copy_chunk - Copy 4KB from ]RDBUF to ntp_bank/ntp_dest
+* file_copy_chunk - Copy 4KB from ]RDBUF to file_bank/file_dest
 *----------------------------------------------------------
-ntp_copy_chunk
+file_copy_chunk
  clc
  xce                   ; native mode
  rep $30
  mx %00                ; tell Merlin: 16-bit A and index
 
- lda ntp_dest
+ lda file_dest
  sta $F0
  sep $20
- lda ntp_bank
+ lda file_bank
  sta $F2
  rep $30
 
@@ -7223,33 +7561,30 @@ ntp_copy_chunk
  rts
 
 *----------------------------------------------------------
-* NTP loader ProDOS 8 parameter blocks
+* File loader ProDOS 8 parameter blocks
 *----------------------------------------------------------
-ntp_dest ds 2
-ntp_bank dfb $11       ; default bank (NTPPLAYER)
+file_dest ds 2
+file_bank dfb $02
 
-ntp_open dfb 3
- da ntpp_path          ; default pathname (NTPPLAYER)
+file_open dfb 3
+ da mission1_path
  da ]IOBUF
-ntp_oref dfb 0
+file_oref dfb 0
 
-ntp_read dfb 4
-ntp_rref dfb 0
+file_read dfb 4
+file_rref dfb 0
  da ]RDBUF
  da $1000
  ds 2                  ; transfer count
 
-ntp_close dfb 1
-ntp_cref dfb 0
-
-ntpp_path dfb 17
- asc '/DDIIGS/NTPPLAYER'
-
-m1ntp_path dfb 29
- asc '/DDIIGS/MISSION1/MISSION1.NTP'
+file_close dfb 1
+file_cref dfb 0
 
 mission1_path dfb 25
  asc '/DDIIGS/MISSION1/MISSION1'
+
+punch_path dfb 17
+ asc '/DDIIGS/PUNCH.RAW'
 
 *----------------------------------------------------------
 * scroll_right - Scroll playfield 1 byte (2 pixels) right.
