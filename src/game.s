@@ -274,9 +274,6 @@ over1
  txa
  jsl NTPprepare
 
- lda #180
- jsl NTPsetplayvolume
-
  sec
  xce
  sep $20
@@ -291,7 +288,7 @@ over1
 * Reduce music volume so SFX (which streams through
 * NTPstreamsound at addr_res=1) is audible above the
 * music bed. $40 ≈ 25% of full; tune empirically.
- lda #$0040
+ lda #$0050
  jsl NTPsetplayvolume
 
  sec
