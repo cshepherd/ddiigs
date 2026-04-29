@@ -55,7 +55,7 @@ NTPstreamsound          =   NinjaTrackerPlus+24
 * the table (load each from disk via bank $11 scratch, upload
 * to its DOC RAM slot).
 ; jsr init_doc
- jsr sound_install_all
+; jsr sound_install_all
 
 * Load NTP player code to bank $12 starting at $12/0000
  lda #<ntpplayer_path
@@ -274,8 +274,26 @@ over1
  txa
  jsl NTPprepare
 
+ lda #180
+ jsl NTPsetplayvolume
+
+ sec
+ xce
+ sep $20
+ jsr sound_install_all
+ clc
+ xce
+ rep $30
+
  lda #00
  jsl NTPplay
+
+* Reduce music volume so SFX (which streams through
+* NTPstreamsound at addr_res=1) is audible above the
+* music bed. $40 ≈ 25% of full; tune empirically.
+ lda #$0040
+ jsl NTPsetplayvolume
+
  sec
  xce
  sep $30
@@ -4977,7 +4995,20 @@ process_input
  ldx #>anim_punch2
  jsr start_anim
  rts
-:not_invuln cmp #'i'
+:not_invuln cmp #'v'
+ bne :not_b
+ jsr verify_punch_state
+ rts
+:not_b cmp #'b'
+ bne :not_verify
+* Trigger punch, wait ~3 VBLs (~50 ms — well inside the
+* 120 ms sample), then snapshot state during playback.
+ ldx #SND_PUNCH
+ jsr sound_trigger
+ jsr verify_wait_3vbls
+ jsr verify_punch_state
+ rts
+:not_verify cmp #'i'
  bne :no_key2
 * Toggle invincibility
  lda god_mode
@@ -7238,14 +7269,18 @@ init_doc
  lda $C03D
  bpl :drain
 
-* Enable 9 oscillators (write $12 = count*2 to $E1) so we
-* can address osc 8 — the chip can't skip lower indices.
-* Lowering osc-update rate to 894886/(9+2) = ~81 kHz/osc.
+* Enable 31 oscillators (write $3E = count*2 to $E1).
+* This matches NTP's runtime setting (osc 0-7 = music tracks,
+* osc 31 = music timer); osc 8+ available for SFX. Per-osc
+* update rate becomes 894886/(31+2) = ~27 kHz. We pre-set
+* this so SFX Fc values stay valid whether music is playing
+* or not — NTP overwrites $E1 with this same value when its
+* setup_interrupt runs, so matching avoids a rate jump.
  jsr doc_wait
  lda #$E1
  sta $C03E
  jsr doc_wait
- lda #$12
+ lda #$3E
  sta $C03D
 
  plp
@@ -7257,83 +7292,105 @@ doc_wait
  rts
 
 *----------------------------------------------------------
-* Sound system - table-driven SFX playback.
+* Sound system — SFX playback via NTPstreamsound.
 *
-* Each sound is a record in sound_table:
-*   +0   doc_ptr   wavetable pointer (high byte of DOC RAM addr)
-*   +1   wt_size   wavetable size register value
-*   +2   fc        16-bit playback frequency (Fc)
-*   +4   length    16-bit sample length in bytes
-*   +6   zfill     16-bit zero-fill bytes after sample
-*                  (= wavetable_size_bytes - length)
-*   +8   pathlen   ProDOS pathname length byte
-*   +9+  path      pathname characters
+* Each SFX is described by a 15-byte stream_structure that
+* matches NTP's expected layout (see ninjatrackerp.s line
+* 124+). NTPstreamsound allocates two oscillators per SFX
+* (an interrupt timer + a playback voice), streams the
+* sample from CPU RAM into a 512-byte DOC RAM buffer, and
+* halts the voices when the source RAM is exhausted.
 *
-* Wavetable size register value:
-*   bits 5-3 = size code (4=4K, 5=8K, 6=16K, 7=32K)
-*   bits 2-0 = address resolution (must be 7 for every-byte)
-* Wavetable pointer (high byte of base addr) must be aligned
-* to wavetable size: 4K table → ptr % $10 == 0; 8K → % $20.
+* Per-SFX layout:
+*   +0/+2  4-byte pointer to sample (lo word, hi word/bank)
+*   +4/+6  4-byte length in bytes (lo word, hi word)
+*   +8     2-byte Fc (playback frequency)
+*   +10    1-byte DOC RAM page (must be 512-byte aligned)
+*   +11    1-byte first oscillator (0-29; +1 plays the sound)
+*   +12    1-byte playback osc count (we use 1 for mono)
+*   +13    1-byte volume (0-255)
+*   +14    1-byte channel ($00 = mono out)
 *
-* DOC RAM base for our sounds is $1000 ($0000-$0FFF reserved).
-* All sounds use oscillator 8; SFX are mutually exclusive.
-* init_doc enables 9 oscillators ($E1 = $12) so osc 8 is
-* reachable — per-osc rate becomes ~81 kHz.
-* Bank $11 is reused as scratch for each sound install.
+* SFX share interrupt+playback osc 8/9; triggering a new
+* sound stops the previous one. DOC RAM pages $80, $82, $84
+* are reserved for the three SFX (512 bytes each).
+* Samples live in CPU RAM bank $11 at fixed 4 KB offsets.
 *----------------------------------------------------------
 
-SR_DOC_PTR   equ 0
-SR_WT_SIZE   equ 1
-SR_FC        equ 2
-SR_LEN       equ 4
-SR_ZFILL     equ 6
-SR_PATHLEN   equ 8
-
-* Sound IDs (indices into sound_table)
 SND_PUNCH        equ 0
 SND_PUNCHLANDED  equ 1
 SND_FINGER       equ 2
 SND_COUNT        equ 3
 
-sound_ptr    equ $F6   ; ZP: 2-byte ptr to current sound record
+sound_ptr equ $F6   ; ZP: 2-byte pointer to current SFX struct
 
 sound_table
- dw sound_punch
- dw sound_punchlanded
- dw sound_finger
+ da sfx_punch_struct
+ da sfx_punchlanded_struct
+ da sfx_finger_struct
 
-sound_punch
- dfb $60            ; doc_ptr = $60 → DOC RAM $6000
- dfb $27            ; wt_size: 4K wavetable + every-byte res
- dw $0326           ; fc (~8 kHz at OSC=9, RES=4)
- dw $03C6           ; length 966
- dw $0C3A           ; zfill 4096-966 = 3130
- dfb 21
- asc '/DDIIGS/SFX/PUNCH.RAW'
+sound_path_table
+ da sfx_punch_path
+ da sfx_punchlanded_path
+ da sfx_finger_path
 
-sound_punchlanded
- dfb $70            ; doc_ptr = $70 → DOC RAM $7000
- dfb $27            ; wt_size: 4K wavetable + every-byte res
- dw $0326           ; fc (~8 kHz at OSC=9, RES=4)
- dw $0474           ; length 1140
- dw $0B8C           ; zfill 4096-1140 = 2956
- dfb 27
- asc '/DDIIGS/SFX/PUNCHLANDED.RAW'
+* Each sample loads to bank $11 at offset = (sound_index * $1000).
+* Byte at offset +15 is our private "amplification shift" used
+* by sfx_amplify (NTPstreamsound only reads up through +14).
+sfx_punch_struct
+ da $0000           ; sample addr lo word ($11/0000)
+ da $0011           ; sample addr hi word (bank $11, hi=0)
+ da $03C6           ; length lo word (966)
+ da $0000           ; length hi word
+ da $009C           ; Fc — playback rate
+ dfb $80            ; doc_ram_page → DOC $8000
+ dfb $08            ; first_osc (interrupt timer)
+ dfb $01            ; playback osc count
+ dfb $FF            ; volume
+ dfb $00            ; channel (mono out)
+ dfb 2              ; gain shift (×4 — narrow source dynamic range)
 
-sound_finger
- dfb $40            ; doc_ptr = $40 → DOC RAM $4000 (8K-aligned)
- dfb $2F            ; wt_size: 8K wavetable + every-byte res
- dw $0193           ; fc (~8 kHz at OSC=9, RES=5)
- dw $1650           ; length 5712
- dw $09B0           ; zfill 8192-5712 = 2480
- dfb 22
- asc '/DDIIGS/SFX/FINGER.RAW'
+sfx_punchlanded_struct
+ da $1000           ; sample at $11/1000
+ da $0011
+ da $0474           ; length 1140
+ da $0000
+ da $009C
+ dfb $82            ; doc_ram_page → DOC $8200
+ dfb $08
+ dfb $01
+ dfb $FF
+ dfb $00
+ dfb 2              ; gain shift (×4)
 
-sound_len   ds 2
-sound_zfill ds 2
+sfx_finger_struct
+ da $2000           ; sample at $11/2000
+ da $0011
+ da $1650           ; length 5712
+ da $0000
+ da $009C
+ dfb $84            ; doc_ram_page → DOC $8400
+ dfb $08
+ dfb $01
+ dfb $FF
+ dfb $00
+ dfb 1              ; gain shift (×2 — wider source range, avoid clip)
+
+sfx_punch_path        dfb 21
+                      asc '/DDIIGS/SFX/PUNCH.RAW'
+sfx_punchlanded_path  dfb 27
+                      asc '/DDIIGS/SFX/PUNCHLANDED.RAW'
+sfx_finger_path       dfb 22
+                      asc '/DDIIGS/SFX/FINGER.RAW'
+
+sound_len           ds 2   ; scratch — 16-bit length for sfx_amplify
+sfx_gain_shift      ds 2   ; 16-bit: low byte = shift, high byte = 0
+sfx_pos_threshold   ds 1   ; scratch — saturate positive dev above this
+sfx_neg_threshold   ds 1   ; scratch — saturate negative dev below this (signed)
 
 *----------------------------------------------------------
-* sound_select - X = sound index, sets sound_ptr to record.
+* sound_select - X = sound index, sets sound_ptr from
+* sound_table[X]. Caller stays in emulation mode.
 *----------------------------------------------------------
  mx %11
 sound_select
@@ -7347,102 +7404,166 @@ sound_select
  rts
 
 *----------------------------------------------------------
-* sound_load - Load current sound's file from disk to
-* $11/0000 via load_file. sound_ptr must be set first.
+* sound_install_all - Load each SFX file into bank $11 at
+* a fixed offset (idx * $1000). load_file pre-fills ]RDBUF
+* with $80 each chunk so unused tail bytes are silent —
+* NTPstreamsound reads up to 256 bytes past the actual
+* sample length and would otherwise stream garbage.
+* Called at boot in emulation mode.
 *----------------------------------------------------------
-sound_load
- lda sound_ptr
- clc
- adc #SR_PATHLEN
+sound_install_all
+ ldx #0
+:loop
+ cpx #SND_COUNT
+ bcs :done
+ phx
+
+* Pull path pointer from sound_path_table[X*2]
+ txa
+ asl
+ tay                  ; Y = X * 2
+ lda sound_path_table,y
  sta file_open+1
- lda sound_ptr+1
- adc #0
+ lda sound_path_table+1,y
  sta file_open+2
+
+* file_dest = X * $1000 (bank-internal offset). file_dest
+* high byte = X * $10. Low byte = 0.
+ plx
+ phx
+ txa
+ asl
+ asl
+ asl
+ asl                  ; A = X * $10
+ sta file_dest+1
+ stz file_dest
+
  lda #$11
  sta file_bank
- stz file_dest
- stz file_dest+1
  jsr load_file
+
+* Amplify the just-loaded sample 4× in-place. sound_select
+* sets sound_ptr from sound_table[X], which sfx_amplify uses
+* to find the sample address and length.
+ plx
+ phx
+ jsr sound_select
+ jsr sfx_amplify
+
+ plx
+ inx
+ bra :loop
+:done
  rts
 
 *----------------------------------------------------------
-* sound_upload - Copy from $11/0000 to DOC RAM at doc_ptr.
-* Length and zero-fill come from the record at sound_ptr.
-* $00 source bytes are remapped to $01 to keep the chip
-* from halting on a zero sample.
+* sfx_amplify - Multiply sample's deviation from $80 by
+* 2^shift (1×, 2×, 4×, 8×) where shift is read from the
+* SFX struct at offset 15. Saturates at $01..$FF. Walks
+* the sample bytes in-place. Bytes at silence center ($80)
+* unchanged so trailing $80 padding stays silent.
+*
+* Caller: sound_ptr → SFX struct; emulation mode.
 *----------------------------------------------------------
-sound_upload
  mx %11
+sfx_amplify
  php
  sei
 
-* Cache length and zfill into 16-bit globals so the inner
-* loops can compare against them with cpy/dex (16-bit X).
- ldy #SR_LEN
+* Read shift count; if 0 nothing to do.
+ ldy #15
+ lda (sound_ptr),y
+ bne :amp_go
+ jmp :noamp
+:amp_go
+ sta sfx_gain_shift
+ stz sfx_gain_shift+1   ; ensure 16-bit ldx reads $00xx not $XXxx
+
+* pos_threshold = $80 >> shift (saturate above this)
+ lda #$80
+ ldx sfx_gain_shift
+:thresh_loop
+ lsr
+ dex
+ bne :thresh_loop
+ sta sfx_pos_threshold
+
+* neg_threshold = -pos_threshold (saturate below this signed)
+ lda #0
+ sec
+ sbc sfx_pos_threshold
+ sta sfx_neg_threshold
+
+* Load source long pointer from struct[0..2]
+ ldy #0
+ lda (sound_ptr),y
+ sta $F0
+ iny
+ lda (sound_ptr),y
+ sta $F1
+ ldy #2
+ lda (sound_ptr),y
+ sta $F2
+
+* Cache 16-bit length from struct[4..5]
+ ldy #4
  lda (sound_ptr),y
  sta sound_len
  iny
  lda (sound_ptr),y
  sta sound_len+1
- ldy #SR_ZFILL
- lda (sound_ptr),y
- sta sound_zfill
- iny
- lda (sound_ptr),y
- sta sound_zfill+1
 
-* Source long pointer = $11/0000
- lda #$00
- sta $F0
- sta $F1
- lda #$11
- sta $F2
-
-* GLU CTL: RAM access (b6=1), auto-inc (b5=1), master vol = 0
- jsr doc_wait
- lda #$60
- sta $C03C
-
-* DOC RAM addr ptr: low = $00, high = doc_ptr from record
- jsr doc_wait
- lda #$00
- sta $C03E
- jsr doc_wait
- ldy #SR_DOC_PTR
- lda (sound_ptr),y
- sta $C03F
-
-* Switch to native: 8-bit A, 16-bit X/Y for the byte loops
+* Switch to native: 8-bit A, 16-bit X/Y for the byte loop
  clc
  xce
  sep #$20
  rep #$10
  mx %10
 
-* Sample copy loop
  ldy #$0000
 :loop
  lda [$F0],y
+ sec
+ sbc #$80              ; signed deviation from silence center
+ bmi :neg
+
+* Positive: saturate if dev >= pos_threshold
+ cmp sfx_pos_threshold
+ bcs :pos_sat
+ ldx sfx_gain_shift
+:pos_shift
+ asl
+ dex
+ bne :pos_shift
+ bra :back
+:pos_sat
+ lda #$7F
+ bra :back
+
+* Negative: saturate if dev < neg_threshold (more negative)
+:neg
+ cmp sfx_neg_threshold
+ bcs :neg_inrange
+ lda #$80
+ bra :back
+:neg_inrange
+ ldx sfx_gain_shift
+:neg_shift
+ asl
+ dex
+ bne :neg_shift
+
+:back
+ clc
+ adc #$80              ; back to unsigned
  bne :nz
- lda #$01           ; remap $00 → $01
+ lda #$01              ; remap $00 → $01 (halt-on-zero guard)
 :nz
-:wb
- bit $C03C
- bmi :wb
- sta $C03D
+ sta [$F0],y
  iny
  cpy sound_len
  bne :loop
-
-* Zero-fill loop (count from record)
- ldx sound_zfill
-:zlp
-:zwb
- bit $C03C
- bmi :zwb
- stz $C03D
- dex
- bne :zlp
 
 * Restore emulation
  sep #$30
@@ -7453,112 +7574,34 @@ sound_upload
  plp
  rts
 
-*----------------------------------------------------------
-* sound_install - Load + upload current sound (sound_ptr).
-*----------------------------------------------------------
-sound_install
- jsr sound_load
- jsr sound_upload
+:noamp
+ plp
  rts
 
 *----------------------------------------------------------
-* sound_install_all - Walk sound_table and install each.
-* Called once at boot after init_doc.
-*----------------------------------------------------------
-sound_install_all
- ldx #0
-:loop
- cpx #SND_COUNT
- bcs :done
- phx
- jsr sound_select
- jsr sound_install
- plx
- inx
- bra :loop
-:done
- rts
-
-*----------------------------------------------------------
-* sound_play - Trigger osc 0 to play current sound.
-* sound_ptr must be set. Configures Fc, volume, wavetable
-* pointer, and size from the record, then starts in
-* one-shot mode.
+* sound_play - Hand off to NTPstreamsound with the current
+* sound's structure. NTP allocates oscillators 8/9, fills
+* the DOC RAM buffer from RAM, and starts streaming.
+* sound_ptr must already point to the SFX struct.
+* Called in emulation mode; restored on return.
 *----------------------------------------------------------
 sound_play
  mx %11
  php
- sei
 
-* GLU CTL: DOC reg space, auto-inc, master vol $F
- jsr doc_wait
- lda #$2F
- sta $C03C
+ clc
+ xce                   ; native mode for NTPstreamsound
+ rep #$30
+ mx %00
 
-* All per-osc register accesses target oscillator 8 (regs
-* at base+8: $08 freq-lo, $28 freq-hi, $48 vol, $88 wt-ptr,
-* $C8 wt-size, $A8 control).
+ ldy #$0000            ; bank 0 (struct lives in game.s data)
+ ldx sound_ptr         ; X = 16-bit struct address
+ jsl NTPstreamsound
 
-* Halt osc 8 before re-programming
- jsr doc_wait
- lda #$A8
- sta $C03E
- jsr doc_wait
- lda #$01
- sta $C03D
-
-* Freq Lo
- jsr doc_wait
- lda #$08
- sta $C03E
- jsr doc_wait
- ldy #SR_FC
- lda (sound_ptr),y
- sta $C03D
-
-* Freq Hi
- jsr doc_wait
- lda #$28
- sta $C03E
- jsr doc_wait
- ldy #SR_FC+1
- lda (sound_ptr),y
- sta $C03D
-
-* Per-osc volume = $FF
- jsr doc_wait
- lda #$48
- sta $C03E
- jsr doc_wait
- lda #$FF
- sta $C03D
-
-* Wavetable Pointer
- jsr doc_wait
- lda #$88
- sta $C03E
- jsr doc_wait
- ldy #SR_DOC_PTR
- lda (sound_ptr),y
- sta $C03D
-
-* Wavetable Size
- jsr doc_wait
- lda #$C8
- sta $C03E
- jsr doc_wait
- ldy #SR_WT_SIZE
- lda (sound_ptr),y
- sta $C03D
-
-* Start: Control = $02 → one-shot, IRQ off, run
-*   bit 0=halt, bits 2-1=mode (01=OneShot), bit 3=IRQ
- jsr doc_wait
- lda #$A8
- sta $C03E
- jsr doc_wait
- lda #$02
- sta $C03D
+ sec
+ xce                   ; back to emulation
+ sep #$30
+ mx %11
 
  plp
  rts
@@ -7569,6 +7612,178 @@ sound_play
 sound_trigger
  jsr sound_select
  jsr sound_play
+ rts
+
+*----------------------------------------------------------
+* verify_punch_state - Diagnostic: dumps osc 16 register
+* state plus DOC RAM bytes from the punch sample zone.
+*
+* Press 'v' in-game to fire this. Compare to expected:
+*   W=A0 S=27 V=FF M=2F C=02|03 D=??
+*   DOC[A000]=80  (punch byte 0, expected $80)
+*   DOC[A064]=7A  (punch byte 100)
+*   DOC[A0C8]=77  (punch byte 200)
+* Reads osc 8 (interrupt) and osc 9 (playback) state plus
+* DOC RAM at $8000 (NTPstreamsound buffer).
+* Expected after sound_play returns:
+*   osc 8 (interrupt):  W=00 S=00 V=00 C=08|0A
+*   osc 9 (playback):   W=80 S=09 V=FF C=00|03
+*   BUF $8000+: real sample bytes (e.g. $80 / $7F / etc.)
+*----------------------------------------------------------
+ mx %11
+verify_punch_state
+ php
+ sei
+
+* Switch GLU to DOC reg mode + auto-inc + master vol $F
+ jsr doc_wait
+ lda #$2F
+ sta $C03C
+
+* Osc 8 (interrupt timer): regs at base+8
+ lda #$CF              ; 'O'
+ jsr dbg_print_char
+ lda #$B8              ; '8'
+ jsr dbg_print_char
+ lda #$BD              ; '='
+ jsr dbg_print_char
+ lda #$88              ; W ($80+8)
+ jsr dbg_read_doc_reg
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda #$C8              ; S ($C0+8)
+ jsr dbg_read_doc_reg
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda #$48              ; V ($40+8)
+ jsr dbg_read_doc_reg
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda #$A8              ; C ($A0+8)
+ jsr dbg_read_doc_reg
+ jsr dbg_print_hex8
+ jsr dbg_print_nl
+
+* Osc 9 (playback): regs at base+9
+ lda #$CF              ; 'O'
+ jsr dbg_print_char
+ lda #$B9              ; '9'
+ jsr dbg_print_char
+ lda #$BD
+ jsr dbg_print_char
+ lda #$89              ; W
+ jsr dbg_read_doc_reg
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda #$C9              ; S
+ jsr dbg_read_doc_reg
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda #$49              ; V
+ jsr dbg_read_doc_reg
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda #$A9              ; C
+ jsr dbg_read_doc_reg
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda #$69              ; D ($60+9)
+ jsr dbg_read_doc_reg
+ jsr dbg_print_hex8
+ jsr dbg_print_nl
+
+* DOC RAM buffer at $8000 (where NTPstreamsound copies sample)
+ jsr doc_wait
+ lda #$6F
+ sta $C03C
+
+ lda #$C2              ; 'B'
+ jsr dbg_print_char
+ lda #$D5              ; 'U'
+ jsr dbg_print_char
+ lda #$C6              ; 'F'
+ jsr dbg_print_char
+ lda #$A0
+ jsr dbg_print_char
+
+* Read DOC[$8000], [$8004], [$8010], [$80F0]
+ lda #$00
+ ldx #$80
+ jsr verify_read_doc_ram
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda #$04
+ ldx #$80
+ jsr verify_read_doc_ram
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda #$10
+ ldx #$80
+ jsr verify_read_doc_ram
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda #$F0
+ ldx #$80
+ jsr verify_read_doc_ram
+ jsr dbg_print_hex8
+
+ jsr dbg_print_nl
+
+* Restore CTL to DOC reg mode + auto-inc + vol $F
+ jsr doc_wait
+ lda #$2F
+ sta $C03C
+
+ plp
+ rts
+
+* dbg_read_doc_reg - read DOC reg whose addr is in A. Forces
+* high byte of addr ptr to $00. CTL must be in DOC reg mode.
+dbg_read_doc_reg
+ jsr doc_wait
+ sta $C03E
+ jsr doc_wait
+ lda #$00
+ sta $C03F
+ jsr doc_wait
+ lda $C03D            ; dummy
+ jsr doc_wait
+ lda $C03D            ; real
+ rts
+
+* verify_wait_3vbls - busy-wait through 3 VBL transitions
+* (~50 ms) so verify_punch_state runs mid-sample.
+verify_wait_3vbls
+ ldx #3
+:vloop
+ jsr wait_for_vbl
+ dex
+ bne :vloop
+ rts
+
+* verify_read_doc_ram - read one byte from DOC RAM.
+*   A = address lo, X = address hi
+*   CTL must already be in RAM mode + auto-inc.
+*   Returns byte in A.
+verify_read_doc_ram
+ jsr doc_wait
+ sta $C03E
+ jsr doc_wait
+ stx $C03F
+ jsr doc_wait
+ lda $C03D            ; dummy (RAM read lags by 1)
+ jsr doc_wait
+ lda $C03D            ; real
  rts
 
 *----------------------------------------------------------
@@ -7585,6 +7800,11 @@ load_file
  sta file_cref
 
 :readlp
+* Pre-fill ]RDBUF with $80 (silence centre) before each READ
+* so any tail bytes ProDOS doesn't overwrite become silence in
+* the destination bank — needed by NTPstreamsound which reads
+* up to a 256-byte boundary past the actual sample end.
+ jsr fill_rdbuf_silence
  jsr $BF00
  dfb $CA              ; READ
  da file_read
@@ -7640,6 +7860,31 @@ file_copy_chunk
 
  sec
  xce                   ; back to emulation mode
+ rts
+
+*----------------------------------------------------------
+* fill_rdbuf_silence - Fill ]RDBUF (4 KB) with $80 (silence
+* centre). Called by load_file before each ProDOS READ so
+* bytes past file EOF in the destination bank are silent.
+*----------------------------------------------------------
+ mx %11
+fill_rdbuf_silence
+ clc
+ xce                   ; native mode
+ rep #$30
+ mx %00
+ lda #$8080            ; word fill
+ ldy #$0000
+ ldx #$0800            ; 2048 word writes = 4 KB
+:loop
+ sta ]RDBUF,y
+ iny
+ iny
+ dex
+ bne :loop
+ sec
+ xce                   ; back to emulation
+ mx %11
  rts
 
 *----------------------------------------------------------
