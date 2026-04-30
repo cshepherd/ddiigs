@@ -172,6 +172,11 @@ spr_bpunched_mask           dw BPUNCHED_MASK
 spr_bpunched_data_mirror    dw BPUNCHED_DATA_MIRROR
 spr_bpunched_mask_mirror    dw BPUNCHED_MASK_MIRROR
 
+; William somersault frames — used by fo_somersault closer (offsets +188..+192)
+spr_wsomer1   dw WSOMER1
+spr_wsomer2   dw WSOMER2
+spr_wsomer3   dw WSOMER3
+
 ; Level 1 script
 level_script
 ; screen 1

@@ -2945,6 +2945,8 @@ behav_faceoff
  beq :st_punch
  cmp #FO_COOLDOWN
  beq :st_cooldown
+ cmp #FO_SOMERSAULT
+ beq :st_somer
 * default: FO_APPROACH
  jmp fo_approach
 
@@ -2952,6 +2954,8 @@ behav_faceoff
  jmp fo_punch
 :st_cooldown
  jmp fo_cooldown
+:st_somer
+ jmp fo_somersault
 
 *----------------------------------------------------------
 * fo_find_player - Locate the keyboard-controlled player
@@ -3081,6 +3085,60 @@ fo_approach
  sta (info_ptr),y
 
 :do_move
+* Somersault trigger (William only, once per spawn). Gates:
+*   1. walk_anim == anim_wwalk (William, not Roper/Linda)
+*   2. info+5 (already-somersaulted flag) == 0
+*   3. |xpos - target_x| > SOMER_TRIGGER
+* Sprite info offset +5 is the padding byte after the 1-byte
+* mirror at +4; zero in all templates and never written by
+* anything else, so we use it as a per-NPC one-shot flag.
+ ldy #52
+ lda (info_ptr),y
+ cmp #<anim_wwalk
+ bne :sk_somer
+ ldy #53
+ lda (info_ptr),y
+ cmp #>anim_wwalk
+ bne :sk_somer
+ ldy #5
+ lda (info_ptr),y
+ bne :sk_somer         ; flag set -> never again
+ ldy #2
+ lda (info_ptr),y
+ sec
+ sbc fo_target_x
+ bpl :somer_abs_done
+ eor #$FF
+ clc
+ adc #1                ; |xpos - target_x|
+:somer_abs_done
+ cmp #SOMER_TRIGGER+1
+ bcc :sk_somer
+* Far enough to roll. Mark this William as "has somersaulted"
+* so subsequent ticks just walk. Clear anim_ptr so update_anims
+* leaves us alone; fo_somersault drives frame_addr manually.
+* Prime sub-frame counter to $FF and timer to 1 so the next
+* tick advances to sub-frame 0 and installs WSOMER1.
+ ldy #5
+ lda #$01
+ sta (info_ptr),y
+ lda #0
+ ldy #24
+ sta (info_ptr),y
+ ldy #25
+ sta (info_ptr),y
+ ldy #7
+ lda #FO_SOMERSAULT
+ sta (info_ptr),y
+ ldy #8
+ lda #$FF
+ sta (info_ptr),y
+ ldy #9
+ lda #$01
+ sta (info_ptr),y
+ rts
+:sk_somer
+
 * Snapshot current pos/size to prev fields before modifying
 * (so erase_all knows where to erase last frame's drawing)
  ldy #0
@@ -3336,6 +3394,229 @@ fo_cooldown
  sta (info_ptr),y
 :wait_more
  rts
+
+*----------------------------------------------------------
+* fo_somersault - 5-frame cartwheel-closer (William only).
+*
+* Sub-frame schedule (info_ptr+8 = sub-frame index 0..4):
+*   0  WSOMER1   mirror = orig
+*   1  WSOMER3   mirror = orig
+*   2  WSOMER2   mirror = orig
+*   3  WSOMER3   mirror = !orig   (toggle on entry)
+*   4  WSOMER1   mirror = !orig
+* On sub-frame 5 we restore mirror (toggle again) and hand
+* control back to FO_APPROACH; npc_ensure_walking will
+* reinstall the walk anim on the next fo_approach tick.
+*
+* anim_ptr is held at 0 throughout — we drive frame_addr
+* directly so update_anims stays out of our way. If anything
+* (typically a hit -> anim_wpunched) sets anim_ptr non-zero
+* mid-roll we abort: restore mirror if we're past the apex
+* and bounce back to FO_APPROACH so the punched anim plays.
+*
+* Per-VBL movement: 1 pixel toward fo_target_x, just like
+* the regular walk step (no bounds-check here — the
+* somersault distance is short and we already know the
+* target is reachable).
+*----------------------------------------------------------
+fo_somersault
+* Hijack check: anim_ptr non-zero AND not anim_wwalk means
+* something installed an action anim (hit reaction). Abort.
+ ldy #24
+ lda (info_ptr),y
+ sta :ap_tmp
+ ldy #25
+ lda (info_ptr),y
+ ora :ap_tmp
+ beq :alive            ; anim_ptr == 0 -> still our turn
+ jmp :abort
+
+:alive
+* Snapshot current pos/size to prev fields (so erase_all has
+* the right rect).
+ ldy #0
+ lda (info_ptr),y
+ ldy #32
+ sta (info_ptr),y
+ ldy #2
+ lda (info_ptr),y
+ ldy #34
+ sta (info_ptr),y
+ ldy #10
+ lda (info_ptr),y
+ ldy #36
+ sta (info_ptr),y
+ ldy #12
+ lda (info_ptr),y
+ ldy #38
+ sta (info_ptr),y
+
+* Decrement sub-frame timer.
+ ldy #9
+ lda (info_ptr),y
+ sec
+ sbc #1
+ sta (info_ptr),y
+ bne :step             ; not yet expired -> just step
+
+* Timer expired -> advance sub-frame.
+ ldy #8
+ lda (info_ptr),y
+ clc
+ adc #1
+ sta (info_ptr),y
+ cmp #5
+ bcc :keep_going
+ jmp :done             ; finished all 5 sub-frames
+:keep_going
+
+* New sub-frame entry. Mirror schedule (relative to original):
+*   0: orig   1: !orig   2: orig   3: orig   4: !orig
+* So flip mirror on entries into sub-frames 1, 2, 4.
+ cmp #1
+ beq :do_flip
+ cmp #2
+ beq :do_flip
+ cmp #4
+ bne :no_flip
+:do_flip
+ ldy #4
+ lda (info_ptr),y
+ eor #$01
+ sta (info_ptr),y
+:no_flip
+
+* Look up frame_addr from somersault_addr_tbl[sub-frame*2].
+ ldy #8
+ lda (info_ptr),y
+ asl
+ tay
+ lda somersault_addr_tbl,y
+ sta :tmp_lo
+ lda somersault_addr_tbl+1,y
+ sta :tmp_hi
+ ldy #14
+ lda :tmp_lo
+ sta (info_ptr),y      ; frame_addr low
+ iny
+ lda :tmp_hi
+ sta (info_ptr),y      ; frame_addr high
+
+* Read frame_x (addr-2) and frame_y (addr-4) from bank $02.
+* Each is stored as a 2-byte little-endian word but only the
+* low byte is the actual pixel count.
+ lda :tmp_lo
+ sec
+ sbc #4
+ sta $F0
+ lda :tmp_hi
+ sbc #0
+ sta $F1
+ lda #$02
+ sta $F2               ; bank $02
+ ldy #0
+ lda [$F0],y           ; frame_y_word low byte
+ ldy #12
+ sta (info_ptr),y      ; frame_y
+ ldy #2
+ lda [$F0],y           ; frame_x_word low byte
+ ldy #10
+ sta (info_ptr),y      ; frame_x
+
+* Reload sub-frame timer.
+ ldy #9
+ lda #SOMER_DURATION
+ sta (info_ptr),y
+
+:step
+* Move 1 pixel toward target_x (recomputed every tick by the
+* dispatcher's prior fo_approach call... but we get here
+* directly via behav_faceoff dispatch, so re-derive target).
+ jsr fo_find_player
+ beq :no_move          ; no player -> just dirty + return
+ lda fo_plr_facing
+ bne :tx_player_left
+ lda fo_plr_x
+ clc
+ adc fo_plr_w
+ clc
+ adc #FO_RANGE
+ sta fo_target_x
+ bra :tx_done
+:tx_player_left
+ lda fo_plr_x
+ sec
+ sbc #FO_RANGE
+ ldy #10
+ sec
+ sbc (info_ptr),y
+ sta fo_target_x
+:tx_done
+ ldy #2
+ lda (info_ptr),y
+ cmp fo_target_x
+ beq :no_move
+ bcs :step_left
+ ldy #2
+ lda (info_ptr),y
+ clc
+ adc #1
+ sta (info_ptr),y
+ bra :no_move
+:step_left
+ ldy #2
+ lda (info_ptr),y
+ sec
+ sbc #1
+ sta (info_ptr),y
+
+:no_move
+ ldy #30
+ lda #$03
+ sta (info_ptr),y      ; needs_draw + needs_erase
+ rts
+
+:done
+* All 5 sub-frames played. Restore mirror (currently flipped
+* from the back-half) and return control to FO_APPROACH; next
+* fo_approach tick will reinstall the walk anim and resume.
+ ldy #4
+ lda (info_ptr),y
+ eor #$01
+ sta (info_ptr),y
+ ldy #7
+ lda #FO_APPROACH
+ sta (info_ptr),y
+ ldy #30
+ lda #$03
+ sta (info_ptr),y
+ rts
+
+:abort
+* Hit reaction (or other anim) hijacked us. Mirror is currently
+* flipped only while we're inside sub-frame 1 or 4 (per the
+* schedule above); restore it in those cases. Then bounce to
+* FO_APPROACH so the action anim runs cleanly.
+ ldy #8
+ lda (info_ptr),y
+ cmp #1
+ beq :ab_do_restore
+ cmp #4
+ bne :ab_no_restore
+:ab_do_restore
+ ldy #4
+ lda (info_ptr),y
+ eor #$01
+ sta (info_ptr),y
+:ab_no_restore
+ ldy #7
+ lda #FO_APPROACH
+ sta (info_ptr),y
+ rts
+
+:ap_tmp dfb 0
+:tmp_lo dfb 0
+:tmp_hi dfb 0
 
 *----------------------------------------------------------
 * npc_ensure_walking - If NPC's anim_ptr is not anim_wwalk,
@@ -4504,9 +4785,15 @@ LD_INIT      = 0      ; first frame: snap to ladder top
 LD_DESCEND   = 1      ; climbing down
 
 * Face-off sub-states (stored at info_block+7)
-FO_APPROACH = 0       ; walking toward player
-FO_PUNCH    = 1       ; throwing a punch
-FO_COOLDOWN = 2       ; waiting after punch
+FO_APPROACH    = 0    ; walking toward player
+FO_PUNCH       = 1    ; throwing a punch
+FO_COOLDOWN    = 2    ; waiting after punch
+FO_SOMERSAULT  = 3    ; rolling cartwheel-closer (William only)
+
+* Somersault tunables
+SOMER_TRIGGER  = 12   ; px from target_x; > this triggers somersault on
+                      ;   the next FO_APPROACH tick instead of walking
+SOMER_DURATION = 6    ; VBLs each somersault sub-frame is shown
 
 * Flank sub-states (stored at info_block+7)
 FL_ARC      = 0       ; arc to a corner behind player
@@ -6932,6 +7219,26 @@ init_level
  lda [$F0],y
  sta spr_bpunched_mask_mirror
 
+* William somersault frames (offsets +188..+192) and patch the
+* sub-frame lookup table used by fo_somersault. Sub-frame map:
+*   0: WSOMER1   3: WSOMER3 (mirrored)
+*   1: WSOMER3   4: WSOMER1 (mirrored)
+*   2: WSOMER2
+ ldy #188
+ lda [$F0],y
+ sta spr_wsomer1
+ sta somersault_addr_tbl       ; sub-frame 0
+ sta somersault_addr_tbl+8     ; sub-frame 4
+ ldy #190
+ lda [$F0],y
+ sta spr_wsomer2
+ sta somersault_addr_tbl+4     ; sub-frame 2
+ ldy #192
+ lda [$F0],y
+ sta spr_wsomer3
+ sta somersault_addr_tbl+2     ; sub-frame 1
+ sta somersault_addr_tbl+6     ; sub-frame 3
+
 * Now patch all DA references in animation descriptors
 * and sprite info blocks with bank $02 addresses.
 * Each anim frame has: dfb x,y,dur, DA addr (5 bytes per frame)
@@ -7275,6 +7582,14 @@ spr_william2 ds 2
 spr_william3 ds 2
 spr_wpunch1  ds 2
 spr_wpunch2  ds 2
+spr_wsomer1  ds 2     ; somersault frame 1 (and 5 mirrored)
+spr_wsomer2  ds 2     ; somersault frame 3 (apex)
+spr_wsomer3  ds 2     ; somersault frame 2 (and 4 mirrored)
+
+* Sub-frame -> WSOMER frame address. Filled in by init_level
+* once spr_wsomer{1,2,3} are patched. Indexed by sub-frame×2.
+somersault_addr_tbl ds 10
+
 ; Roper
 spr_roper1   ds 2
 spr_roper2   ds 2
