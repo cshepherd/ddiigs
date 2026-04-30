@@ -177,6 +177,11 @@ spr_wsomer1   dw WSOMER1
 spr_wsomer2   dw WSOMER2
 spr_wsomer3   dw WSOMER3
 
+; Billy uppercut frames — used by anim_uppercut (offsets +194..+198)
+spr_bupper1   dw BUPPER1
+spr_bupper2   dw BUPPER2
+spr_bupper3   dw BUPPER3
+
 ; Level 1 script
 level_script
 ; screen 1

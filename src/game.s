@@ -4806,6 +4806,11 @@ FL_COOLDOWN = 3       ; waiting after punch
 * If an action animation is playing, ignore all input.
 *----------------------------------------------------------
 process_input
+* Tick down the uppercut input window each frame.
+ lda landing_window
+ beq :no_lw_dec
+ dec landing_window
+:no_lw_dec
 * Find the keyboard-controlled sprite (controller = $01)
  lda #<sprite_table
  sta spr_ptr
@@ -5350,6 +5355,17 @@ process_input
  bne :not_invuln
  ldx #SND_PUNCH
  jsr sound_trigger
+* Uppercut window: if landing_window > 0, swap in anim_uppercut
+* (does +3 damage and forces fall_anim — see check_punch_hit).
+* Consume the window so a single landing yields one uppercut.
+ lda landing_window
+ beq :reg_punch
+ stz landing_window
+ lda #<anim_uppercut
+ ldx #>anim_uppercut
+ jsr start_anim
+ rts
+:reg_punch
 * Alternate between punch1 and punch2 each press
  lda punch_toggle
  eor #$01
@@ -5727,10 +5743,29 @@ start_anim
  and #$80
  bne :sa_compiled
 * === Legacy 5-byte stride: frame 0 at +3..+7 ===
-* Reached only by NPC animations (anim_wpunched, anim_wfall, etc.)
-* — every Billy animation is compiled (flag bit 7 set). The Billy-
-* specific MASK_ADDR clear that lived here in A1/A2.2 is now dead
-* code and was removed in A3.
+* Reached by NPC animations and by Billy's anim_uppercut (which is
+* uncompiled because BUPPER frames don't ship in compiled form).
+* If the keyboard player (Billy) is starting an uncompiled anim,
+* clear MASK_ADDR + info+52 so draw_all routes him through the
+* legacy draw_sprite path. NPCs starting uncompiled anims must
+* NOT touch MASK_ADDR — when Billy hits an NPC mid-punch the hit
+* path runs start_anim on the target's punched_anim, and clearing
+* the global mask there would clobber Billy's compiled state and
+* re-route him into the legacy renderer with compiled data,
+* rendering as black boxes around his sprite.
+ ldy #22
+ lda (info_ptr),y
+ cmp #$01
+ bne :sa_legacy_load
+ lda #0
+ sta MASK_ADDR
+ sta MASK_ADDR+1
+ ldy #52
+ lda #0
+ sta (info_ptr),y
+ iny
+ sta (info_ptr),y
+:sa_legacy_load
  ldy #3
  lda (anim_ptr),y     ; frame_x
  sta FRAME_X
@@ -5971,6 +6006,18 @@ update_anims
  sta (info_ptr),y     ; anim_frame = 0
  jmp :load_frame
 :anim_done
+* Landing detection: if Billy's jump anim just ended, open the
+* uppercut window. Only Billy runs anim_jump so the anim_ptr
+* match is sufficient.
+ lda anim_ptr
+ cmp #<anim_jump
+ bne :ad_not_jump
+ lda anim_ptr+1
+ cmp #>anim_jump
+ bne :ad_not_jump
+ lda #UPPERCUT_WINDOW
+ sta landing_window
+:ad_not_jump
 * Check if this was a fall_anim and punch_count >= 6 (death)
  ldy #50
  lda (info_ptr),y     ; fall_anim low
@@ -6210,9 +6257,25 @@ update_anims
  pla
  ldy #28
  sta (info_ptr),y     ; anim_timer = duration
-* Legacy frames are reached only by NPC animations now. The Billy-
-* specific MASK_ADDR clear that lived here in A1/A2 is dead code
-* (every Billy animation is compiled) and was removed in A3.
+* Legacy frames are reached by NPC animations and by Billy's
+* anim_uppercut. Same constraint as start_anim: clear MASK_ADDR
+* + info+52 only for the keyboard player. Touching MASK_ADDR for
+* an NPC mid-frame (e.g. punched_anim spawned by check_punch_hit)
+* would clobber Billy's still-active compiled mask and put him
+* on the legacy draw path with compiled pixel data.
+ ldy #22
+ lda (info_ptr),y
+ cmp #$01
+ bne :lf_legacy_done
+ lda #0
+ sta MASK_ADDR
+ sta MASK_ADDR+1
+ ldy #52
+ lda #0
+ sta (info_ptr),y
+ iny
+ sta (info_ptr),y
+:lf_legacy_done
  jmp :lf_load_done
 
 :lf_compiled
@@ -6332,9 +6395,17 @@ update_anims
 :try_lp
  lda anim_ptr
  cmp #<anim_lpunch
- bne :try_kick
+ bne :try_upr
  lda anim_ptr+1
  cmp #>anim_lpunch
+ bne :try_upr
+ jmp :do_hit_now
+:try_upr
+ lda anim_ptr
+ cmp #<anim_uppercut
+ bne :try_kick
+ lda anim_ptr+1
+ cmp #>anim_uppercut
  bne :try_kick
  jmp :do_hit_now
 :try_kick
@@ -7239,6 +7310,17 @@ init_level
  sta somersault_addr_tbl+2     ; sub-frame 1
  sta somersault_addr_tbl+6     ; sub-frame 3
 
+* Billy uppercut frames (offsets +194..+198)
+ ldy #194
+ lda [$F0],y
+ sta spr_bupper1
+ ldy #196
+ lda [$F0],y
+ sta spr_bupper2
+ ldy #198
+ lda [$F0],y
+ sta spr_bupper3
+
 * Now patch all DA references in animation descriptors
 * and sprite info blocks with bank $02 addresses.
 * Each anim frame has: dfb x,y,dur, DA addr (5 bytes per frame)
@@ -7345,6 +7427,15 @@ init_level
  sta anim_bpunched+10
  lda spr_bpunched_mask_mirror
  sta anim_bpunched+12
+
+* Patch anim_uppercut: 3 raw frames (5-byte stride: 3 hdr + 2 addr).
+* Frame addrs at offsets +6, +11, +16 from anim_uppercut.
+ lda spr_bupper1
+ sta anim_uppercut+3+3        ; frame 0 addr
+ lda spr_bupper2
+ sta anim_uppercut+3+8        ; frame 1 addr
+ lda spr_bupper3
+ sta anim_uppercut+3+13       ; frame 2 addr
 
 * Patch anim_wpunched: 1 frame
  lda spr_wpunched
@@ -7585,10 +7676,19 @@ spr_wpunch2  ds 2
 spr_wsomer1  ds 2     ; somersault frame 1 (and 5 mirrored)
 spr_wsomer2  ds 2     ; somersault frame 3 (apex)
 spr_wsomer3  ds 2     ; somersault frame 2 (and 4 mirrored)
+spr_bupper1  ds 2     ; uppercut frame 1
+spr_bupper2  ds 2     ; uppercut frame 2
+spr_bupper3  ds 2     ; uppercut frame 3
 
 * Sub-frame -> WSOMER frame address. Filled in by init_level
 * once spr_wsomer{1,2,3} are patched. Indexed by sub-frame×2.
 somersault_addr_tbl ds 10
+
+* Uppercut input window. Counts down from UPPERCUT_WINDOW after
+* anim_jump ends (i.e., Billy lands). While > 0, a Punch press
+* triggers anim_uppercut instead of anim_punch1/2.
+UPPERCUT_WINDOW = 15  ; VBL frames
+landing_window dfb 0
 
 ; Roper
 spr_roper1   ds 2
@@ -11255,6 +11355,21 @@ anim_punch2
   hex 0000             ; +21 patched: PUNCH22_DATA_MIRROR
   hex 0000             ; +23 patched: PUNCH22_MASK_MIRROR
 
+* Billy uppercut. 3 raw (uncompiled) frames, one-shot. Frame
+* sizes are read from the BUPPERn_X / BUPPERn_Y bytes that
+* live two/four bytes before each frame's data label in bank
+* $02; the values below are placeholders patched at init.
+anim_uppercut
+ dfb 3               ; num_frames
+ dfb $0F             ; max_width (BUPPER2 widest at $0F)
+ dfb $00             ; flags: none (one-shot, uncompiled)
+ dfb $0C,$25,5       ; BUPPER1: 12 wide, 37 tall, 5 VBLs
+  hex 0000             ; patched: BUPPER1
+ dfb $0F,$23,5       ; BUPPER2: 15 wide, 35 tall, 5 VBLs
+  hex 0000             ; patched: BUPPER2
+ dfb $0D,$2D,5       ; BUPPER3: 13 wide, 45 tall, 5 VBLs
+  hex 0000             ; patched: BUPPER3
+
 anim_bpunched
  dfb 1               ; num_frames
  dfb $0B             ; max_width
@@ -11973,11 +12088,23 @@ check_punch_hit
  jmp :advance        ; target too far left
 :hit
 
-* Hit! Increment target's punch count
+* Hit! Damage = 3 if puncher is mid-uppercut, else 1.
+ lda anim_ptr
+ cmp #<anim_uppercut
+ bne :hit_dmg1
+ lda anim_ptr+1
+ cmp #>anim_uppercut
+ bne :hit_dmg1
+ lda #3
+ bra :hit_dmg_done
+:hit_dmg1
+ lda #1
+:hit_dmg_done
+ sta :hit_damage
  ldy #48
  lda (info_ptr),y
  clc
- adc #1
+ adc :hit_damage
  sta (info_ptr),y
 * Award 100 points to player 1 and mark score for redraw.
  jsr incp1s_hundreds
@@ -11991,7 +12118,17 @@ check_punch_hit
 ; and #$F0
 ; ora :tmp
 ; stal $E0C034
-* Check if punch_count triggers a fall (3 or 6)
+* Check if punch_count triggers a fall (3 or 6) — or force fall
+* immediately if the puncher is mid-uppercut (the +3 damage was
+* meant to send them straight to the ground regardless of count).
+ lda anim_ptr
+ cmp #<anim_uppercut
+ bne :hit_count_check
+ lda anim_ptr+1
+ cmp #>anim_uppercut
+ bne :hit_count_check
+ jmp :use_fall
+:hit_count_check
  ldy #48
  lda (info_ptr),y     ; punch_count
  cmp #3
@@ -12114,6 +12251,7 @@ check_punch_hit
 :tgt_h dfb 0
 :tgt_bottom dfb 0
 :tmp dfb 0
+:hit_damage dfb 0     ; +1 normal punch, +3 uppercut
 
 * (advance_frame removed — animation now data-driven via update_anims)
 
