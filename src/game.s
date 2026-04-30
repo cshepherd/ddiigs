@@ -6413,6 +6413,16 @@ start_anim
 * fallen frame and un-bump on animation end / death.
 FALL_Y_OFFSET = 24
 
+* Fall trajectory (NES-style arc). Frame 0 of fall_anim plays for
+* FALL_ARC_FRAMES VBLs; on each VBL, ypos moves -2 while timer >
+* FALL_ARC_PEAK and +2 otherwise (so the apex is FALL_ARC_PEAK*2 px
+* up, and net Y change over the whole arc is 0). xpos shifts ±1
+* per VBL based on enemy.mirror (so the body lands FALL_ARC_FRAMES
+* px in Billy's facing direction). Flag bit 4 in the anim header
+* gates the trajectory.
+FALL_ARC_FRAMES = 10        ; total VBLs Frame 0 plays for
+FALL_ARC_PEAK   = 5         ; timer threshold: > → rising, ≤ → falling
+
 *----------------------------------------------------------
 * update_anims - Iterate sprite_table, advance animation
 * timers, update frames.
@@ -6512,8 +6522,99 @@ update_anims
  ldy #30
  lda #$03
  sta (info_ptr),y     ; mark dirty (bit0=draw, bit1=erase)
-* Decrement timer
 :no_advance
+* Check flags bit 4: fall trajectory (parabolic arc, only on frame 0).
+* Per-VBL: dx = ±1 (away from puncher = toward enemy.mirror), dy = -2
+* on the rising half (timer > FALL_ARC_PEAK), +2 on the falling half.
+* Net Y returns to start; net X displaces by FALL_ARC_FRAMES*1 in the
+* direction the enemy is facing-from (= Billy's facing at hit time).
+ ldy #2
+ lda (anim_ptr),y     ; flags
+ and #$10             ; bit 4
+ beq :no_ftraj
+ ldy #26
+ lda (info_ptr),y     ; anim_frame
+ bne :no_ftraj        ; only frame 0 (the FALL pose)
+* On the first VBL of the trajectory (timer still = FALL_ARC_FRAMES),
+* leave prev_* alone. start_anim left them pointing at the standing
+* pose so erase_all's union rect can clean up the standing-pose
+* footprint (esp. the boots, which extend below the FALL pose). On
+* subsequent VBLs, snapshot prev_* to the just-drawn FALL position.
+ ldy #28
+ lda (info_ptr),y
+ cmp #FALL_ARC_FRAMES
+ beq :ftraj_skip_snap
+* Snapshot prev_* before mutating current
+ ldy #2
+ lda (info_ptr),y
+ ldy #34
+ sta (info_ptr),y     ; prev_xpos
+ ldy #0
+ lda (info_ptr),y
+ ldy #32
+ sta (info_ptr),y     ; prev_ypos
+ ldy #10
+ lda (info_ptr),y
+ ldy #36
+ sta (info_ptr),y     ; prev_frame_x
+ ldy #12
+ lda (info_ptr),y
+ ldy #38
+ sta (info_ptr),y     ; prev_frame_y
+:ftraj_skip_snap
+* dx = enemy faces left (mirror=1) → +1; mirror=0 → -1.
+* (Enemy faces Billy when hit, so this throws them away from Billy
+*  in Billy's facing direction.)
+* Clamp to playfield bounds [1, PLAYER_MAX_X] so a hit near the edge
+* doesn't fling the body offscreen. Hitting the wall stops horizontal
+* motion for the rest of the arc — sprite still rises and falls.
+ ldy #4
+ lda (info_ptr),y
+ beq :ftraj_dx_neg
+* Moving right: skip if xpos already at PLAYER_MAX_X.
+ ldy #2
+ lda (info_ptr),y
+ cmp #PLAYER_MAX_X
+ bcs :ftraj_dy        ; xpos >= PLAYER_MAX_X — clamp (no inc)
+ clc
+ adc #1
+ sta (info_ptr),y
+ bra :ftraj_dy
+:ftraj_dx_neg
+* Moving left: skip if xpos already at 1.
+ ldy #2
+ lda (info_ptr),y
+ cmp #2
+ bcc :ftraj_dy        ; xpos < 2 — clamp (no dec)
+ sec
+ sbc #1
+ sta (info_ptr),y
+:ftraj_dy
+* dy: rising while timer > FALL_ARC_PEAK, falling otherwise.
+ ldy #28
+ lda (info_ptr),y     ; current timer (counts down)
+ cmp #FALL_ARC_PEAK+1
+ bcc :ftraj_falling
+* Rising: ypos -= 2
+ ldy #0
+ lda (info_ptr),y
+ sec
+ sbc #2
+ sta (info_ptr),y
+ bra :ftraj_done
+:ftraj_falling
+* Falling: ypos += 2
+ ldy #0
+ lda (info_ptr),y
+ clc
+ adc #2
+ sta (info_ptr),y
+:ftraj_done
+ ldy #30
+ lda #$03
+ sta (info_ptr),y     ; mark dirty
+:no_ftraj
+* Decrement timer
  ldy #28
  lda (info_ptr),y     ; anim_timer
  sec
@@ -12002,8 +12103,8 @@ anim_wpunched
 anim_wfall
  dfb 2               ; num_frames
  dfb $13             ; max_width (WFALL is widest at $13)
- dfb $00             ; flags: none (one-shot)
- dfb $13,$21,3       ; WFALL: 19 wide, 33 tall, 3 VBLs
+ dfb $10             ; flags: bit 4 = fall trajectory (parabolic arc)
+ dfb $13,$21,FALL_ARC_FRAMES ; WFALL: 19 wide, 33 tall, arc duration
   hex 0000             ; patched: WFALL
  dfb $10,$0D,60      ; WFALLEN: 16 wide, 13 tall, 60 VBLs
   hex 0000             ; patched: WFALLEN
@@ -12075,12 +12176,12 @@ anim_rpunched
  dfb $09,$26,5       ; RPUNCHED
   hex 0000             ; patched
 
-* Roper fall. 2 frames, one-shot.
+* Roper fall. 2 frames, one-shot, parabolic arc on frame 0.
 anim_rfall
  dfb 2
  dfb $10
- dfb $00
- dfb $10,$17,3       ; RFALL1
+ dfb $10             ; flags: bit 4 = fall trajectory
+ dfb $10,$17,FALL_ARC_FRAMES ; RFALL1: arc duration
   hex 0000             ; patched
  dfb $10,$0F,60      ; RFALL2
   hex 0000             ; patched
@@ -12117,12 +12218,12 @@ anim_lpunched
  dfb $08,$26,5       ; LPUNCHED
   hex 0000             ; patched
 
-* Linda fall. 2 frames, one-shot.
+* Linda fall. 2 frames, one-shot, parabolic arc on frame 0.
 anim_lfall
  dfb 2
  dfb $11
- dfb $00
- dfb $10,$17,3       ; LFALL1
+ dfb $10             ; flags: bit 4 = fall trajectory
+ dfb $10,$17,FALL_ARC_FRAMES ; LFALL1: arc duration
   hex 0000             ; patched
  dfb $11,$0F,60      ; LFALL2
   hex 0000             ; patched
