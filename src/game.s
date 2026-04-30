@@ -7138,6 +7138,9 @@ update_anims
  clc
  adc #FALL_Y_OFFSET
  sta (info_ptr),y
+* Body just landed — fire SND_FALLEN.
+ ldx #SND_FALLEN
+ jsr sound_trigger
 :no_fall_bump
 
 :next
@@ -8587,15 +8590,17 @@ doc_wait
 *   +14    1-byte channel ($00 = mono out)
 *
 * SFX share interrupt+playback osc 8/9; triggering a new
-* sound stops the previous one. DOC RAM pages $80, $82, $84
-* are reserved for the three SFX (512 bytes each).
+* sound stops the previous one. DOC RAM pages $80, $82, $84,
+* $86, $88 are reserved for the SFX (512 bytes each).
 * Samples live in CPU RAM bank $11 at fixed 4 KB offsets.
 *----------------------------------------------------------
 
 SND_PUNCH        equ 0
 SND_PUNCHLANDED  equ 1
 SND_FINGER       equ 2
-SND_COUNT        equ 3
+SND_POW          equ 3
+SND_FALLEN       equ 4
+SND_COUNT        equ 5
 
 sound_ptr equ $F6   ; ZP: 2-byte pointer to current SFX struct
 
@@ -8603,11 +8608,15 @@ sound_table
  da sfx_punch_struct
  da sfx_punchlanded_struct
  da sfx_finger_struct
+ da sfx_pow_struct
+ da sfx_fallen_struct
 
 sound_path_table
  da sfx_punch_path
  da sfx_punchlanded_path
  da sfx_finger_path
+ da sfx_pow_path
+ da sfx_fallen_path
 
 * Each sample loads to bank $11 at offset = (sound_index * $1000).
 * Byte at offset +15 is our private "amplification shift" used
@@ -8651,12 +8660,47 @@ sfx_finger_struct
  dfb $00
  dfb 1              ; gain shift (×2 — wider source range, avoid clip)
 
+* POW lives at $11/4000 (not $11/3000) because FINGER spans
+* $11/2000-$11/3650 — its tail would be clobbered by anything
+* loaded at $11/3000.
+sfx_pow_struct
+ da $4000           ; sample at $11/4000
+ da $0011
+ da $10A0           ; length 4256
+ da $0000
+ da $009C
+ dfb $86            ; doc_ram_page → DOC $8600
+ dfb $08
+ dfb $01
+ dfb $FF
+ dfb $00
+ dfb 2              ; gain shift (×4)
+
+* FALLEN lives at $11/6000 because POW spans $11/4000-$11/50A0;
+* skip the $11/5000 slot to avoid clobbering POW's tail.
+sfx_fallen_struct
+ da $6000           ; sample at $11/6000
+ da $0011
+ da $0A00           ; length 2560
+ da $0000
+ da $009C
+ dfb $88            ; doc_ram_page → DOC $8800
+ dfb $08
+ dfb $01
+ dfb $FF
+ dfb $00
+ dfb 2              ; gain shift (×4)
+
 sfx_punch_path        dfb 21
                       asc '/DDIIGS/SFX/PUNCH.RAW'
 sfx_punchlanded_path  dfb 27
                       asc '/DDIIGS/SFX/PUNCHLANDED.RAW'
 sfx_finger_path       dfb 22
                       asc '/DDIIGS/SFX/FINGER.RAW'
+sfx_pow_path          dfb 19
+                      asc '/DDIIGS/SFX/POW.RAW'
+sfx_fallen_path       dfb 22
+                      asc '/DDIIGS/SFX/FALLEN.RAW'
 
 sound_len           ds 2   ; scratch — 16-bit length for sfx_amplify
 sfx_gain_shift      ds 2   ; 16-bit: low byte = shift, high byte = 0
@@ -8679,11 +8723,14 @@ sound_select
  rts
 
 *----------------------------------------------------------
-* sound_install_all - Load each SFX file into bank $11 at
-* a fixed offset (idx * $1000). load_file pre-fills ]RDBUF
-* with $80 each chunk so unused tail bytes are silent —
-* NTPstreamsound reads up to 256 bytes past the actual
-* sample length and would otherwise stream garbage.
+* sound_install_all - Load each SFX file into bank $11 at the
+* offset stored in its struct's "sample addr" field (struct +0).
+* Reading the offset from the struct rather than computing it
+* from the index means SFX larger than 4 KB (e.g. FINGER at 5712
+* bytes, POW at 4256) can claim multiple 4 KB slots — the struct
+* and loader stay in sync. load_file pre-fills RDBUF with $80
+* each chunk so unused tail bytes are silent (NTPstreamsound
+* reads up to 256 bytes past the sample's actual length).
 * Called at boot in emulation mode.
 *----------------------------------------------------------
 sound_install_all
@@ -8702,17 +8749,16 @@ sound_install_all
  lda sound_path_table+1,y
  sta file_open+2
 
-* file_dest = X * $1000 (bank-internal offset). file_dest
-* high byte = X * $10. Low byte = 0.
+* Load destination = sound_table[X] -> sample addr (struct +0/+1)
  plx
  phx
- txa
- asl
- asl
- asl
- asl                  ; A = X * $10
+ jsr sound_select     ; sound_ptr = sound_table[X]
+ ldy #0
+ lda (sound_ptr),y
+ sta file_dest
+ iny
+ lda (sound_ptr),y
  sta file_dest+1
- stz file_dest
 
  lda #$11
  sta file_bank
@@ -12904,8 +12950,19 @@ check_punch_hit
  bne :do_punched
  jmp :advance
 :do_punched
-* Confirmed hit — fire the punch-landed SFX
+* Confirmed hit — fire SFX. Uppercut connects → SND_POW; otherwise
+* the standard punch-landed SFX.
+ lda :puncher_anim_lo
+ cmp #<anim_uppercut
+ bne :dp_punchlanded
+ lda :puncher_anim_hi
+ cmp #>anim_uppercut
+ bne :dp_punchlanded
+ ldx #SND_POW
+ bra :dp_play
+:dp_punchlanded
  ldx #SND_PUNCHLANDED
+:dp_play
  jsr sound_trigger
 * Save puncher's globals before overwriting with target's
  lda IMAGE01_YPOS

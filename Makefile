@@ -143,6 +143,12 @@ $(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.sh
 	cp assets/audio/punchlanded.raw out/PUNCHLANDED.RAW\#060000
 	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/SFX/ out/PUNCHLANDED.RAW\#060000 --quiet
 	rm out/PUNCHLANDED.RAW\#060000
+	cp assets/audio/pow.raw out/POW.RAW\#060000
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/SFX/ out/POW.RAW\#060000 --quiet
+	rm out/POW.RAW\#060000
+	cp assets/audio/fallen.raw out/FALLEN.RAW\#060000
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/SFX/ out/FALLEN.RAW\#060000 --quiet
+	rm out/FALLEN.RAW\#060000
 	cadius CATALOG $(IMGFILE)
 
 clean:
