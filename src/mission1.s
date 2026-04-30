@@ -29,6 +29,7 @@ OP_SNAPSTATE EQU 16 ; restore engine to a "golden" state (17-byte payload)
                     ; dw up_anchor, db up_off, dw min_wo, dw max_wo
 OP_SNAPSTATE_DEFER EQU 17 ; same as OP_SNAPSTATE but applied at next scroll_up
 OP_BOSSMUSIC EQU 18 ; trigger boss music (no params)
+OP_WAIT     EQU 19 ; wait N frames before continuing the script (params: 1-byte frame count)
 ; NOTE OP_WAITX and OP_WAITY use 'absolute X' (level-wide) not screen xpos/ypos
 ;  so it's easier to use for game logic
 ; NOTE OP_NPC params are: sprite_ptr (2b), xpos (1b), ypos (1b), orient (1b), behavior (1b)
@@ -206,7 +207,7 @@ level_script
     db OP_WAITCLR       ; wait for player to defeat NPCs
     db OP_NPC           ; William3
     dw william_sprite
-    db $01,$84,$00,BEHAV_NONE     ; xpos, ypos, orientation, behavior
+    db $58,$5f,$00,BEHAV_FACEOFF     ; xpos, ypos, orientation, behavior
     db OP_WAITCLR
     db OP_RIGHT,1       ; connect screen 0 to screen 1 on the right
 
@@ -231,28 +232,28 @@ level_script
      db OP_WAITX
      dw $0182            ; wait for player abs_x >= 402 (scr3 Linda)
      db OP_SCRLOCK
-     db OP_NPC           ; Linda Lash descending ladder
+     db OP_NPC           ; Linda Lash #1 descending ladder
      dw linda_sprite
      db $00,$00,$01,BEHAV_LADDER  ; xpos/ypos snapped by behavior
-;     db OP_NPC           ; Linda Lash on ladder
-;     dw linda_sprite
-;     db 160,$3f,$02
-;     db OP_WAITNPC,$01
-;     db OP_NPC           ; Linda Lash on ladder
-;     db OP_END           ; placeholder until the rest of mission 1 is built
-;    dw linda_sprite
-;    db 160,$5f,$02
-;    db OP_WAITCLR
-;    db OP_NPC           ; William from right
-;    dw william_sprite
-;    db $58,$5f,$01
-;    db OP_NPC           ; William from left
-;    dw william_sprite
-;    db $01,$5f,$00
-;    db OP_WAITNPC,$01
-;    db OP_NPC           ; William from right
-;    dw william_sprite
-;    db $58,$5f,$01
+     db OP_WAIT,100       ; ~10 px ladder gap (1 px / 4 frames)
+     db OP_NPC           ; Linda Lash #2 descending ladder
+     dw linda_sprite
+     db $00,$00,$01,BEHAV_LADDER
+     db OP_WAITNPC,$01
+     db OP_NPC           ; Linda Lash on ladder
+     dw linda_sprite
+     db $00,$00,$01,BEHAV_LADDER
+     db OP_WAITCLR
+     db OP_NPC           ; William from right
+     dw william_sprite
+     db $58,$5f,$01,BEHAV_FACEOFF
+     db OP_NPC           ; William from left
+     dw william_sprite
+     db $01,$5f,$00,BEHAV_FLANK
+     db OP_WAITNPC,$01
+     db OP_NPC           ; William from right
+     dw william_sprite
+     db $58,$5f,$01,BEHAV_FACEOFF
 * Pre-climb golden state for ladder1 (recorded via 'g' key
 * below first ladder). DEFERRED: applied at the first scroll_up
 * call once climb begins. Includes a repaint region that paints

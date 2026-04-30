@@ -315,7 +315,7 @@ over1
 * Reduce music volume so SFX (which streams through
 * NTPstreamsound at addr_res=1) is audible above the
 * music bed. $40 ≈ 25% of full; tune empirically.
- lda #$0050
+ lda #$0080
  jsl NTPsetplayvolume
 
  sec
@@ -392,7 +392,10 @@ run_script
 :nwu cmp #SCRIPT_WAITXREV
  bne :nwxr
  jmp :check_waitxrev
-:nwxr
+:nwxr cmp #SCRIPT_WAIT
+ bne :nww
+ jmp :check_wait
+:nww
 
 * SCRIPT_RUN — execute opcodes
 :exec_loop
@@ -1139,6 +1142,24 @@ run_script
  jmp :exec_loop
 
 :not_bossmusic
+ cmp #OP_WAIT
+ bne :not_wait
+* OP_WAIT: param = 1-byte frame count
+ ldy #1
+ lda [script_pc],y
+ sta script_wait_val
+ lda #SCRIPT_WAIT
+ sta script_state
+ lda script_pc
+ clc
+ adc #2                ; opcode + 1 byte param
+ sta script_pc
+ lda script_pc+1
+ adc #0
+ sta script_pc+1
+ rts
+
+:not_wait
 * OP_NONE — skip 1 byte and continue
  cmp #OP_NONE
  bne :unknown_op
@@ -1308,6 +1329,15 @@ run_script
  sta script_state
  jmp :exec_loop
 :npc_count dfb 0
+
+:check_wait
+* Decrement script_wait_val each frame. When it hits 0, resume.
+ dec script_wait_val
+ bne :wait_rts          ; still counting down
+ lda #SCRIPT_RUN
+ sta script_state
+ jmp :exec_loop
+:wait_rts rts
 
 :check_waitup
 * Wait for scroll_up_enabled to return to 0 (snap completed)
@@ -3904,6 +3934,15 @@ try_enter_grab
 * Frame to xHELD1.
  lda #0
  jsr enemy_set_held
+* Bump enemy ypos +GRAB_Y_OFFSET so the held pose renders lower
+* on screen than the standing pose. enemy_set_held has already
+* snapshotted prev_ypos = standing ypos, so erase_all's union
+* rect cleans up the standing-pose footprint this VBL.
+ ldy #0
+ lda (info_ptr),y
+ clc
+ adc #GRAB_Y_OFFSET
+ sta (info_ptr),y
 * Restore info_ptr -> Billy.
  pla
  sta info_ptr+1
@@ -3970,6 +4009,18 @@ exit_grab
  sta info_ptr
  lda grab_target+1
  sta info_ptr+1
+* Unbump enemy ypos -GRAB_Y_OFFSET so the upcoming behavior tick
+* sees the standing-height ypos. prev_ypos still holds the bumped
+* value (last enemy_set_held snapshot), so erase_all's union rect
+* covers the held pose's drawn position before redraw.
+ ldy #0
+ lda (info_ptr),y
+ sec
+ sbc #GRAB_Y_OFFSET
+ sta (info_ptr),y
+ ldy #30
+ lda #$03
+ sta (info_ptr),y       ; mark dirty (erase+draw)
  ldy #7
  lda #FO_APPROACH
  sta (info_ptr),y
@@ -4031,6 +4082,13 @@ start_grab_punch
  sta info_ptr
  rts
 :gp_fall
+* Unbump enemy ypos -GRAB_Y_OFFSET so the fall arc starts from
+* standing height (matches check_punch_hit's normal-fall path).
+ ldy #0
+ lda (info_ptr),y
+ sec
+ sbc #GRAB_Y_OFFSET
+ sta (info_ptr),y
 * Trigger fall_anim on the enemy. We mimic check_punch_hit's
 * sequence at a minimum: copy fall_anim to anim_ptr (info+24),
 * anim_frame=$FF, anim_timer=1 so update_anims advances to
@@ -5233,6 +5291,8 @@ OP_SNAPSTATE_DEFER = 17 ; like OP_SNAPSTATE but applied at next
                       ; Engine repaints 183 rows from bank/byte+row*$A0
                       ; to $18/(dst + row*$A0). Bank=0 skips that region.
 OP_BOSSMUSIC = 18     ; switch to BOSS.NTP music (no params).
+OP_WAIT     = 19      ; wait N frames before continuing the script.
+                      ; 1-byte param: frame count (1-255).
 
 * Script interpreter state
 SCRIPT_RUN  = 0       ; executing opcodes
@@ -5243,6 +5303,7 @@ SCRIPT_DONE = 4       ; level ended
 SCRIPT_WAITNPC = 5    ; waiting for NPC count <= threshold
 SCRIPT_WAITUP  = 6    ; waiting for vertical scroll to complete
 SCRIPT_WAITXREV = 7   ; waiting for abs_x <= threshold
+SCRIPT_WAIT    = 8    ; waiting N frames (script_wait_val = countdown)
 
 * NPC behaviors (must match mission1.s definitions)
 BEHAV_NONE    = 0
@@ -6531,19 +6592,42 @@ update_anims
  ldy #2
  lda (anim_ptr),y     ; flags
  and #$10             ; bit 4
- beq :no_ftraj
+ bne :ftraj_check_frm
+ jmp :no_ftraj
+:ftraj_check_frm
  ldy #26
  lda (info_ptr),y     ; anim_frame
- bne :no_ftraj        ; only frame 0 (the FALL pose)
+ beq :ftraj_proceed
+ jmp :no_ftraj        ; only frame 0 (the FALL pose)
+:ftraj_proceed
 * On the first VBL of the trajectory (timer still = FALL_ARC_FRAMES),
-* leave prev_* alone. start_anim left them pointing at the standing
-* pose so erase_all's union rect can clean up the standing-pose
-* footprint (esp. the boots, which extend below the FALL pose). On
-* subsequent VBLs, snapshot prev_* to the just-drawn FALL position.
+* leave prev_xpos/ypos alone — start_anim left them pointing at the
+* standing pose's last drawn position. But CLAMP prev_frame_y to at
+* least 40 (standing height) and prev_frame_x to at least 20 so the
+* union erase rect always covers the standing-pose footprint, even
+* when the enemy was mid-wpunched (38 tall) or some other shorter
+* intermediate pose where the prev sync had a smaller rect than the
+* boot region needs. On subsequent VBLs, snapshot prev_* normally.
  ldy #28
  lda (info_ptr),y
  cmp #FALL_ARC_FRAMES
- beq :ftraj_skip_snap
+ bne :ftraj_do_snap
+* First VBL: clamp prev_frame_x/y to standing-pose minimums.
+ ldy #36
+ lda (info_ptr),y
+ cmp #20
+ bcs :ftraj_pfx_ok
+ lda #20
+ sta (info_ptr),y
+:ftraj_pfx_ok
+ ldy #38
+ lda (info_ptr),y
+ cmp #40
+ bcs :ftraj_skip_snap
+ lda #40
+ sta (info_ptr),y
+ bra :ftraj_skip_snap
+:ftraj_do_snap
 * Snapshot prev_* before mutating current
  ldy #2
  lda (info_ptr),y
@@ -8376,6 +8460,12 @@ landing_window dfb 0
 * / xHELD2 for GRAB_PUNCH_DURATION frames, registers a normal hit).
 PUNCH_GRAB_WINDOW   = 15
 GRAB_PUNCH_DURATION = 8
+
+* Grabbed enemies render lower on screen than their standing pose:
+* when try_enter_grab succeeds, the enemy's ypos is bumped down by
+* GRAB_Y_OFFSET. exit_grab and the gp_fall path unbump it back to
+* standing height before behavior or fall_anim takes over.
+GRAB_Y_OFFSET       = 10
 
 * Per-frame held sprite sizes (low byte of *_X / *_Y from the
 * sprite data in mission1.s). Hardcoded so input handling stays
