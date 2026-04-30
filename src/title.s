@@ -461,7 +461,7 @@ toolbox_init
 * _QDStartup
 * NOTE we are hardwiring this buffer address
 * but we did request it and receive it already
- pea $8000             ; dpAddress (still in A from above)
+ pea $a000             ; dpAddress (still in A from above)
  pea $0000             ; master SCB (320 mode)
  pea $00A0             ; max width (160 bytes)
  lda myID

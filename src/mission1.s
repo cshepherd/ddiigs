@@ -182,6 +182,17 @@ spr_bupper1   dw BUPPER1
 spr_bupper2   dw BUPPER2
 spr_bupper3   dw BUPPER3
 
+; Grab system (offsets +200..+214). Billy = BGRAB1/2; held targets
+; per enemy type.
+spr_bgrab1    dw BGRAB1
+spr_bgrab2    dw BGRAB2
+spr_wheld1    dw WHELD1
+spr_wheld2    dw WHELD2
+spr_rheld1    dw RHELD1
+spr_rheld2    dw RHELD2
+spr_lheld1    dw LHELD1
+spr_lheld2    dw LHELD2
+
 ; Level 1 script
 level_script
 ; screen 1

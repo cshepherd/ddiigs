@@ -15,8 +15,8 @@ NTPgetsongpos           =   NinjaTrackerPlus+18
 NTPsetplayvolume        =   NinjaTrackerPlus+21
 NTPstreamsound          =   NinjaTrackerPlus+24
 
-]IOBUF = $8200        ; 1024-byte ProDOS I/O buffer (page-aligned)
-]RDBUF = $8600         ; 4KB read buffer
+]IOBUF = $AB00        ; 1024-byte ProDOS I/O buffer (page-aligned), $AB00-$AEFF
+]RDBUF = $AF00         ; 4KB read buffer, $AF00-$BEFF (ends just below ProDOS Global Page at $BF00)
 
 * Clear text screen so diagnostic prints start on a fresh page.
  sec
@@ -2947,6 +2947,8 @@ behav_faceoff
  beq :st_cooldown
  cmp #FO_SOMERSAULT
  beq :st_somer
+ cmp #FO_GRABBED
+ beq :st_grabbed
 * default: FO_APPROACH
  jmp fo_approach
 
@@ -2956,6 +2958,10 @@ behav_faceoff
  jmp fo_cooldown
 :st_somer
  jmp fo_somersault
+:st_grabbed
+* Grabbed by Billy — AI suspended. Frame is driven by the grab
+* state machine in process_input; nothing to do here.
+ rts
 
 *----------------------------------------------------------
 * fo_find_player - Locate the keyboard-controlled player
@@ -3617,6 +3623,471 @@ fo_somersault
 :ap_tmp dfb 0
 :tmp_lo dfb 0
 :tmp_hi dfb 0
+
+*==========================================================
+* Grab system helpers
+*
+* Public entry points (all 8-bit emulation mode):
+*   try_enter_grab      A = key. If conditions are right,
+*                       enters grab and clears A so caller
+*                       eats the input.
+*   handle_grab_input   A = key. Routes to grab-punch /
+*                       release / ignore based on key vs
+*                       Billy's mirror.
+*   end_grab_punch_subframe  Called from process_input when
+*                       grab_punch_timer expires; restores
+*                       BGRAB2 / xHELD1 if still grabbing.
+*
+* Internal helpers below.
+*==========================================================
+
+*----------------------------------------------------------
+* enemy_set_held - info_ptr = grabbed enemy, A = which:
+*   0 = HELD1 (idle hold), 1 = HELD2 (taking grab-punch).
+* Determines enemy type from idle_addr (+42) and writes the
+* appropriate spr_xheldN + size to frame_x / frame_y / frame_addr.
+*----------------------------------------------------------
+enemy_set_held
+ sta :which
+ ldy #42
+ lda (info_ptr),y
+ sta :eh_id_lo
+ ldy #43
+ lda (info_ptr),y
+ sta :eh_id_hi
+* William?
+ lda :eh_id_lo
+ cmp spr_william1
+ bne :try_roper
+ lda :eh_id_hi
+ cmp spr_william1+1
+ bne :try_roper
+ lda :which
+ bne :w_h2
+ lda spr_wheld1
+ sta :addr_lo
+ lda spr_wheld1+1
+ sta :addr_hi
+ lda #WHELD1_W
+ sta :w
+ lda #WHELD1_H
+ sta :h
+ jmp :write
+:w_h2
+ lda spr_wheld2
+ sta :addr_lo
+ lda spr_wheld2+1
+ sta :addr_hi
+ lda #WHELD2_W
+ sta :w
+ lda #WHELD2_H
+ sta :h
+ jmp :write
+:try_roper
+ lda :eh_id_lo
+ cmp spr_roper1
+ bne :try_linda
+ lda :eh_id_hi
+ cmp spr_roper1+1
+ bne :try_linda
+ lda :which
+ bne :r_h2
+ lda spr_rheld1
+ sta :addr_lo
+ lda spr_rheld1+1
+ sta :addr_hi
+ lda #RHELD1_W
+ sta :w
+ lda #RHELD1_H
+ sta :h
+ jmp :write
+:r_h2
+ lda spr_rheld2
+ sta :addr_lo
+ lda spr_rheld2+1
+ sta :addr_hi
+ lda #RHELD2_W
+ sta :w
+ lda #RHELD2_H
+ sta :h
+ jmp :write
+:try_linda
+* Linda (assumed: any FACEOFF NPC that isn't W/R)
+ lda :which
+ bne :l_h2
+ lda spr_lheld1
+ sta :addr_lo
+ lda spr_lheld1+1
+ sta :addr_hi
+ lda #LHELD1_W
+ sta :w
+ lda #LHELD1_H
+ sta :h
+ jmp :write
+:l_h2
+ lda spr_lheld2
+ sta :addr_lo
+ lda spr_lheld2+1
+ sta :addr_hi
+ lda #LHELD2_W
+ sta :w
+ lda #LHELD2_H
+ sta :h
+:write
+* Snapshot prev_* before mutating frame fields so erase_all
+* covers the about-to-be-replaced rectangle.
+ ldy #2
+ lda (info_ptr),y
+ ldy #34
+ sta (info_ptr),y
+ ldy #0
+ lda (info_ptr),y
+ ldy #32
+ sta (info_ptr),y
+ ldy #10
+ lda (info_ptr),y
+ ldy #36
+ sta (info_ptr),y
+ ldy #12
+ lda (info_ptr),y
+ ldy #38
+ sta (info_ptr),y
+ ldy #10
+ lda :w
+ sta (info_ptr),y
+ ldy #12
+ lda :h
+ sta (info_ptr),y
+ ldy #14
+ lda :addr_lo
+ sta (info_ptr),y
+ iny
+ lda :addr_hi
+ sta (info_ptr),y
+ ldy #30
+ lda #$03
+ sta (info_ptr),y
+ rts
+:which dfb 0
+:eh_id_lo dfb 0
+:eh_id_hi dfb 0
+:addr_lo dfb 0
+:addr_hi dfb 0
+:w dfb 0
+:h dfb 0
+
+*----------------------------------------------------------
+* billy_set_grab_frame - info_ptr = Billy, A = which:
+*   0 = BGRAB2 (hold), 1 = BGRAB1 (active strike).
+* Sets frame_addr/x/y, clears info+52 (so MASK_ADDR loads 0),
+* clears anim_ptr, snapshots prev_*, marks dirty.
+*----------------------------------------------------------
+billy_set_grab_frame
+ sta :which
+ bne :b1
+ lda spr_bgrab2
+ sta :addr_lo
+ lda spr_bgrab2+1
+ sta :addr_hi
+ lda #BGRAB2_W
+ sta :w
+ lda #BGRAB2_H
+ sta :h
+ bra :write
+:b1
+ lda spr_bgrab1
+ sta :addr_lo
+ lda spr_bgrab1+1
+ sta :addr_hi
+ lda #BGRAB1_W
+ sta :w
+ lda #BGRAB1_H
+ sta :h
+:write
+ ldy #2
+ lda (info_ptr),y
+ ldy #34
+ sta (info_ptr),y
+ ldy #0
+ lda (info_ptr),y
+ ldy #32
+ sta (info_ptr),y
+ ldy #10
+ lda (info_ptr),y
+ ldy #36
+ sta (info_ptr),y
+ ldy #12
+ lda (info_ptr),y
+ ldy #38
+ sta (info_ptr),y
+ ldy #10
+ lda :w
+ sta (info_ptr),y
+ ldy #12
+ lda :h
+ sta (info_ptr),y
+ ldy #14
+ lda :addr_lo
+ sta (info_ptr),y
+ iny
+ lda :addr_hi
+ sta (info_ptr),y
+* Force legacy draw path: anim_ptr = 0, info+52 = 0.
+ lda #0
+ ldy #24
+ sta (info_ptr),y
+ ldy #25
+ sta (info_ptr),y
+ ldy #52
+ sta (info_ptr),y
+ ldy #53
+ sta (info_ptr),y
+ sta MASK_ADDR
+ sta MASK_ADDR+1
+ ldy #30
+ lda #$03
+ sta (info_ptr),y
+ rts
+:which dfb 0
+:addr_lo dfb 0
+:addr_hi dfb 0
+:w dfb 0
+:h dfb 0
+
+*----------------------------------------------------------
+* try_enter_grab - On entry: info_ptr = Billy, A = key.
+* If the key is the direction-toward-enemy (mirror=0 → '6',
+* mirror=1 → '4') AND punch_window > 0, enter grab. Sets
+* grab_target, parks the enemy in FO_GRABBED, frames both
+* sprites at hold pose. On exit A is unchanged so the caller
+* can decide based on grab_target whether to swallow input.
+*----------------------------------------------------------
+try_enter_grab
+ sta :key
+ ldy #4
+ lda (info_ptr),y
+ bne :facing_left
+* Billy faces right -> '6' is toward
+ lda :key
+ cmp #'6'
+ bne :no_trigger
+ bra :ok
+:facing_left
+ lda :key
+ cmp #'4'
+ bne :no_trigger
+:ok
+* Validate that last_hit_target is still in the table.
+ lda last_hit_target
+ ora last_hit_target+1
+ beq :no_trigger
+* Set up the enemy.
+ lda info_ptr
+ pha
+ lda info_ptr+1
+ pha
+ lda last_hit_target
+ sta info_ptr
+ sta grab_target
+ lda last_hit_target+1
+ sta info_ptr+1
+ sta grab_target+1
+* Park enemy in FO_GRABBED, no anim.
+ ldy #7
+ lda #FO_GRABBED
+ sta (info_ptr),y
+ lda #0
+ ldy #24
+ sta (info_ptr),y
+ ldy #25
+ sta (info_ptr),y
+* Frame to xHELD1.
+ lda #0
+ jsr enemy_set_held
+* Restore info_ptr -> Billy.
+ pla
+ sta info_ptr+1
+ pla
+ sta info_ptr
+* Frame Billy to BGRAB2.
+ lda #0
+ jsr billy_set_grab_frame
+* Consume the punch window so any re-press doesn't re-trigger.
+ stz punch_window
+:no_trigger
+ lda :key
+ rts
+:key dfb 0
+
+*----------------------------------------------------------
+* handle_grab_input - On entry: info_ptr = Billy, A = key,
+* grab_target known non-zero. Returns with grab_target either
+* unchanged (eat input — caller returns), zero (released —
+* caller falls through to walk dispatch).
+*----------------------------------------------------------
+handle_grab_input
+ sta :key
+* Punch?
+ cmp #'p'
+ bne :not_punch
+ jsr start_grab_punch
+ lda :key
+ rts
+:not_punch
+* Direction-AWAY ends the grab. Mirror=0 means Billy faced
+* right at grab time, so '4' (left) is away. Mirror=1 -> '6'.
+ ldy #4
+ lda (info_ptr),y
+ bne :face_left
+ lda :key
+ cmp #'4'
+ bne :stay
+ bra :release
+:face_left
+ lda :key
+ cmp #'6'
+ bne :stay
+:release
+ jsr exit_grab
+ lda :key
+ rts
+:stay
+ lda :key
+ rts
+:key dfb 0
+
+*----------------------------------------------------------
+* exit_grab - Release. Restores enemy to FO_APPROACH; Billy
+* keeps BGRAB2 frame until the next walk step refreshes it.
+* info_ptr = Billy on entry (caller's invariant preserved).
+*----------------------------------------------------------
+exit_grab
+ lda info_ptr
+ pha
+ lda info_ptr+1
+ pha
+ lda grab_target
+ sta info_ptr
+ lda grab_target+1
+ sta info_ptr+1
+ ldy #7
+ lda #FO_APPROACH
+ sta (info_ptr),y
+ pla
+ sta info_ptr+1
+ pla
+ sta info_ptr
+ lda #0
+ sta grab_target
+ sta grab_target+1
+ rts
+
+*----------------------------------------------------------
+* start_grab_punch - Trigger the BGRAB1/xHELD2 sub-anim and
+* apply +1 punch_count to the grabbed enemy. If count crosses
+* the fall threshold (3 or 6) the enemy falls and the grab
+* ends as a side effect.
+* info_ptr = Billy on entry.
+*----------------------------------------------------------
+start_grab_punch
+* SFX
+ ldx #SND_PUNCHLANDED
+ jsr sound_trigger
+* Set timer + Billy to BGRAB1.
+ lda #GRAB_PUNCH_DURATION
+ sta grab_punch_timer
+ lda #1
+ jsr billy_set_grab_frame
+* Switch to enemy.
+ lda info_ptr
+ pha
+ lda info_ptr+1
+ pha
+ lda grab_target
+ sta info_ptr
+ lda grab_target+1
+ sta info_ptr+1
+* Frame to xHELD2.
+ lda #1
+ jsr enemy_set_held
+* Increment punch_count, award points.
+ ldy #48
+ lda (info_ptr),y
+ clc
+ adc #1
+ sta (info_ptr),y
+ jsr incp1s_hundreds
+* Fall threshold?
+ ldy #48
+ lda (info_ptr),y
+ cmp #3
+ beq :gp_fall
+ cmp #6
+ beq :gp_fall
+* Stay in grab — restore info_ptr and return.
+ pla
+ sta info_ptr+1
+ pla
+ sta info_ptr
+ rts
+:gp_fall
+* Trigger fall_anim on the enemy. We mimic check_punch_hit's
+* sequence at a minimum: copy fall_anim to anim_ptr (info+24),
+* anim_frame=$FF, anim_timer=1 so update_anims advances to
+* fall frame 0 next tick. Behavior_state goes to FO_APPROACH
+* so post-fall AI resumes normally.
+ ldy #50
+ lda (info_ptr),y
+ ldy #24
+ sta (info_ptr),y
+ ldy #51
+ lda (info_ptr),y
+ ldy #25
+ sta (info_ptr),y
+ ldy #26
+ lda #$FF
+ sta (info_ptr),y
+ ldy #28
+ lda #1
+ sta (info_ptr),y
+ ldy #7
+ lda #FO_APPROACH
+ sta (info_ptr),y
+* Clear grab — enemy is falling, no longer held.
+ lda #0
+ sta grab_target
+ sta grab_target+1
+* Restore info_ptr to Billy.
+ pla
+ sta info_ptr+1
+ pla
+ sta info_ptr
+ rts
+
+*----------------------------------------------------------
+* end_grab_punch_subframe - Called when grab_punch_timer
+* expired and grab_target is still set (i.e. enemy didn't
+* fall). Restores Billy to BGRAB2 and enemy to xHELD1.
+* info_ptr = Billy on entry.
+*----------------------------------------------------------
+end_grab_punch_subframe
+ lda #0
+ jsr billy_set_grab_frame
+ lda info_ptr
+ pha
+ lda info_ptr+1
+ pha
+ lda grab_target
+ sta info_ptr
+ lda grab_target+1
+ sta info_ptr+1
+ lda #0
+ jsr enemy_set_held
+ pla
+ sta info_ptr+1
+ pla
+ sta info_ptr
+ rts
 
 *----------------------------------------------------------
 * npc_ensure_walking - If NPC's anim_ptr is not anim_wwalk,
@@ -4789,6 +5260,7 @@ FO_APPROACH    = 0    ; walking toward player
 FO_PUNCH       = 1    ; throwing a punch
 FO_COOLDOWN    = 2    ; waiting after punch
 FO_SOMERSAULT  = 3    ; rolling cartwheel-closer (William only)
+FO_GRABBED     = 4    ; held by Billy — AI suspended, frame held
 
 * Somersault tunables
 SOMER_TRIGGER  = 12   ; px from target_x; > this triggers somersault on
@@ -4811,6 +5283,43 @@ process_input
  beq :no_lw_dec
  dec landing_window
 :no_lw_dec
+* Tick punch_window (grab trigger).
+ lda punch_window
+ beq :no_pw_dec
+ dec punch_window
+:no_pw_dec
+* Tick grab_punch_timer; on the 1->0 transition, restore
+* BGRAB2/xHELD1 if we're still grabbing.
+ lda grab_punch_timer
+ beq :no_gp_dec
+ dec grab_punch_timer
+ bne :no_gp_dec
+ lda grab_target
+ ora grab_target+1
+ beq :no_gp_dec
+* Need info_ptr = Billy for end_grab_punch_subframe — find him
+* (controller==1) before calling.
+ lda #<sprite_table
+ sta spr_ptr
+ lda #>sprite_table
+ sta spr_ptr+1
+:gp_find
+ jsr load_sprite
+ bcs :no_gp_dec
+ ldy #22
+ lda (info_ptr),y
+ cmp #$01
+ beq :gp_found
+ lda spr_ptr
+ clc
+ adc #2
+ sta spr_ptr
+ bcc :gp_find
+ inc spr_ptr+1
+ bra :gp_find
+:gp_found
+ jsr end_grab_punch_subframe
+:no_gp_dec
 * Find the keyboard-controlled sprite (controller = $01)
  lda #<sprite_table
  sta spr_ptr
@@ -4857,6 +5366,36 @@ process_input
 :has_key
  lda $c010
  and #$7f
+* Grab-state interception. While grab_punch_timer is non-zero
+* the BGRAB1/xHELD2 sub-anim is playing — eat all input.
+* Otherwise: if grabbing, route through handle_grab_input
+* (which may release on direction-AWAY or fire grab-punch).
+* If not grabbing, give try_enter_grab a shot at the key.
+ sta last_key
+ lda grab_punch_timer
+ beq :gi_check_grab
+ rts                    ; freeze input during the sub-anim
+:gi_check_grab
+ lda grab_target
+ ora grab_target+1
+ beq :gi_try_enter
+ lda last_key
+ jsr handle_grab_input
+ lda grab_target
+ ora grab_target+1
+ beq :gi_continue       ; released, fall through to walk dispatch
+ rts                    ; still grabbing -> swallow input
+:gi_try_enter
+ lda punch_window
+ beq :gi_continue
+ lda last_key
+ jsr try_enter_grab
+ lda grab_target
+ ora grab_target+1
+ beq :gi_continue
+ rts                    ; entered grab, swallow input
+:gi_continue
+ lda last_key
  cmp #'r'
  bne :not_scroll
  jsr save_sprite
@@ -7321,6 +7860,33 @@ init_level
  lda [$F0],y
  sta spr_bupper3
 
+* Grab system (offsets +200..+214). Billy + held variants for
+* William, Roper, Linda.
+ ldy #200
+ lda [$F0],y
+ sta spr_bgrab1
+ ldy #202
+ lda [$F0],y
+ sta spr_bgrab2
+ ldy #204
+ lda [$F0],y
+ sta spr_wheld1
+ ldy #206
+ lda [$F0],y
+ sta spr_wheld2
+ ldy #208
+ lda [$F0],y
+ sta spr_rheld1
+ ldy #210
+ lda [$F0],y
+ sta spr_rheld2
+ ldy #212
+ lda [$F0],y
+ sta spr_lheld1
+ ldy #214
+ lda [$F0],y
+ sta spr_lheld2
+
 * Now patch all DA references in animation descriptors
 * and sprite info blocks with bank $02 addresses.
 * Each anim frame has: dfb x,y,dur, DA addr (5 bytes per frame)
@@ -7679,6 +8245,14 @@ spr_wsomer3  ds 2     ; somersault frame 2 (and 4 mirrored)
 spr_bupper1  ds 2     ; uppercut frame 1
 spr_bupper2  ds 2     ; uppercut frame 2
 spr_bupper3  ds 2     ; uppercut frame 3
+spr_bgrab1   ds 2     ; grab-punch (active strike)
+spr_bgrab2   ds 2     ; grab-hold pose
+spr_wheld1   ds 2     ; William, held idle
+spr_wheld2   ds 2     ; William, taking grab-punch
+spr_rheld1   ds 2     ; Roper, held idle
+spr_rheld2   ds 2     ; Roper, taking grab-punch
+spr_lheld1   ds 2     ; Linda, held idle
+spr_lheld2   ds 2     ; Linda, taking grab-punch
 
 * Sub-frame -> WSOMER frame address. Filled in by init_level
 * once spr_wsomer{1,2,3} are patched. Indexed by sub-frame×2.
@@ -7689,6 +8263,44 @@ somersault_addr_tbl ds 10
 * triggers anim_uppercut instead of anim_punch1/2.
 UPPERCUT_WINDOW = 15  ; VBL frames
 landing_window dfb 0
+
+* --- Grab system ---
+* After a punch connects, punch_window counts down. While > 0,
+* pressing direction-toward-the-just-hit enemy enters grab state:
+* Billy holds the enemy (BGRAB2 / xHELD1) until Billy walks away
+* (release) or presses Punch (grab-punch sub-anim showing BGRAB1
+* / xHELD2 for GRAB_PUNCH_DURATION frames, registers a normal hit).
+PUNCH_GRAB_WINDOW   = 15
+GRAB_PUNCH_DURATION = 8
+
+* Per-frame held sprite sizes (low byte of *_X / *_Y from the
+* sprite data in mission1.s). Hardcoded so input handling stays
+* in 8-bit emulation; if the user redraws a held sprite, update
+* the matching constant here.
+BGRAB1_W = $0E
+BGRAB1_H = $28
+BGRAB2_W = $0D
+BGRAB2_H = $28
+WHELD1_W = $0F
+WHELD1_H = $18
+WHELD2_W = $0E
+WHELD2_H = $18
+RHELD1_W = $0E
+RHELD1_H = $17
+RHELD2_W = $0E
+RHELD2_H = $17
+LHELD1_W = $10
+LHELD1_H = $16
+LHELD2_W = $0D
+LHELD2_H = $17
+
+punch_window      dfb 0   ; counts down after a punch connects
+last_hit_target   dw 0    ; sprite info ptr of most recently hit enemy
+grab_target       dw 0    ; sprite info ptr of currently-grabbed enemy
+                          ;   (0 = not grabbing)
+grab_punch_timer  dfb 0   ; > 0 while showing BGRAB1/xHELD2 sub-anim
+last_key          dfb 0   ; scratch: most recent keypress, used by
+                          ;   the grab-state interceptor
 
 ; Roper
 spr_roper1   ds 2
@@ -11951,6 +12563,14 @@ check_punch_hit
  pha
  lda anim_ptr+1
  pha
+* Stash puncher's anim_ptr in a scratch — the iteration below
+* overwrites the global anim_ptr with each target's value during
+* the immunity check, so any post-hit logic that wants to know
+* what attack the puncher was doing has to read from here.
+ lda anim_ptr
+ sta :puncher_anim_lo
+ lda anim_ptr+1
+ sta :puncher_anim_hi
 * Save puncher's info_ptr to identify self
  lda info_ptr
  sta :self_lo
@@ -12089,10 +12709,10 @@ check_punch_hit
 :hit
 
 * Hit! Damage = 3 if puncher is mid-uppercut, else 1.
- lda anim_ptr
+ lda :puncher_anim_lo
  cmp #<anim_uppercut
  bne :hit_dmg1
- lda anim_ptr+1
+ lda :puncher_anim_hi
  cmp #>anim_uppercut
  bne :hit_dmg1
  lda #3
@@ -12121,10 +12741,10 @@ check_punch_hit
 * Check if punch_count triggers a fall (3 or 6) — or force fall
 * immediately if the puncher is mid-uppercut (the +3 damage was
 * meant to send them straight to the ground regardless of count).
- lda anim_ptr
+ lda :puncher_anim_lo
  cmp #<anim_uppercut
  bne :hit_count_check
- lda anim_ptr+1
+ lda :puncher_anim_hi
  cmp #>anim_uppercut
  bne :hit_count_check
  jmp :use_fall
@@ -12135,7 +12755,33 @@ check_punch_hit
  beq :use_fall
  cmp #6
  beq :use_fall
-* Normal punch — use punched_anim
+* Normal punch — use punched_anim. If the puncher is Billy doing
+* anim_punch1 or anim_punch2 (i.e. a regular ground punch),
+* arm the grab window: pressing toward this target within
+* PUNCH_GRAB_WINDOW frames will trigger a grab. Skip for kicks /
+* NPC punches / uppercuts (uppercut already forces a fall).
+ lda :puncher_anim_lo
+ cmp #<anim_punch1
+ bne :try_grab_p2
+ lda :puncher_anim_hi
+ cmp #>anim_punch1
+ bne :try_grab_p2
+ bra :arm_grab
+:try_grab_p2
+ lda :puncher_anim_lo
+ cmp #<anim_punch2
+ bne :no_grab_arm
+ lda :puncher_anim_hi
+ cmp #>anim_punch2
+ bne :no_grab_arm
+:arm_grab
+ lda #PUNCH_GRAB_WINDOW
+ sta punch_window
+ lda info_ptr
+ sta last_hit_target
+ lda info_ptr+1
+ sta last_hit_target+1
+:no_grab_arm
  ldy #40
  lda (info_ptr),y     ; punched_anim low
  sta anim_ptr
@@ -12252,6 +12898,8 @@ check_punch_hit
 :tgt_bottom dfb 0
 :tmp dfb 0
 :hit_damage dfb 0     ; +1 normal punch, +3 uppercut
+:puncher_anim_lo dfb 0
+:puncher_anim_hi dfb 0
 
 * (advance_frame removed — animation now data-driven via update_anims)
 
