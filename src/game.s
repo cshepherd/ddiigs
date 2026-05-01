@@ -322,6 +322,12 @@ over1
  xce
  sep $30
 
+* Disable keyboard autorepeat via the ADB Tool Set so held
+* keys don't spam $C000 strobes. Modifier register $C025 is
+* always live (auto-polled by the MCU) and is read directly
+* by kbd_modifiers.
+ jsr kbd_init
+
 *==========================================================
 * Main game loop
 *==========================================================
@@ -2471,7 +2477,7 @@ check_debug_xy
  lda $c000
  bpl :cdx_done
  and #$7f
- cmp #'d'
+ cmp #'x'                 ; was 'd' — moved to 'x' since 'd' = walk right
  bne :cdx_done
  sta $c010                ; consume strobe
  lda debug_xy_flag
@@ -3897,14 +3903,14 @@ try_enter_grab
  ldy #4
  lda (info_ptr),y
  bne :facing_left
-* Billy faces right -> '6' is toward
+* Billy faces right -> 'd' is toward
  lda :key
- cmp #'6'
+ cmp #'d'
  bne :no_trigger
  bra :ok
 :facing_left
  lda :key
- cmp #'4'
+ cmp #'a'
  bne :no_trigger
 :ok
 * Validate that last_hit_target is still in the table.
@@ -3974,17 +3980,17 @@ handle_grab_input
  rts
 :not_punch
 * Direction-AWAY ends the grab. Mirror=0 means Billy faced
-* right at grab time, so '4' (left) is away. Mirror=1 -> '6'.
+* right at grab time, so 'a' (left) is away. Mirror=1 -> 'd'.
  ldy #4
  lda (info_ptr),y
  bne :face_left
  lda :key
- cmp #'4'
+ cmp #'a'
  bne :stay
  bra :release
 :face_left
  lda :key
- cmp #'6'
+ cmp #'d'
  bne :stay
 :release
  jsr exit_grab
@@ -5334,11 +5340,254 @@ FL_CLOSE    = 1       ; close in to back-side punch range
 FL_PUNCH    = 2       ; throw a punch
 FL_COOLDOWN = 3       ; waiting after punch
 
+
+*==========================================================
+* Keyboard input — ADB Tool Set
+*
+* Direct GLU polling at $C026/$C027 collides with the ROM's
+* always-running ADB IRQ handler, so we use the documented
+* ADB Tool Set call _SendInfo ($0909) to disable autorepeat
+* on the keyboard. With autorepeat off, $C000/$C010 no longer
+* spam stale events for a held key — a single press registers
+* exactly one strobe, and $C010 bit 7 stays high while the
+* key is physically held.
+*
+* For modifier keys (shift/ctrl/option/cmd/caps) read $C025
+* directly — that's the auto-polled Modifier Key register,
+* always live and never contended.
+*
+* The Mega II's 2-key alphanumeric rollover lets two non-
+* modifier keys be pressed simultaneously (e.g. W + A for
+* diagonal walk). Combine with modifier-mapped action keys
+* (Shift = punch, Option = kick, Cmd = jump) to get true
+* multi-key combat without the 2-key alphanumeric ceiling.
+*==========================================================
+
+* SendInfo Set Modes data byte. Per Apple IIgs Firmware
+* Reference Ch. 9, the mode bit that disables keyboard
+* autorepeat is bit 6 ($40). Other bits (mouse, SRQ, etc.)
+* stay default.
+ADB_MODE_NO_AUTOREPEAT = $40
+
+*----------------------------------------------------------
+* kbd_init - Disable keyboard autorepeat via the ADB Tool
+* Set. Called once at boot in emulation mode 8-bit.
+*
+* _SendInfo ($0909) parameter stack (top first):
+*   adbCommand  word  $0004 (Set Modes)
+*   dataPtr     long  pointer to 1-byte data
+*   dataLength  word  $0001
+*----------------------------------------------------------
+kbd_init
+ clc
+ xce                   ; native mode
+ rep $30               ; 16-bit A/X/Y
+ pea #$0001            ; dataLength
+ pea ^kbd_mode_byte    ; dataPtr high (bank)
+ pea kbd_mode_byte     ; dataPtr low  (offset)
+ pea #$0004            ; adbCommand = Set Modes
+ ldx #$0909            ; _SendInfo
+ jsl $E10000
+ sec
+ xce                   ; back to emulation
+ sep $30
+ rts
+
+kbd_mode_byte dfb ADB_MODE_NO_AUTOREPEAT
+
+*----------------------------------------------------------
+* kbd_modifiers - Returns the current Modifier Key register
+* in A. Bit 0=Cmd, 1=Option, 4=KeyDown, 5=Caps, 6=Ctrl,
+* 7=Shift. (See Apple IIgs Hardware Reference Table 6-5.)
+* Emulation mode 8-bit on entry/exit.
+*----------------------------------------------------------
+kbd_modifiers
+ ldal $C025
+ rts
+
+*----------------------------------------------------------
+* kbd_poll - Drain the keyboard's ADB register-0 event FIFO
+* via _SyncADBReceive ($0E09) and update kb_held. Each event
+* byte: bit 7 = state (0 down, 1 up), bits 6-0 = ADB scancode.
+* The keyboard's ADB device returns 2 bytes (latest event +
+* prior event) for Talk Reg 0; the completion routine stashes
+* them into kbd_buf, and after the call returns we walk the
+* buffer and update the bitmap.
+*
+* _SyncADBReceive parameter stack (top first):
+*   adbCommand  word  $0048 (Receive Bytes)
+*   compPtr     long  pointer to completion routine
+*   inputWord   word  $002C — Talk Reg 0 keyboard, with the
+*                     upper/lower nibbles SWAPPED per the
+*                     Toolbox Reference Vol 1 spec
+*
+* Called in emulation mode 8-bit; switches to native + 16-bit
+* for the toolbox call and switches back before returning.
+*----------------------------------------------------------
+kbd_poll
+ stz kbd_buf_idx
+ stz kbd_buf
+ stz kbd_buf+1
+ clc
+ xce                   ; native
+ rep $30               ; 16-bit A/X/Y
+ pea #$002C            ; inputWord (Talk Reg 0 keyboard, nibbles swapped)
+ pea ^kbd_completion   ; compPtr high (bank)
+ pea kbd_completion    ; compPtr low (offset)
+ pea #$0048            ; adbCommand = Receive Bytes
+ ldx #$0E09            ; _SyncADBReceive
+ jsl $E10000
+ php                   ; capture C/error flag
+ sec
+ xce                   ; back to emulation
+ sep $30
+ pla                   ; recover saved P
+ and #$01              ; isolate carry
+ sta kbd_err_flag      ; non-zero = SyncADBReceive returned error
+* Apply the buffered events to kb_held. kbd_buf_idx is the
+* number of bytes the completion routine stored.
+* NOTE: SyncADBReceive currently returns adbBusy on this system
+* because the ROM ADB IRQ handler owns the bus. The completion
+* never fires and kb_held stays empty. Left wired in case a
+* future refactor (AsyncADBReceive / SRQPoll) gets this working.
+ ldx #0
+:apply
+ cpx kbd_buf_idx
+ bcs :done
+ phx
+ lda kbd_buf,x
+ jsr kbd_apply_event
+ plx
+ inx
+ bra :apply
+:done
+ rts
+
+*----------------------------------------------------------
+* kbd_completion - Called by SyncADBReceive once per response
+* byte received from the ADB device. Apple's docs specify the
+* completion enters with 8-bit M and X flags and must return
+* via RTL with C clear; the data byte is delivered in A. We
+* stash A into kbd_buf[kbd_buf_idx], increment the index, and
+* return.
+*----------------------------------------------------------
+ mx %11
+kbd_completion
+ phb
+ phk
+ plb                   ; DBR = current PB so abs writes hit kbd_buf
+ inc kbd_call_count    ; DEBUG: count every call
+ ldx kbd_buf_idx
+ cpx #4                ; clamp at 4 just in case (keyboard returns 2)
+ bcs :skip
+ sta kbd_buf,x
+ inx
+ stx kbd_buf_idx
+:skip
+* DEBUG: latch the most recent NON-$FF event byte.
+ cmp #$FF
+ beq :sk2
+ sta kbd_last_event
+:sk2
+ plb
+ clc
+ rtl
+
+*----------------------------------------------------------
+* kbd_apply_event - A = event byte. bit 7 = state (0 down, 1
+* up), bits 6-0 = ADB scancode. $FF = no event in this slot.
+*----------------------------------------------------------
+ mx %11
+kbd_apply_event
+ cmp #$FF
+ beq :skip
+ sta :ev
+ and #$7F
+ sta :scan
+ lda :ev
+ and #$80
+ bne :up
+* down: set bit
+ lda :scan
+ jsr :idx_bit
+ lda kbd_bit_table,y
+ ora kb_held,x
+ sta kb_held,x
+:skip rts
+:up
+* up: clear bit
+ lda :scan
+ jsr :idx_bit
+ lda kbd_bit_table,y
+ eor #$FF
+ and kb_held,x
+ sta kb_held,x
+ rts
+:idx_bit
+ sta :tmp
+ lsr
+ lsr
+ lsr
+ tax
+ lda :tmp
+ and #$07
+ tay
+ rts
+:ev   dfb 0
+:scan dfb 0
+:tmp  dfb 0
+
+*----------------------------------------------------------
+* key_held - A = ADB scancode. Returns Z=0 if the key is
+* currently held, Z=1 if not. Preserves no callee state.
+*----------------------------------------------------------
+ mx %11
+key_held
+ sta :tmp
+ lsr
+ lsr
+ lsr
+ tax
+ lda :tmp
+ and #$07
+ tay
+ lda kb_held,x
+ and kbd_bit_table,y
+ rts
+:tmp dfb 0
+
+kbd_bit_table dfb $01,$02,$04,$08,$10,$20,$40,$80
+kb_held       ds 16   ; 128 bits (1 bit per ADB scancode), set this frame
+kb_held_prev  ds 16   ; same, set last frame — used for edge detection
+kbd_buf       ds 4    ; SyncADBReceive response buffer
+kbd_buf_idx   dfb 0
+kbd_last_event dfb 0  ; debug: latest non-$FF event byte from MCU
+kbd_call_count dfb 0  ; debug: increments every time completion fires
+kbd_err_flag   dfb 0  ; debug: $FF if SyncADBReceive returned w/ C=1
+
+* ADB scancodes for game input (Toolbox Ref Vol 1 Table 3-5).
+ADB_KEY_W = $0D
+ADB_KEY_A = $00
+ADB_KEY_S = $01
+ADB_KEY_D = $02
+ADB_KEY_J = $26
+ADB_KEY_L = $25
+
 *----------------------------------------------------------
 * process_input - Read keyboard, update Billy's state.
 * If an action animation is playing, ignore all input.
 *----------------------------------------------------------
 process_input
+* Snapshot last frame's kb_held → kb_held_prev so the action
+* dispatch below can edge-detect just-pressed buttons.
+ ldx #15
+:cp_prev
+ lda kb_held,x
+ sta kb_held_prev,x
+ dex
+ bpl :cp_prev
+* Drain ADB key events into kb_held.
+ jsr kbd_poll
 * Tick down the uppercut input window each frame.
  lda landing_window
  beq :no_lw_dec
@@ -5349,6 +5598,16 @@ process_input
  beq :no_pw_dec
  dec punch_window
 :no_pw_dec
+* Tick btn_pending_timer (NES-style A/B same-frame window).
+* When it transitions to 0, set btn_pending_fire so :accept_input
+* knows to dispatch the queued single-button action this frame.
+ lda btn_pending_timer
+ beq :no_bp_dec
+ dec btn_pending_timer
+ bne :no_bp_dec
+ lda #1
+ sta btn_pending_fire
+:no_bp_dec
 * Tick grab_punch_timer; on the 1->0 transition, restore
 * BGRAB2/xHELD1 if we're still grabbing.
  lda grab_punch_timer
@@ -5388,7 +5647,9 @@ process_input
  sta spr_ptr+1
 :find_player
  jsr load_sprite
- bcs :no_key           ; end of table, no player found
+ bcc :find_player_ok
+ jmp :no_key           ; end of table, no player found (far branch)
+:find_player_ok
  ldy #22
  lda (info_ptr),y      ; controller
  cmp #$01
@@ -5401,6 +5662,38 @@ process_input
  inc spr_ptr+1
  bra :find_player
 :found_player
+* Mode toggle (Ctrl-J / Ctrl-K) is checked FIRST — before the
+* action-anim block — so the user can always switch modes and
+* recover if a stuck animation (e.g., anim_jump's auto-advance
+* xpos) is driving Billy. The toggle path also calls
+* cancel_action_anim to abort whatever Billy is doing, so Ctrl-K
+* doubles as an emergency unstick. Border color confirms the
+* toggle actually fired.
+ lda $c000
+ bpl :no_mode_key
+ cmp #$8A              ; Ctrl-J
+ bne :not_ctrl_j
+ sta $c010             ; clear strobe
+ lda #1
+ sta input_mode
+ stz joy_armed         ; require centered read before accepting deflection
+ jsr reset_input_state
+ jsr cancel_action_anim
+ lda #$0F              ; white border = joystick mode
+ stal $E0C034
+ rts
+:not_ctrl_j
+ cmp #$8B              ; Ctrl-K
+ bne :no_mode_key
+ sta $c010
+ stz input_mode
+ jsr reset_input_state
+ jsr cancel_action_anim
+ lda #$04              ; purple border = keyboard mode
+ stal $E0C034
+ rts
+:no_mode_key
+
 * Check if action animation is active (block input)
  ldy #24
  lda (info_ptr),y     ; anim_ptr low
@@ -5420,9 +5713,210 @@ process_input
 :blocked rts           ; action animation, block all input
 
 :accept_input
+* If a pending J/L single-button action just timed out (no
+* second button arrived within BTN_WINDOW), fire it now.
+ lda btn_pending_fire
+ beq :no_pending_fire
+ stz btn_pending_fire
+ lda btn_pending_key
+ stz btn_pending_key
+ jsr btn_action_fire
+ rts
+:no_pending_fire
+
+ lda input_mode
+ bne :do_joy_input
  bit $c000
- bmi :has_key
+ bpl :no_key
+ jmp :has_key
 :no_key rts
+
+*----------------------------------------------------------
+* Joystick input path. Stays in process_input scope so it can
+* jmp directly to :do_up / :do_left / :ai_do_down / :ai_do_right
+* (the same walk handlers the strobe path uses).
+*----------------------------------------------------------
+:do_joy_input
+ jsr GetJoyXY          ; X = JoyX, Y = JoyY (each $00-$FF, ~$80 = center)
+ stx :joy_x
+ sty :joy_y
+
+* Arming gate: after Ctrl-J (or initial boot) joy_armed = 0.
+* We require BOTH axes to read centered for one frame before
+* accepting any deflection. KEGS' keyboard-emulated joystick
+* sometimes drops the "release" event for an arrow key, leaving
+* an axis stuck at $00 or $FF; without arming, that pinned read
+* drives Billy in one direction and there's no way out.
+* Real hardware: a paddle that powered up off-center calibrates
+* on the first centered moment instead of slamming Billy on boot.
+ lda joy_armed
+ bne :ji_armed
+* Not armed yet — accept buttons but no walk dispatch until both
+* axes are inside the deadzone simultaneously.
+ lda :joy_x
+ cmp #JOY_DEAD_LO
+ bcc :ji_buttons       ; X out of dz → still drifting, only sample buttons
+ cmp #JOY_DEAD_HI+1
+ bcs :ji_buttons
+ lda :joy_y
+ cmp #JOY_DEAD_LO
+ bcc :ji_buttons
+ cmp #JOY_DEAD_HI+1
+ bcs :ji_buttons
+ lda #1
+ sta joy_armed         ; centered — arm the stick for this session
+:ji_armed
+
+* Direction dispatch. Vertical wins over horizontal when both
+* axes are deflected — keeps the existing single-axis walk
+* handlers happy without a diagonal-aware refactor.
+ lda :joy_y
+ cmp #JOY_DEAD_LO
+ bcs :ji_y_not_up
+ jmp :do_up
+:ji_y_not_up
+ cmp #JOY_DEAD_HI
+ bcc :ji_y_centered
+ jmp :ai_do_down
+:ji_y_centered
+ lda :joy_x
+ cmp #JOY_DEAD_LO
+ bcs :ji_x_not_left
+ jmp :do_left
+:ji_x_not_left
+ cmp #JOY_DEAD_HI
+ bcc :ji_buttons
+ jmp :ai_do_right
+
+*----------------------------------------------------------
+* Joystick buttons — on real IIgs, $C062 reads OA/Command and
+* $C061 reads CA/Option (opposite of the conventional Apple //
+* labeling). We want OA = punch, CA = kick, so :joy_a_cur
+* (drives the 'l' / punch path) reads $C062 and :joy_b_cur
+* (drives the 'j' / back-kick path) reads $C061. We edge-
+* detect against joy_btn_*_prev and feed the same NES "both
+* within BTN_WINDOW" pipeline as keyboard J/L. Single press →
+* btn_pending_fire after the timer; both within window → jump.
+*----------------------------------------------------------
+:ji_buttons
+ ldal $C062            ; OA/Command on the GS
+ and #$80
+ sta :joy_a_cur
+ ldal $C061            ; CA/Option on the GS
+ and #$80
+ sta :joy_b_cur
+
+* Button A edge? OA/Command → 'l' (punch in facing direction).
+ lda :joy_a_cur
+ beq :ji_a_done
+ lda joy_btn_a_prev
+ bne :ji_a_done        ; was held last frame, no edge
+ lda btn_pending_key
+ cmp #'j'
+ beq :ji_jump          ; B was pending → both → jump
+ lda #'l'
+ sta btn_pending_key
+ lda #BTN_WINDOW
+ sta btn_pending_timer
+ stz btn_pending_fire
+ jmp :ji_save
+:ji_a_done
+
+* Button B edge? CA/Option → 'j' (back-kick).
+ lda :joy_b_cur
+ beq :ji_save
+ lda joy_btn_b_prev
+ bne :ji_save
+ lda btn_pending_key
+ cmp #'l'
+ beq :ji_jump
+ lda #'j'
+ sta btn_pending_key
+ lda #BTN_WINDOW
+ sta btn_pending_timer
+ stz btn_pending_fire
+ jmp :ji_save
+
+:ji_jump
+ stz btn_pending_key
+ stz btn_pending_timer
+ stz btn_pending_fire
+ jsr btn_action_jump
+ ; fall through to :ji_save so prev state is updated
+
+:ji_save
+ lda :joy_a_cur
+ sta joy_btn_a_prev
+ lda :joy_b_cur
+ sta joy_btn_b_prev
+ rts
+
+:joy_x     dfb 0
+:joy_y     dfb 0
+:joy_a_cur dfb 0
+:joy_b_cur dfb 0
+
+*----------------------------------------------------------
+* btn_action_fire - A = pending key code ('j' or 'l'). Routes
+* to punch or back-kick based on Billy's facing.
+*   facing right (mirror=0): J → back-kick, L → punch
+*   facing left  (mirror=1): J → punch,     L → back-kick
+*----------------------------------------------------------
+btn_action_fire
+ sta :baf_key
+ ldy #4
+ lda (info_ptr),y       ; mirror
+ beq :baf_face_right
+* facing left
+ lda :baf_key
+ cmp #'j'
+ beq :baf_punch
+ jmp :baf_kick          ; L when facing left → back-kick
+:baf_face_right
+ lda :baf_key
+ cmp #'j'
+ beq :baf_kick          ; J when facing right → back-kick
+ jmp :baf_punch         ; L when facing right → punch
+:baf_kick
+ lda #<anim_kick
+ ldx #>anim_kick
+ jsr start_anim
+ rts
+:baf_punch
+* Same sequence the old 'p' strobe handler used.
+ ldx #SND_PUNCH
+ jsr sound_trigger
+ lda landing_window
+ beq :baf_reg_punch
+ stz landing_window
+ lda #<anim_uppercut
+ ldx #>anim_uppercut
+ jsr start_anim
+ rts
+:baf_reg_punch
+ lda punch_toggle
+ eor #$01
+ sta punch_toggle
+ bne :baf_use_punch2
+ lda #<anim_punch1
+ ldx #>anim_punch1
+ jsr start_anim
+ rts
+:baf_use_punch2
+ lda #<anim_punch2
+ ldx #>anim_punch2
+ jsr start_anim
+ rts
+:baf_key dfb 0
+
+*----------------------------------------------------------
+* btn_action_jump - both J and L pressed within the window.
+*----------------------------------------------------------
+btn_action_jump
+ lda #<anim_jump
+ ldx #>anim_jump
+ jsr start_anim
+ rts
 
 :has_key
  lda $c010
@@ -5456,6 +5950,44 @@ process_input
  beq :gi_continue
  rts                    ; entered grab, swallow input
 :gi_continue
+* J/L button intake (NES-style A/B with same-frame window).
+* On J or L edge: if the OTHER button is already pending, fire
+* jump and clear pending. Otherwise queue this key with a
+* BTN_WINDOW-frame timer so the tick block can fire it later
+* if no second button arrives.
+ lda last_key
+ cmp #'j'
+ beq :handle_btn_j
+ cmp #'l'
+ beq :handle_btn_l
+ jmp :btn_done
+:handle_btn_j
+ lda btn_pending_key
+ cmp #'l'
+ beq :btn_jump
+ lda #'j'
+ sta btn_pending_key
+ lda #BTN_WINDOW
+ sta btn_pending_timer
+ stz btn_pending_fire
+ rts
+:handle_btn_l
+ lda btn_pending_key
+ cmp #'j'
+ beq :btn_jump
+ lda #'l'
+ sta btn_pending_key
+ lda #BTN_WINDOW
+ sta btn_pending_timer
+ stz btn_pending_fire
+ rts
+:btn_jump
+ stz btn_pending_key
+ stz btn_pending_timer
+ stz btn_pending_fire
+ jsr btn_action_jump
+ rts
+:btn_done
  lda last_key
  cmp #'r'
  bne :not_scroll
@@ -5481,7 +6013,7 @@ process_input
  sta abs_x+1
  rts
 :not_scroll
- cmp #'8'
+ cmp #'w'
  beq :do_up
  cmp #'g'
  bne :ns_not_g
@@ -5777,8 +6309,9 @@ process_input
  jsr dbg_print_hex8
  jsr dbg_print_nl
  rts
-:not_up cmp #'2'
+:not_up cmp #'s'
  bne :not_down
+:ai_do_down
  lda IMAGE01_XPOS
  sta chk_xpos
  lda IMAGE01_YPOS
@@ -5797,8 +6330,8 @@ process_input
  jsr save_sprite
  jsr resort_sprite_table
 :skip_down rts
-:not_down cmp #'4'
- beq :do_left          ; '4' → handle left below
+:not_down cmp #'a'
+ beq :do_left          ; 'a' → handle left below
  jmp :not_left         ; far jump (out of branch range after walk_x bounds added)
 :do_left
 * If at left scroll threshold AND scroll_left enabled AND
@@ -5870,8 +6403,9 @@ process_input
  jsr advance_walk
  jsr save_sprite
  rts
-:not_left cmp #'6'
+:not_left cmp #'d'
  bne :not_jump
+:ai_do_right
 * If at scroll threshold AND scrolling enabled, scroll world.
 * If scroll disabled, walk normally up to the playfield edge.
  lda scroll_right_enabled
@@ -5939,47 +6473,10 @@ process_input
  jsr advance_walk
  jsr save_sprite
  rts
-:not_jump cmp #'j'
- bne :not_kick
- lda #<anim_jump
- ldx #>anim_jump
- jsr start_anim
- rts
-:not_kick cmp #'k'
- bne :not_punch
- lda #<anim_kick
- ldx #>anim_kick
- jsr start_anim
- rts
-:not_punch cmp #'p'
- bne :not_invuln
- ldx #SND_PUNCH
- jsr sound_trigger
-* Uppercut window: if landing_window > 0, swap in anim_uppercut
-* (does +3 damage and forces fall_anim — see check_punch_hit).
-* Consume the window so a single landing yields one uppercut.
- lda landing_window
- beq :reg_punch
- stz landing_window
- lda #<anim_uppercut
- ldx #>anim_uppercut
- jsr start_anim
- rts
-:reg_punch
-* Alternate between punch1 and punch2 each press
- lda punch_toggle
- eor #$01
- sta punch_toggle
- bne :use_punch2
- lda #<anim_punch1
- ldx #>anim_punch1
- jsr start_anim
- rts
-:use_punch2
- lda #<anim_punch2
- ldx #>anim_punch2
- jsr start_anim
- rts
+* Old 'j'/'k'/'p' strobe handlers replaced by the J/L action
+* dispatch at :accept_input — fall through to the rest of the
+* strobe path for debug/special keys.
+:not_jump
 :not_invuln cmp #'v'
  bne :not_b
  jsr verify_punch_state
@@ -6007,6 +6504,91 @@ process_input
 :god_set
  stal $E0C034
 :no_key2 rts
+
+*----------------------------------------------------------
+* reset_input_state - zero everything that latches across a
+* mode switch. Called from Ctrl-J / Ctrl-K so a stuck axis,
+* held button, or pending edge from the previous mode can't
+* survive into the new one. Anim state is left alone.
+*----------------------------------------------------------
+reset_input_state
+ stz btn_pending_key
+ stz btn_pending_timer
+ stz btn_pending_fire
+ stz joy_btn_a_prev
+ stz joy_btn_b_prev
+ stz landing_window
+ rts
+
+*----------------------------------------------------------
+* cancel_action_anim - Emergency unstick. If Billy's anim_ptr
+* is non-zero, snapshot prev_* so the current frame's drawing
+* gets erased, clear anim_ptr/anim_frame, and restore the idle
+* frame from idle_addr/idle_x/idle_y. Used by Ctrl-J/Ctrl-K so
+* the user can always recover from a stuck animation.
+* Assumes info_ptr already points at Billy.
+*----------------------------------------------------------
+cancel_action_anim
+ ldy #24
+ lda (info_ptr),y      ; anim_ptr low
+ sta :tmp
+ iny
+ lda (info_ptr),y      ; anim_ptr high
+ ora :tmp
+ bne :ca_active
+ rts                   ; no anim active, nothing to do
+:ca_active
+ ldy #2
+ lda (info_ptr),y
+ ldy #34
+ sta (info_ptr),y      ; prev_xpos
+ ldy #0
+ lda (info_ptr),y
+ ldy #32
+ sta (info_ptr),y      ; prev_ypos
+ ldy #10
+ lda (info_ptr),y
+ ldy #36
+ sta (info_ptr),y      ; prev_frame_x
+ ldy #12
+ lda (info_ptr),y
+ ldy #38
+ sta (info_ptr),y      ; prev_frame_y
+ ldy #24
+ lda #0
+ sta (info_ptr),y
+ iny
+ sta (info_ptr),y      ; anim_ptr = 0
+ ldy #26
+ sta (info_ptr),y      ; anim_frame = 0
+ ldy #42
+ lda (info_ptr),y
+ ldy #14
+ sta (info_ptr),y      ; frame_addr lo
+ ldy #43
+ lda (info_ptr),y
+ ldy #15
+ sta (info_ptr),y      ; frame_addr hi
+ ldy #44
+ lda (info_ptr),y
+ ldy #10
+ sta (info_ptr),y      ; frame_x
+ ldy #46
+ lda (info_ptr),y
+ ldy #12
+ sta (info_ptr),y      ; frame_y
+ lda #0
+ sta MASK_ADDR
+ sta MASK_ADDR+1
+ ldy #52
+ sta (info_ptr),y
+ iny
+ sta (info_ptr),y
+ ldy #30
+ lda #$03
+ sta (info_ptr),y
+ rts
+:tmp dfb 0
 
 *----------------------------------------------------------
 * advance_walk - Advance one walk frame. Cycles through
@@ -8495,6 +9077,37 @@ grab_target       dw 0    ; sprite info ptr of currently-grabbed enemy
 grab_punch_timer  dfb 0   ; > 0 while showing BGRAB1/xHELD2 sub-anim
 last_key          dfb 0   ; scratch: most recent keypress, used by
                           ;   the grab-state interceptor
+
+* NES-style A/B button input: J = button A, L = button B.
+* When either is strobed we record it in btn_pending_key with a
+* BTN_WINDOW-frame timer. If the OTHER button strobes before the
+* timer expires, it counts as "both pressed" → jump and we cancel
+* the pending single action. If the timer expires alone, the
+* single action fires (mirror-aware: the button toward Billy's
+* facing direction is punch, the other is back-kick).
+BTN_WINDOW = 4            ; ~67 ms at 60 Hz
+btn_pending_key   dfb 0   ; 0 / 'j' / 'l'
+btn_pending_timer dfb 0
+btn_pending_fire  dfb 0   ; 1 = fire pending action this frame
+
+* Input source: 0 = keyboard (default), 1 = joystick.
+* Toggle with Ctrl-J (joystick) / Ctrl-K (keyboard) at any time.
+* In joystick mode, GetJoyXY drives WASD-equivalent walking and
+* $C061 bit 7 / $C062 bit 7 stand in for J / L through the same
+* btn_action_fire pipeline — so the NES same-window logic for
+* jump still applies (press both buttons within BTN_WINDOW).
+input_mode      dfb 0
+joy_btn_a_prev  dfb 0     ; $80 if button A held last frame
+joy_btn_b_prev  dfb 0     ; $80 if button B held last frame
+* 0 until both axes have read centered once after entering joy mode.
+* Re-zeroed on Ctrl-J so the user can rearm if the stick goes stale.
+joy_armed       dfb 0
+* Joystick deadzone — values inside [DEADZONE_LO, DEADZONE_HI]
+* count as "centered" for that axis. 8-bit unsigned per GetJoyXY.
+* Widened from the original $40/$C0 to absorb stick drift / cheap
+* IIgs paddles whose center reads well off $80.
+JOY_DEAD_LO = $30         ; 48
+JOY_DEAD_HI = $D0         ; 208
 
 ; Roper
 spr_roper1   ds 2
