@@ -5782,6 +5782,30 @@ process_input
  sta joy_armed         ; centered — arm the stick for this session
 :ji_armed
 
+* Grab interception. Synthesize a "direction key" from joy_x:
+*   joy_x < JOY_DEAD_LO → 'a' (push left)
+*   joy_x > JOY_DEAD_HI → 'd' (push right)
+*   centered            → 0
+* Pass to grab_check, which handles BGRAB freeze, release-on-
+* away, and try_enter_grab. C=1 means input was consumed.
+ lda :joy_x
+ cmp #JOY_DEAD_LO
+ bcs :ji_jx_not_left
+ lda #'a'
+ bra :ji_grab
+:ji_jx_not_left
+ cmp #JOY_DEAD_HI+1
+ bcc :ji_jx_centered
+ lda #'d'
+ bra :ji_grab
+:ji_jx_centered
+ lda #0
+:ji_grab
+ jsr grab_check
+ bcc :ji_dispatch
+ rts
+:ji_dispatch
+
 * Direction dispatch. Vertical wins over horizontal when both
 * axes are deflected — keeps the existing single-axis walk
 * handlers happy without a diagonal-aware refactor.
@@ -5879,6 +5903,28 @@ process_input
 *----------------------------------------------------------
 :do_snes_input
  jsr snes_poll
+
+* Grab interception — same shape as the joystick path: synthesize
+* a direction key from the D-pad's left/right bits and let
+* grab_check own the freeze/release/engage decision.
+ lda snes_b0
+ and #$02              ; Left
+ beq :si_dl_not_left
+ lda #'a'
+ bra :si_grab
+:si_dl_not_left
+ lda snes_b0
+ and #$01              ; Right
+ beq :si_dl_centered
+ lda #'d'
+ bra :si_grab
+:si_dl_centered
+ lda #0
+:si_grab
+ jsr grab_check
+ bcc :si_dispatch
+ rts
+:si_dispatch
 
 * Direction dispatch — vertical wins over horizontal (matches
 * the joystick path; the walk handlers are single-axis).
@@ -6623,6 +6669,54 @@ reset_input_state
  stz landing_window
  stz snes_b0_prev
  stz snes_b1_prev
+ rts
+
+*----------------------------------------------------------
+* grab_check - Shared grab-state interception used by the
+* joystick and SNES paths (the keyboard path inlines the same
+* logic in :has_key). On entry: info_ptr = Billy, A = the
+* "direction key" the input mode is producing ('a' for left,
+* 'd' for right, or 0 / anything else if no horizontal input
+* this frame). Stores A in last_key, then runs the same three-
+* stage decision the keyboard path uses:
+*   1. grab_punch_timer != 0 → BGRAB sub-anim playing, freeze
+*      input.
+*   2. grab_target != 0    → handle_grab_input (release on
+*      direction-away, fire grab-punch on 'p', otherwise stay
+*      grabbed).
+*   3. punch_window != 0   → try_enter_grab.
+* Returns C=0 to mean "proceed with caller's normal dispatch"
+* and C=1 to mean "input was consumed, caller should rts."
+*----------------------------------------------------------
+grab_check
+ sta last_key
+ lda grab_punch_timer
+ beq :gck_check_target
+ sec
+ rts                    ; sub-anim — swallow
+:gck_check_target
+ lda grab_target
+ ora grab_target+1
+ beq :gck_try_enter
+ lda last_key
+ jsr handle_grab_input
+ lda grab_target
+ ora grab_target+1
+ beq :gck_proceed       ; released, fall through to dispatch
+ sec
+ rts                    ; still grabbing — swallow
+:gck_try_enter
+ lda punch_window
+ beq :gck_proceed
+ lda last_key
+ jsr try_enter_grab
+ lda grab_target
+ ora grab_target+1
+ beq :gck_proceed
+ sec
+ rts                    ; entered grab — swallow
+:gck_proceed
+ clc
  rts
 
 *----------------------------------------------------------
