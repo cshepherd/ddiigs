@@ -5684,12 +5684,23 @@ process_input
  rts
 :not_ctrl_j
  cmp #$8B              ; Ctrl-K
- bne :no_mode_key
+ bne :not_ctrl_k
  sta $c010
  stz input_mode
  jsr reset_input_state
  jsr cancel_action_anim
  lda #$04              ; purple border = keyboard mode
+ stal $E0C034
+ rts
+:not_ctrl_k
+ cmp #$8E              ; Ctrl-N = SNES MAX
+ bne :no_mode_key
+ sta $c010
+ lda #2
+ sta input_mode
+ jsr reset_input_state
+ jsr cancel_action_anim
+ lda #$0C              ; green border = SNES mode
  stal $E0C034
  rts
 :no_mode_key
@@ -5725,7 +5736,11 @@ process_input
 :no_pending_fire
 
  lda input_mode
- bne :do_joy_input
+ beq :kbd_dispatch
+ cmp #1
+ beq :do_joy_input
+ jmp :do_snes_input
+:kbd_dispatch
  bit $c000
  bpl :no_key
  jmp :has_key
@@ -5849,6 +5864,94 @@ process_input
  sta joy_btn_a_prev
  lda :joy_b_cur
  sta joy_btn_b_prev
+ rts
+
+*----------------------------------------------------------
+* SNES MAX dispatch (input_mode = 2). Calls snes_poll to
+* refresh snes_b0/b1 (active-HIGH after poll), then walks the
+* same :do_up / :ai_do_down / :do_left / :ai_do_right handlers
+* the keyboard and joystick paths use. Action buttons funnel
+* through the shared btn_pending_* pipeline so the NES-style
+* "press both within BTN_WINDOW = jump" rule still applies.
+*   B  → 'l' (punch in facing direction)
+*   Y  → 'j' (back-kick)
+*   B+Y within window → jump
+*----------------------------------------------------------
+:do_snes_input
+ jsr snes_poll
+
+* Direction dispatch — vertical wins over horizontal (matches
+* the joystick path; the walk handlers are single-axis).
+ lda snes_b0
+ and #$08              ; Up
+ beq :si_not_up
+ jmp :do_up
+:si_not_up
+ lda snes_b0
+ and #$04              ; Down
+ beq :si_not_down
+ jmp :ai_do_down
+:si_not_down
+ lda snes_b0
+ and #$02              ; Left
+ beq :si_not_left
+ jmp :do_left
+:si_not_left
+ lda snes_b0
+ and #$01              ; Right
+ beq :si_buttons
+ jmp :ai_do_right
+
+:si_buttons
+* B (byte 0 bit 7) edge → 'l' (punch). Edge-detect against
+* snes_b0_prev's bit 7 — if it was already set last frame the
+* button is being held, no new event.
+ lda snes_b0
+ and #$80
+ beq :si_b_done
+ lda snes_b0_prev
+ and #$80
+ bne :si_b_done
+ lda btn_pending_key
+ cmp #'j'
+ beq :si_jump          ; Y was pending → both → jump
+ lda #'l'
+ sta btn_pending_key
+ lda #BTN_WINDOW
+ sta btn_pending_timer
+ stz btn_pending_fire
+ jmp :si_save
+:si_b_done
+
+* Y (byte 0 bit 6) edge → 'j' (back-kick).
+ lda snes_b0
+ and #$40
+ beq :si_save
+ lda snes_b0_prev
+ and #$40
+ bne :si_save
+ lda btn_pending_key
+ cmp #'l'
+ beq :si_jump
+ lda #'j'
+ sta btn_pending_key
+ lda #BTN_WINDOW
+ sta btn_pending_timer
+ stz btn_pending_fire
+ jmp :si_save
+
+:si_jump
+ stz btn_pending_key
+ stz btn_pending_timer
+ stz btn_pending_fire
+ jsr btn_action_jump
+ ; fall through to :si_save
+
+:si_save
+ lda snes_b0
+ sta snes_b0_prev
+ lda snes_b1
+ sta snes_b1_prev
  rts
 
 :joy_x     dfb 0
@@ -6518,6 +6621,49 @@ reset_input_state
  stz joy_btn_a_prev
  stz joy_btn_b_prev
  stz landing_window
+ stz snes_b0_prev
+ stz snes_b1_prev
+ rts
+
+*----------------------------------------------------------
+* snes_poll - Read SNES MAX controller 1 into snes_b0/b1.
+*
+* Protocol: write any value to SNES_LATCH to pulse the latch.
+* Then 16 cycles of: read SNES_LATCH (bit 7 = controller 1
+* current bit, MSB-first), shift into the result byte, write
+* any value to SNES_CLOCK to pulse the clock. After all 16
+* bits are in, EOR with $FF so "pressed" reads as 1 (the
+* card returns active-LOW).
+*
+* Bit layout after poll (active HIGH):
+*   snes_b0: 0=Right 1=Left 2=Down 3=Up 4=Start 5=Select 6=Y 7=B
+*   snes_b1: 0-3 unused, 4=R-shoulder 5=L-shoulder 6=X 7=A
+*
+* Controller 2 is ignored (the card's bit 6 path); this game
+* is single-player. Add a second poll routine if/when needed.
+*----------------------------------------------------------
+snes_poll
+ stal SNES_LATCH       ; latch pulse — value doesn't matter
+ ldx #0
+:sp_byte
+ ldy #8
+:sp_bit
+ ldal SNES_LATCH       ; bit 7 = controller 1 data
+ asl                   ; bit 7 → carry
+ rol snes_b0,x         ; carry → bit 0 of snes_b0/b1
+ stal SNES_CLOCK       ; clock pulse
+ dey
+ bne :sp_bit
+ inx
+ cpx #2
+ bne :sp_byte
+* Active-LOW raw → active-HIGH (button pressed = bit set)
+ lda snes_b0
+ eor #$FF
+ sta snes_b0
+ lda snes_b1
+ eor #$FF
+ sta snes_b1
  rts
 
 *----------------------------------------------------------
@@ -9096,12 +9242,29 @@ btn_pending_fire  dfb 0   ; 1 = fire pending action this frame
 * $C061 bit 7 / $C062 bit 7 stand in for J / L through the same
 * btn_action_fire pipeline — so the NES same-window logic for
 * jump still applies (press both buttons within BTN_WINDOW).
+* Input source: 0 = keyboard, 1 = joystick, 2 = SNES MAX.
 input_mode      dfb 0
 joy_btn_a_prev  dfb 0     ; $80 if button A held last frame
 joy_btn_b_prev  dfb 0     ; $80 if button B held last frame
 * 0 until both axes have read centered once after entering joy mode.
 * Re-zeroed on Ctrl-J so the user can rearm if the stick goes stale.
 joy_armed       dfb 0
+* SNES MAX controller 1 state. snes_poll fills these from the slot
+* card every frame (active-HIGH after poll: bit set = button pressed).
+* Byte 0: bit 0=Right, 1=Left, 2=Down, 3=Up, 4=Start, 5=Select, 6=Y, 7=B
+* Byte 1: bits 0-3 unused, 4=R shoulder, 5=L shoulder, 6=X, 7=A
+snes_b0         dfb 0
+snes_b1         dfb 0
+snes_b0_prev    dfb 0
+snes_b1_prev    dfb 0
+* SNES MAX slot configuration. Latch/data at $C0X0, clock at
+* $C0X1, where X = slot+8 (slot 1=$C090, slot 4=$C0C0,
+* slot 7=$C0F0). Change to a different slot by editing the two
+* address constants below. Slot 4 matches the manufacturer's
+* default. Merlin32 won't parse arithmetic in `stal` operands,
+* hence the precomputed hex.
+SNES_LATCH      = $C0C0
+SNES_CLOCK      = $C0C1
 * Joystick deadzone — values inside [DEADZONE_LO, DEADZONE_HI]
 * count as "centered" for that axis. 8-bit unsigned per GetJoyXY.
 * Widened from the original $40/$C0 to absorb stick drift / cheap
