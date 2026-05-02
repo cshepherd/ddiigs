@@ -21,6 +21,11 @@ out/mission1: src/mission1.s
 	cd src && merlin32 mission1.s
 	mv src/mission1 out/mission1
 
+out/mission12: src/mission12.s
+	mkdir -p out
+	cd src && merlin32 mission12.s
+	mv src/mission12 out/mission12
+
 out/cutscene: src/cutscene.s
 	mkdir -p out
 	cd src && merlin32 cutscene.s
@@ -36,7 +41,7 @@ out/ddii: src/ddii.s
 	cd src && merlin32 ddii.s
 	mv src/ddii out/ddii
 
-$(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.shr assets/mission13.shr assets/mission14.shr assets/mission15.shr assets/mission16.shr assets/mission17.shr assets/mission18.shr assets/mission19.shr assets/mission110.shr assets/mission111.shr assets/mission112.shr assets/mission113.shr assets/mission114.shr out/game out/title out/mission1 out/cutscene out/cutscene1 out/ddii
+$(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.shr assets/mission13.shr assets/mission14.shr assets/mission15.shr assets/mission16.shr assets/mission17.shr assets/mission18.shr assets/mission19.shr assets/mission110.shr assets/mission111.shr assets/mission112.shr assets/mission113.shr assets/mission114.shr out/game out/title out/mission1 out/mission12 out/cutscene out/cutscene1 out/ddii
 	mkdir -p out
 	rm -f $(IMGFILE)
 	cadius CREATEVOLUME $(IMGFILE) $(VOLNAME) 800KB --quiet
@@ -91,6 +96,9 @@ $(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.sh
 	cp out/mission1 out/MISSION1\#060000
 	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/MISSION1/ out/MISSION1\#060000 --quiet
 	rm out/MISSION1\#060000
+	cp out/mission12 out/MISSION12\#060000
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/MISSION1/ out/MISSION12\#060000 --quiet
+	rm out/MISSION12\#060000
 	cp out/game out/GAME\#FF2000
 	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/GAME\#FF2000 --quiet
 	rm out/GAME\#FF2000

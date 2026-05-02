@@ -51,8 +51,21 @@ NTPstreamsound          =   NinjaTrackerPlus+24
  stz file_dest+1
  jsr load_file
 
-* Initialize level from bank $02 data
+* Load MISSION12 (boss + weapons + character variants) to bank $06.
+* Same loader as MISSION1; the file just lives in a different bank.
+ lda #<mission12_path
+ sta file_open+1
+ lda #>mission12_path
+ sta file_open+2
+ lda #$06
+ sta file_bank
+ stz file_dest
+ stz file_dest+1
+ jsr load_file
+
+* Initialize level from bank $02 data, then mission12 from bank $06
  jsr init_level
+ jsr init_mission12
 
 * Sound system: silence DOC, then install every sound from
 * the table (load each from disk via bank $11 scratch, upload
@@ -1552,6 +1565,15 @@ script_spawn_npc
  iny
  lda :atk_hi
  sta (info_ptr),y      ; +55
+* Set frame_bank (+56) — mission1 NPCs all live in bank $02.
+* When mission12 NPCs (boss + armed variants) land, dispatch by
+* idle_addr above will set this to $06 instead.
+ ldy #56
+ lda #$02
+ sta (info_ptr),y      ; +56 frame_bank low
+ iny
+ lda #$00
+ sta (info_ptr),y      ; +57 frame_bank high
 * Set dirty = draw only (bit 0)
  ldy #30
  lda #$01
@@ -1575,7 +1597,7 @@ script_spawn_npc
 * Advance NPC buffer pointer (56 bytes per block)
  lda npc_buf_next
  clc
- adc #56
+ adc #58
  sta npc_buf_next
  lda npc_buf_next+1
  adc #0
@@ -2890,7 +2912,10 @@ draw_ladder_debug
 * level's lifetime (not just concurrent), since npc_buf_next
 * only advances, never reuses slots of defeated NPCs.
 NPC_BUFFER_SLOTS = 16
-npc_buffers ds NPC_BUFFER_SLOTS*56
+* 58 bytes/slot: 0..51 copied from the bank-$02 template, 52/54
+* (walk_anim/atk_anim) and 56 (frame_bank) patched by
+* script_spawn_npc post-copy.
+npc_buffers ds NPC_BUFFER_SLOTS*58
 npc_buffers_end
 
 *----------------------------------------------------------
@@ -5138,6 +5163,17 @@ load_sprite
  iny
  lda (info_ptr),y
  sta MASK_ADDR+1
+* +56/+57 frame_bank → sprite_bank global. draw_sprite and the
+* compiled draw both read sprite_bank as the high half of the
+* indirect-long source pointer, so loading it here makes every
+* render automatically pull pixels from the sprite's home bank
+* without per-call plumbing.
+ ldy #56
+ lda (info_ptr),y
+ sta sprite_bank
+ iny
+ lda (info_ptr),y
+ sta sprite_bank+1
  clc
  rts
 :null sec
@@ -9184,9 +9220,10 @@ init_level
  rep $20
  mx %00
 
-* Set sprite bank
- lda #$0002
- sta sprite_bank
+* sprite_bank is now per-sprite — load_sprite copies +56/+57 from
+* each sprite's info block into this global on every load. The
+* static initializer on the global declaration ($0002) handles
+* any edge case where a render runs before load_sprite has set it.
 
 * Initialize level script pointer from header
 * level_scr_off is at offset $0E in the header
@@ -9449,6 +9486,48 @@ spr_jump3_mask_mirror      ds 2
 spr_bpunched_mask          ds 2
 spr_bpunched_data_mirror   ds 2
 spr_bpunched_mask_mirror   ds 2
+
+*----------------------------------------------------------
+* init_mission12 - Read the sprite-address-table from bank $06
+* (the "more sprites" bank: boss + weapons + character variants)
+* and patch each weapon/boss sprite info block in game.s with
+* the real bank-$06 frame address. Mirrors init_level's pattern
+* but operates on bank $06 / mission12_header.
+*
+* Layout: header at $06/0000 with spr_addr_off at +$12. The
+* address table currently holds one entry — FLAIL — but grows
+* as more sprites land (knife, pipe, boss, character variants).
+*----------------------------------------------------------
+ mx %11
+init_mission12
+ clc
+ xce                   ; native mode
+ rep $30
+ mx %00
+
+* Set $F0/$F1/$F2 = $06/0012 (header.spr_addr_off field).
+ lda #$0012
+ sta $F0
+ sep $20
+ lda #$06
+ sta $F2
+ rep $20
+
+* Dereference: $F0 ← *($06/0012) = bank-$06 offset of spr_addr_tbl.
+ ldy #0
+ lda [$F0],y
+ sta $F0
+
+* Read entry +0 (FLAIL pixel data address) and patch the static
+* flail_sprite block in game.s.
+ ldy #0
+ lda [$F0],y
+ sta flail_sprite+14   ; frame_addr = $06/FLAIL
+ sta flail_sprite+42   ; idle_addr  = $06/FLAIL
+
+ sec
+ xce                   ; back to emulation
+ rts
 
 *----------------------------------------------------------
 * init_doc - Idle and reset Ensoniq DOC oscillators.
@@ -10190,6 +10269,9 @@ file_cref dfb 0
 
 mission1_path dfb 25
  asc '/DDIIGS/MISSION1/MISSION1'
+
+mission12_path dfb 26
+ asc '/DDIIGS/MISSION1/MISSION12'
 
 ntpplayer_path dfb 17
  asc '/DDIIGS/ntpplayer'
@@ -14588,8 +14670,8 @@ path114 dfb 31
 * master sprite table
 sprite_table
   dw billy_sprite       ; player (always first)
+  dw flail_sprite       ; cross-bank proof: pixels live in $06
   hex 0000              ; NPC slots (populated by level script)
-  hex 0000
   hex 0000
   hex 0000
   hex 0000
@@ -14644,6 +14726,12 @@ billy_sprite
                    ;     use +52/+54 as walk_anim/atk_anim — compiled
                    ;     dispatch in draw_all gates on controller==1 so
                    ;     the meaning of +52 stays sprite-type-specific)
+  hex 0000         ; +54 (NPC atk_anim slot; unused for the player)
+  hex 0200         ; +56 frame_bank — bank where this sprite's pixel
+                   ;     data lives. Read by load_sprite into the
+                   ;     sprite_bank global so draw_sprite/draw_sprite_compiled
+                   ;     pull pixels from the right bank. $0002 = mission1
+                   ;     bank, $0006 = "more sprites" bank (boss + weapons).
 
 *-------------------------------
 * Globals (used by erase/draw_sprite)
@@ -14711,6 +14799,9 @@ william_sprite
   hex 2800         ; +46 idle_y
   hex 0000         ; +48 punch_count
   da anim_wfall    ; +50 fall_anim
+  hex 0000         ; +52 (compiled mask / NPC walk_anim slot)
+  hex 0000         ; +54 (NPC atk_anim slot)
+  hex 0200         ; +56 frame_bank ($0002 = mission1 bank)
 
 william2_sprite
   hex 8400 ; +0  ypos
@@ -14739,6 +14830,47 @@ william2_sprite
   hex 2800         ; +46 idle_y
   hex 0000         ; +48 punch_count
   da anim_wfall    ; +50 fall_anim
+  hex 0000         ; +52 (compiled mask / NPC walk_anim slot)
+  hex 0000         ; +54 (NPC atk_anim slot)
+  hex 0200         ; +56 frame_bank
+
+**
+** FLAIL sprite (placeholder, lives in bank $06).
+** Proves the cross-bank rendering path: load_sprite reads +56
+** = $0006 → sprite_bank, draw_sprite then pulls pixel data
+** from $06/FLAIL via indirect long. init_mission12 patches
+** +14 (frame_addr) and +42 (idle_addr) at boot.
+**
+flail_sprite
+  hex 5000 ; +0  ypos (visible mid-screen)
+  hex 3000 ; +2  xpos (48 bytes from left edge)
+  hex 0000 ; +4  mirror
+  hex 0000 ; +6  (unused)
+  hex 0000 ; +8  (unused)
+  hex 0400 ; +10 frame_x = 4 bytes (8 pixels)
+  hex 0800 ; +12 frame_y = 8 lines
+  hex 0000 ; +14 frame_addr (patched by init_mission12)
+  hex 6600 ; +16 mask (transparent color $66)
+  hex 6000 ; +18 maskhi
+  hex 0600 ; +20 masklo
+  hex 0000 ; +22 controller (NPC, not keyboard player)
+  hex 0000 ; +24 anim_ptr (no animation — stays on idle frame)
+  hex 0000 ; +26 anim_frame
+  hex 0000 ; +28 anim_timer
+  hex 0100 ; +30 dirty (needs_draw set so first frame paints)
+  hex 5000 ; +32 prev_ypos
+  hex 3000 ; +34 prev_xpos
+  hex 0400 ; +36 prev_frame_x
+  hex 0800 ; +38 prev_frame_y
+  hex 0000 ; +40 punched_anim (placeholder isn't punchable)
+  hex 0000 ; +42 idle_addr (patched by init_mission12)
+  hex 0400 ; +44 idle_x
+  hex 0800 ; +46 idle_y
+  hex 0000 ; +48 punch_count
+  hex 0000 ; +50 fall_anim (none)
+  hex 0000 ; +52 (compiled mask slot, unused for legacy draw)
+  hex 0000 ; +54 (atk_anim slot, unused)
+  hex 0600 ; +56 frame_bank = $0006 (bank $06 holds the pixels)
 
 *-------------------------------
 * Read JoyX,Y every 11cyc on avg
