@@ -17,15 +17,10 @@ You should check out camera_drift_problem.md if you want to know about the major
 ## Status
 
 We have a solid game engine with a great graphics pipeline; Make no mistake, the hard part is done and Mission 1 will likely ship in under a month! But boy-oh-boy there's plenty more stuff to do:
-- A lot more character behaviors (sprites and scripts)
-- A lot more encounters
-- Sound engine: To begin with, this will likely be me loading the DOCRAM up with sounds and banging on the DOC registers. I've fiddled with BGM via NTPPlayer but the main problem is that my NES music conversions (made by ad-hoc Python scripts to convert VGM or MID to MOD which is then converted to NTP) are awful. BGM is thus deferred.
-- Store 2 backgrounds per bank instead of one. Currently there's only one per bank which greatly simplifies scrolling math, but is wasteful and I'd like to try to reduce requirements to 1.25MB of RAM (currently we're sitting at 2MB).
+- Perfectly scripted encounters
+- Characters with weapons
 
-You can check on things for yourself by booting the 800KB disk image at out/ddiigs.po, it boots to BASIC.SYSTEM.
-- `-TITLE` to see Title Sequence (PoC)
-- `-CUTSCENE` to see Mission 1 Cutscene (probably final, it uses the Cutscene Engine)
-- `-GAME` to see the gameplay (about 25% of assets for Mission 1 are done, uses the new Level Scripting Engine at least)
+Please understand this my philosophy here was to sprint to completion first, and follow along with quality later. I'm aware of all the bugs, the unoptimized code paths, the unnecessary instructions, all of it. And it won't get better until I'm satisfied that every asset, every encounter, and every behavior, is a good port.
 
 It is vital that I not be asked about the status of this project, if we wish for it to finish.
 
@@ -80,14 +75,19 @@ Boot the disk image. BASIC.SYSTEM will load and you can run the programs:
 
 | Key | Action |
 |-----|--------|
-| 8 | Move up |
-| 2 | Move down |
-| 4 | Move left (face left) |
-| 6 | Move right (face right) |
-| j | Jump |
-| k | Kick |
-| p | Punch |
+| W | Move up |
+| S | Move down |
+| A | Move left (face left) |
+| D | Move right (face right) |
+| L | Attack right |
+| J | Attack left |
+| i | Invincibility (cheat) |
 | esc | Pause / Unpause |
+
+As with the NES version, the attack in the direction you're facing is a punch. In the direction you're not, it's a backward kick. Holding both is a jump. Landing a jump followed by a punch is an uppercut. There's lots of small details like this and they're all comin' over.
+
+CTRL-J - Changes to joystick controls
+CTRL-N - Changes to SNES MAX controls
 
 ## Credits
 

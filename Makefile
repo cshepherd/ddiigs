@@ -160,6 +160,21 @@ $(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.sh
 	cp assets/audio/fallen.raw out/FALLEN.RAW\#060000
 	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/SFX/ out/FALLEN.RAW\#060000 --quiet
 	rm out/FALLEN.RAW\#060000
+	cp assets/audio/spinkick.raw out/SPINKICK.RAW\#060000
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/SFX/ out/SPINKICK.RAW\#060000 --quiet
+	rm out/SPINKICK.RAW\#060000
+	cp assets/audio/jump.raw out/JUMP.RAW\#060000
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/SFX/ out/JUMP.RAW\#060000 --quiet
+	rm out/JUMP.RAW\#060000
+	cp assets/audio/door.raw out/DOOR.RAW\#060000
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/SFX/ out/DOOR.RAW\#060000 --quiet
+	rm out/DOOR.RAW\#060000
+	cp assets/audio/burngone.raw out/BURNGONE.RAW\#060000
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/SFX/ out/BURNGONE.RAW\#060000 --quiet
+	rm out/BURNGONE.RAW\#060000
+	cp assets/audio/burnback.raw out/BURNBACK.RAW\#060000
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/SFX/ out/BURNBACK.RAW\#060000 --quiet
+	rm out/BURNBACK.RAW\#060000
 	cadius CATALOG $(IMGFILE)
 
 clean:

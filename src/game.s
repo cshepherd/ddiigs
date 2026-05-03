@@ -51,19 +51,24 @@ NTPstreamsound          =   NinjaTrackerPlus+24
  stz file_dest+1
  jsr load_file
 
-* Load MISSION12 (boss + weapons + character variants) to bank $06.
+* Load MISSION12 (boss + weapons + character variants) to bank $11.
 * Same loader as MISSION1; the file just lives in a different bank.
+* Bank $19 sits past the playfield shadow at $18 — clear of every
+* other allocation (backgrounds $03-$10, sound scratch $11, NTPplayer
+* $12, music $13-$15, PAK scratch $17, shadow $18). Earlier attempts
+* with $06 (clobbered by background-3 unpack) and $11 (clobbered by
+* sound_install_all chaining SFX writes) both failed.
  lda #<mission12_path
  sta file_open+1
  lda #>mission12_path
  sta file_open+2
- lda #$06
+ lda #$19
  sta file_bank
  stz file_dest
  stz file_dest+1
  jsr load_file
 
-* Initialize level from bank $02 data, then mission12 from bank $06
+* Initialize level from bank $02 data, then mission12 from bank $11
  jsr init_level
  jsr init_mission12
 
@@ -1440,6 +1445,7 @@ script_spawn_npc
  bcc :copy_blk
  sec
  xce                   ; back to emulation mode
+ mx %11                ; Merlin doesn't track xce — assert 8-bit
 * Set position and orientation
  ldy #0
  lda sc_npc_y
@@ -1472,6 +1478,76 @@ script_spawn_npc
  ldy #43
  lda (info_ptr),y      ; idle_addr high
  sta :id_hi
+* Check Burnov first — sentinel idle_addr=$0000 means "bank-$06
+* NPC, look up the real address from the spr_bn* cache vars
+* (populated by init_mission12)." We also patch +14 and +42
+* with the bank-$06 BNWALK1 address since the template can't
+* reference cross-bank labels at link time. frame_bank gets
+* set to $0006 below to override the default $0002.
+ lda :id_lo
+ ora :id_hi
+ beq :is_burnov
+ jmp :not_burnov
+:is_burnov
+* DEBUG: print "BN!" when the Burnov dispatch fires, then dump
+* the actual bytes at $19/3DCB (BNWALK1 row 1) to verify mission12
+* data is in the bank we expect at the time of spawn.
+ lda #$C2              ; 'B'
+ jsr dbg_print_char
+ lda #$CE              ; 'N'
+ jsr dbg_print_char
+ lda #$A1              ; '!'
+ jsr dbg_print_char
+ lda #$A0              ; ' '
+ jsr dbg_print_char
+ ldal $193DCB
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ ldal $193DCC
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ ldal $193DCD
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ ldal $193DCE
+ jsr dbg_print_hex8
+ jsr dbg_print_nl
+ lda spr_bnwalk1
+ ldy #14
+ sta (info_ptr),y      ; +14 frame_addr
+ lda spr_bnwalk1+1
+ ldy #15
+ sta (info_ptr),y
+ lda spr_bnwalk1
+ ldy #42
+ sta (info_ptr),y      ; +42 idle_addr
+ lda spr_bnwalk1+1
+ ldy #43
+ sta (info_ptr),y
+ lda #<anim_bnpunched
+ sta :punch_lo
+ lda #>anim_bnpunched
+ sta :punch_hi
+ lda #<anim_bnfall
+ sta :fall_lo
+ lda #>anim_bnfall
+ sta :fall_hi
+ lda #<anim_bnwalk
+ sta :walk_lo
+ lda #>anim_bnwalk
+ sta :walk_hi
+ lda #<anim_bnpunch
+ sta :atk_lo
+ lda #>anim_bnpunch
+ sta :atk_hi
+ lda #1
+ sta :is_bn            ; remember to set frame_bank=$06 below
+ jmp :do_patch
+:not_burnov
+ stz :is_bn
 * Check Roper
  lda :id_lo
  cmp spr_roper1
@@ -1565,12 +1641,20 @@ script_spawn_npc
  iny
  lda :atk_hi
  sta (info_ptr),y      ; +55
-* Set frame_bank (+56) — mission1 NPCs all live in bank $02.
-* When mission12 NPCs (boss + armed variants) land, dispatch by
-* idle_addr above will set this to $06 instead.
+* Set frame_bank (+56). Burnov (and any future bank-$19 NPC
+* identified by the idle_addr=$0000 sentinel) lives in bank
+* $19; everything else is bank $02.
+ lda :is_bn
+ beq :fb_bank2
+ ldy #56
+ lda #$19
+ sta (info_ptr),y
+ bra :fb_done
+:fb_bank2
  ldy #56
  lda #$02
  sta (info_ptr),y      ; +56 frame_bank low
+:fb_done
  iny
  lda #$00
  sta (info_ptr),y      ; +57 frame_bank high
@@ -1594,7 +1678,41 @@ script_spawn_npc
  iny
  lda info_ptr+1
  sta (spr_ptr),y
-* Advance NPC buffer pointer (56 bytes per block)
+* DEBUG: if this is a Burnov spawn (frame_bank=$19), dump the
+* buffer's frame_addr (+14), mask (+16), and frame_bank (+56).
+* Format: "SP <fa_hi><fa_lo> <mask> <bk_hi><bk_lo>"
+ ldy #56
+ lda (info_ptr),y
+ cmp #$19
+ bne :no_dbg_dump
+ lda #$D3              ; 'S'
+ jsr dbg_print_char
+ lda #$D0              ; 'P'
+ jsr dbg_print_char
+ lda #$A0
+ jsr dbg_print_char
+ ldy #15
+ lda (info_ptr),y
+ jsr dbg_print_hex8
+ ldy #14
+ lda (info_ptr),y
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ ldy #16
+ lda (info_ptr),y
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ ldy #57
+ lda (info_ptr),y
+ jsr dbg_print_hex8
+ ldy #56
+ lda (info_ptr),y
+ jsr dbg_print_hex8
+ jsr dbg_print_nl
+:no_dbg_dump
+* Advance NPC buffer pointer (58 bytes per block)
  lda npc_buf_next
  clc
  adc #58
@@ -1619,6 +1737,7 @@ sc_npc_behavior dfb 0
 :walk_hi     dfb 0
 :atk_lo      dfb 0
 :atk_hi      dfb 0
+:is_bn       dfb 0      ; non-zero when this spawn is a bank-$06 NPC (Burnov)
 
 *-------------------------------
 * Script state variables
@@ -9286,6 +9405,16 @@ spr_william2 ds 2
 spr_william3 ds 2
 spr_wpunch1  ds 2
 spr_wpunch2  ds 2
+
+* Burnov (boss) — bank-$06 sprite addresses, populated by
+* init_mission12 from mission12's spr_addr_tbl.
+spr_bnwalk1  ds 2
+spr_bnwalk2  ds 2
+spr_bnwalk3  ds 2
+spr_bnfall1  ds 2
+spr_bnfallen ds 2
+spr_bnpunch1 ds 2
+spr_bnpunch2 ds 2
 spr_wsomer1  ds 2     ; somersault frame 1 (and 5 mirrored)
 spr_wsomer2  ds 2     ; somersault frame 3 (apex)
 spr_wsomer3  ds 2     ; somersault frame 2 (and 4 mirrored)
@@ -9488,13 +9617,13 @@ spr_bpunched_data_mirror   ds 2
 spr_bpunched_mask_mirror   ds 2
 
 *----------------------------------------------------------
-* init_mission12 - Read the sprite-address-table from bank $06
+* init_mission12 - Read the sprite-address-table from bank $11
 * (the "more sprites" bank: boss + weapons + character variants)
 * and patch each weapon/boss sprite info block in game.s with
-* the real bank-$06 frame address. Mirrors init_level's pattern
-* but operates on bank $06 / mission12_header.
+* the real bank-$19 frame address. Mirrors init_level's pattern
+* but operates on bank $19 / mission12_header.
 *
-* Layout: header at $06/0000 with spr_addr_off at +$12. The
+* Layout: header at $19/0000 with spr_addr_off at +$12. The
 * address table currently holds one entry — FLAIL — but grows
 * as more sprites land (knife, pipe, boss, character variants).
 *----------------------------------------------------------
@@ -9505,11 +9634,11 @@ init_mission12
  rep $30
  mx %00
 
-* Set $F0/$F1/$F2 = $06/0012 (header.spr_addr_off field).
+* Set $F0/$F1/$F2 = $19/0012 (header.spr_addr_off field).
  lda #$0012
  sta $F0
  sep $20
- lda #$06
+ lda #$19
  sta $F2
  rep $20
 
@@ -9525,8 +9654,109 @@ init_mission12
  sta flail_sprite+14   ; frame_addr = $06/FLAIL
  sta flail_sprite+42   ; idle_addr  = $06/FLAIL
 
+* Burnov sprite addresses — table indices 37-45 in spr_addr_tbl.
+* Each entry is 2 bytes; offsets calculated from the spr_flail
+* base. Order in the table is fixed by mission12.s; if it ever
+* gets reordered, update these offsets.
+ ldy #$4A              ; index 37 = spr_bnwalk1
+ lda [$F0],y
+ sta spr_bnwalk1
+ ldy #$4C
+ lda [$F0],y
+ sta spr_bnwalk2
+ ldy #$4E
+ lda [$F0],y
+ sta spr_bnwalk3
+ ldy #$50
+ lda [$F0],y
+ sta spr_bnfall1
+ ldy #$56              ; skip bnfall2/3 (unused for now)
+ lda [$F0],y
+ sta spr_bnfallen
+ ldy #$58
+ lda [$F0],y
+ sta spr_bnpunch1
+ ldy #$5A
+ lda [$F0],y
+ sta spr_bnpunch2
+
+* Patch Burnov animation descriptors. Per-frame frame_addr
+* lives at +3+3 (frame 0), +3+8 (frame 1), etc. (5-byte stride
+* for legacy/uncompiled animations).
+ lda spr_bnwalk1
+ sta anim_bnwalk+3+3
+ lda spr_bnwalk2
+ sta anim_bnwalk+3+8
+ lda spr_bnwalk3
+ sta anim_bnwalk+3+13
+ lda spr_bnwalk2
+ sta anim_bnwalk+3+18
+
+ lda spr_bnpunch1
+ sta anim_bnpunch+3+3
+ lda spr_bnpunch2
+ sta anim_bnpunch+3+8
+
+ lda spr_bnfall1
+ sta anim_bnpunched+3+3      ; placeholder reaction = BNFALL1
+
+ lda spr_bnfall1
+ sta anim_bnfall+3+3
+ lda spr_bnfallen
+ sta anim_bnfall+3+8
+
  sec
  xce                   ; back to emulation
+ mx %11
+* DEBUG: dump key Burnov addresses to the text screen so we
+* can verify the address-table read worked. Format:
+*   "BN <bnwalk1> <bnpunch1> <bnfall1>"
+* Each is 4 hex digits (high then low).
+ lda #$C2              ; 'B'
+ jsr dbg_print_char
+ lda #$CE              ; 'N'
+ jsr dbg_print_char
+ lda #$A0              ; ' '
+ jsr dbg_print_char
+ lda spr_bnwalk1+1
+ jsr dbg_print_hex8
+ lda spr_bnwalk1
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda spr_bnpunch1+1
+ jsr dbg_print_hex8
+ lda spr_bnpunch1
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda spr_bnfall1+1
+ jsr dbg_print_hex8
+ lda spr_bnfall1
+ jsr dbg_print_hex8
+ jsr dbg_print_nl
+* DEBUG: directly read bytes from $19/3DCB (BNWALK1 row 1 start)
+* to confirm the load actually deposited the sprite data there.
+* Expected: 44 44 44 44 (start of BNWALK1's first row).
+ lda #$D7              ; 'W'
+ jsr dbg_print_char
+ lda #$BD              ; '='
+ jsr dbg_print_char
+ ldal $193DCB
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ ldal $193DCC
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ ldal $193DCD
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ ldal $193DCE
+ jsr dbg_print_hex8
+ jsr dbg_print_nl
  rts
 
 *----------------------------------------------------------
@@ -9799,7 +10029,7 @@ sound_install_all
  lda (sound_ptr),y
  sta file_dest+1
 
- lda #$11
+ lda #$11              ; SFX scratch bank (NOT $19 — that's mission12)
  sta file_bank
  jsr load_file
 
@@ -13316,6 +13546,52 @@ anim_lfall
  dfb $11,$0F,60      ; LFALL2
   hex 0000             ; patched
 
+* Burnov (boss) walk. 4 frames, looping (BNWALK1, 2, 3, 2 cycle).
+* Pixel data lives in bank $06 — frame_addr fields are patched
+* by init_mission12 from spr_bnwalk1/2/3 (also in $06).
+anim_bnwalk
+ dfb 4
+ dfb $0D             ; max_width (BNWALK1)
+ dfb $02             ; flags: loop
+ dfb $0D,$30,5       ; BNWALK1: 13 wide, 48 tall, 5 VBLs
+  hex 0000             ; patched
+ dfb $0D,$30,5       ; BNWALK2
+  hex 0000             ; patched
+ dfb $0D,$30,5       ; BNWALK3
+  hex 0000             ; patched
+ dfb $0D,$30,5       ; BNWALK2 (cycle back)
+  hex 0000             ; patched
+
+* Burnov punch. 2 frames, one-shot.
+anim_bnpunch
+ dfb 2
+ dfb $17             ; max_width (BNPUNCH2)
+ dfb $00
+ dfb $11,$30,6       ; BNPUNCH1: 17 wide, 48 tall
+  hex 0000             ; patched
+ dfb $17,$2E,6       ; BNPUNCH2: 23 wide, 46 tall
+  hex 0000             ; patched
+
+* Burnov punched reaction. 1 frame placeholder using BNFALL1
+* — replace with a dedicated recoil frame if/when one ships.
+anim_bnpunched
+ dfb 1
+ dfb $0D
+ dfb $00
+ dfb $0D,$2E,5       ; BNFALL1
+  hex 0000             ; patched
+
+* Burnov fall. 2 frames, one-shot, parabolic arc on frame 0.
+* BNFALL2/3 are unused for now — could be a 3-frame arc later.
+anim_bnfall
+ dfb 2
+ dfb $17             ; max_width (BNFALLEN)
+ dfb $10             ; flags: bit 4 = fall trajectory
+ dfb $0D,$2E,FALL_ARC_FRAMES ; BNFALL1: arc duration
+  hex 0000             ; patched
+ dfb $17,$17,60      ; BNFALLEN: 23 wide, 23 tall
+  hex 0000             ; patched
+
 *----------------------------------------------------------
 * check_punch_hit - Check if the punching sprite (whose
 * state is in globals) hit any other sprite in the table.
@@ -14670,8 +14946,8 @@ path114 dfb 31
 * master sprite table
 sprite_table
   dw billy_sprite       ; player (always first)
-  dw flail_sprite       ; cross-bank proof: pixels live in $06
   hex 0000              ; NPC slots (populated by level script)
+  hex 0000
   hex 0000
   hex 0000
   hex 0000

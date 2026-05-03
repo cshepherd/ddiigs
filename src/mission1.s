@@ -461,10 +461,12 @@ level_script
     db OP_SCRLOCK         ; lock scrolling in screen 13 (final screen)
     db OP_BOSSMUSIC
 
-* Note this is a placehodlder until Boss is here
-    db OP_NPC           ; William on upper level
-    dw william_sprite
-    db $58,$32,$01,BEHAV_FACEOFF  ; y=$32 (50) within walkable band
+    db OP_NPC           ; Burnov, the Mission 1 boss
+    dw burnov_sprite
+    db $58,$43,$01,BEHAV_FACEOFF  ; y=$43 (67) — within walkable band for
+                                  ; the boss screen. Earlier $57 put him
+                                  ; on the floor of the William fight area,
+                                  ; outside this screen's walkable bounds.
     db OP_WAITCLR       ; wait for enemies defeated
 
     db OP_END           ; end of level
@@ -919,6 +921,45 @@ linda_sprite
  hex 2800             ; +46 idle_y
  hex 0000             ; +48 punch_count
  da anim_lfall        ; +50 fall_anim
+
+*-------------------------------
+* Burnov (Mission 1 boss). Pixel data lives in bank $06
+* (mission12.s), not $02, so the template's idle_addr (+42),
+* frame_addr (+14), and the anim pointers (+40, +50) carry a
+* sentinel value of $0000. script_spawn_npc detects this and
+* substitutes the real bank-$06 addresses from the spr_bn*
+* cache vars (populated by init_mission12), plus sets
+* frame_bank (+56) to $0006.
+* Mask color is $44 — the "$4" nibble surrounding Burnov's
+* body in the bank-$06 sprite data.
+*-------------------------------
+burnov_sprite
+ hex 5F00             ; +0  ypos
+ hex 5800             ; +2  xpos
+ hex 0100             ; +4  mirror
+ hex 0000             ; +6  (unused/behavior)
+ hex 0000             ; +8  (unused/behavior_state)
+ hex 0D00             ; +10 frame_x = 13 (BNWALK1)
+ hex 3000             ; +12 frame_y = 48 (BNWALK1)
+ hex 0000             ; +14 frame_addr  (sentinel — patched runtime)
+ hex 4400             ; +16 mask = $44
+ hex 4000             ; +18 maskhi
+ hex 0400             ; +20 masklo
+ hex 0000             ; +22 controller (NPC)
+ hex 0000             ; +24 anim_ptr
+ hex 0000             ; +26 anim_frame
+ hex 0000             ; +28 anim_timer
+ hex 0100             ; +30 dirty
+ hex 5F00             ; +32 prev_ypos
+ hex 5800             ; +34 prev_xpos
+ hex 0D00             ; +36 prev_frame_x
+ hex 3000             ; +38 prev_frame_y
+ hex 0000             ; +40 punched_anim (sentinel — patched runtime)
+ hex 0000             ; +42 idle_addr   (sentinel: $0000 = Burnov)
+ hex 0D00             ; +44 idle_x
+ hex 3000             ; +46 idle_y
+ hex 0000             ; +48 punch_count
+ hex 0000             ; +50 fall_anim   (sentinel — patched runtime)
 
 *==========================================================
 * Ladder definitions (world-absolute byte coordinates)

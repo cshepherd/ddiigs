@@ -1,14 +1,21 @@
 *----------------------------------------------------------
 * Mission 1.2 — "More sprites" bank
-* Loaded into bank $06 by the engine. Holds the boss + weapon
+* Loaded into bank $19 by the engine. Holds the boss + weapon
 * sprites + character variants while carrying weapons. The
 * mission1 bank ($02) is full; this is the overflow.
+*
+* Bank $19 was picked because every lower bank is taken: $03-$10
+* by the 14 background screens, $11 by the SFX scratch space
+* (sound_install_all chains writes through it), $12 by NTPplayer,
+* $13-$15 by music data, $17 by PAK decompression scratch, and
+* $18 by the playfield shadow. $19 sits past all of them with
+* room to grow.
 *
 * Header layout intentionally mirrors mission1's so the engine
 * can use the same offsets to find the sprite address table.
 * For now the only field that matters is spr_addr_off at +$12.
 *----------------------------------------------------------
-    org $060000
+    org $190000
 
 *==========================================================
 * Header — only +$12 (spr_addr_off) is used by init_mission12.
