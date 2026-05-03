@@ -927,11 +927,11 @@ linda_sprite
 * (mission12.s), not $02, so the template's idle_addr (+42),
 * frame_addr (+14), and the anim pointers (+40, +50) carry a
 * sentinel value of $0000. script_spawn_npc detects this and
-* substitutes the real bank-$06 addresses from the spr_bn*
+* substitutes the real bank-$19 addresses from the spr_bn*
 * cache vars (populated by init_mission12), plus sets
-* frame_bank (+56) to $0006.
-* Mask color is $44 — the "$4" nibble surrounding Burnov's
-* body in the bank-$06 sprite data.
+* frame_bank (+56) to $0019.
+* Mask color is $EE — the "$E" nibble surrounding Burnov's
+* body in the bank-$19 sprite data.
 *-------------------------------
 burnov_sprite
  hex 5F00             ; +0  ypos
@@ -942,9 +942,9 @@ burnov_sprite
  hex 0D00             ; +10 frame_x = 13 (BNWALK1)
  hex 3000             ; +12 frame_y = 48 (BNWALK1)
  hex 0000             ; +14 frame_addr  (sentinel — patched runtime)
- hex 4400             ; +16 mask = $44
- hex 4000             ; +18 maskhi
- hex 0400             ; +20 masklo
+ hex EE00             ; +16 mask = $EE
+ hex E000             ; +18 maskhi
+ hex 0E00             ; +20 masklo
  hex 0000             ; +22 controller (NPC)
  hex 0000             ; +24 anim_ptr
  hex 0000             ; +26 anim_frame
