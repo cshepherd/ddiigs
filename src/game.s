@@ -3356,7 +3356,10 @@ fo_approach
  bcs :x_decrement
 * xpos < target, try xpos + 1. Check the RIGHT edge
 * (xpos + frame_x) against bounds so wider frames can't
-* extend past bmax.
+* extend past bmax. For Burnov (frame_bank=$19) add 5 bytes
+* of padding so he stops 10 px before the wall instead of
+* parking his sprite right against it (his hitbox is bigger
+* than the bounds tables expect).
  ldy #4
  lda #$00
  sta (info_ptr),y      ; mirror = 0 (facing right)
@@ -3366,6 +3369,15 @@ fo_approach
  clc
  adc (info_ptr),y      ; + frame_x = new right edge
  sta chk_xpos
+ ldy #56
+ lda (info_ptr),y      ; frame_bank low byte
+ cmp #$19
+ bne :rgt_no_pad
+ lda chk_xpos
+ clc
+ adc #5
+ sta chk_xpos
+:rgt_no_pad
  ldy #0
  lda (info_ptr),y      ; current ypos
  jsr check_y_bounds
@@ -3378,7 +3390,9 @@ fo_approach
  bra :move_y
 :x_decrement
 * Try xpos - 1. Left-edge check is sufficient since the
-* sprite extends only to the right of xpos.
+* sprite extends only to the right of xpos. For Burnov
+* (frame_bank=$19) subtract an extra 5 bytes so he stops
+* 10 px before the left wall (matches the right-edge pad).
  ldy #4
  lda #$01
  sta (info_ptr),y      ; mirror = 1 (facing left)
@@ -3387,6 +3401,15 @@ fo_approach
  sec
  sbc #1
  sta chk_xpos
+ ldy #56
+ lda (info_ptr),y      ; frame_bank low byte
+ cmp #$19
+ bne :lft_no_pad
+ lda chk_xpos
+ sec
+ sbc #5
+ sta chk_xpos
+:lft_no_pad
  ldy #0
  lda (info_ptr),y      ; current ypos
  jsr check_y_bounds
@@ -3417,12 +3440,27 @@ fo_approach
  clc
  adc #1
 * Also check proposed bottom < 200 so feet stay on-screen.
+* For Burnov (frame_bank=$19) tighten the clamp by 10 lines
+* so his big sprite stops walking down before its tail touches
+* the playfield edge.
  sta :yp_proposed
  ldy #12
  clc
  adc (info_ptr),y      ; A = proposed_top + frame_y = proposed_bottom
+ sta :yp_bottom
+ ldy #56
+ lda (info_ptr),y      ; frame_bank low byte
+ cmp #$19
+ bne :yd_normal_cap
+ lda :yp_bottom
+ cmp #190
+ bcs :y_at_target
+ bra :yd_call_check
+:yd_normal_cap
+ lda :yp_bottom
  cmp #200
  bcs :y_at_target
+:yd_call_check
  lda :yp_proposed
  jsr check_y_bounds
  bcs :y_at_target      ; blocked, skip Y move
@@ -3480,6 +3518,7 @@ fo_approach
  rts
 
 :yp_proposed dfb 0
+:yp_bottom   dfb 0
 
 *----------------------------------------------------------
 * fo_start_punch - Trigger anim_wpunch on the NPC (William's
@@ -4116,9 +4155,16 @@ try_enter_grab
 *----------------------------------------------------------
 handle_grab_input
  sta :key
-* Punch?
+* Grab-punch trigger. Accepts the legacy 'p' key plus the
+* current button-A code 'l' (keyboard L, joystick OA, SNES B).
+* Without 'l' here, holding an enemy's head + tapping punch
+* did nothing — the keyboard remap to J/L left this routine
+* listening for a key that no input source produces anymore.
  cmp #'p'
+ beq :do_punch
+ cmp #'l'
  bne :not_punch
+:do_punch
  jsr start_grab_punch
  lda :key
  rts
@@ -7562,10 +7608,10 @@ update_anims
  sta (info_ptr),y     ; mark dirty (bit0=draw, bit1=erase)
 :no_advance
 * Check flags bit 4: fall trajectory (parabolic arc, only on frame 0).
-* Per-VBL: dx = ±1 (away from puncher = toward enemy.mirror), dy = -2
-* on the rising half (timer > FALL_ARC_PEAK), +2 on the falling half.
-* Net Y returns to start; net X displaces by FALL_ARC_FRAMES*1 in the
-* direction the enemy is facing-from (= Billy's facing at hit time).
+* Per-VBL: dx = ±1 in the direction Billy is currently facing,
+* dy = -2 on the rising half (timer > FALL_ARC_PEAK), +2 on the
+* falling half. Net Y returns to start; net X displaces by
+* FALL_ARC_FRAMES*1 away from Billy's punch.
  ldy #2
  lda (anim_ptr),y     ; flags
  and #$10             ; bit 4
@@ -7623,15 +7669,17 @@ update_anims
  ldy #38
  sta (info_ptr),y     ; prev_frame_y
 :ftraj_skip_snap
-* dx = enemy faces left (mirror=1) → +1; mirror=0 → -1.
-* (Enemy faces Billy when hit, so this throws them away from Billy
-*  in Billy's facing direction.)
+* dx is read from BILLY's facing, not the enemy's: Billy mirror=0
+* (faces right) → enemy falls right (+1 dx); Billy mirror=1 (faces
+* left) → enemy falls left (-1 dx). This guarantees the body
+* always flies away from Billy's punch direction even in cases
+* where the enemy's facing hasn't synced with Billy's at hit
+* time (e.g., grab-punch, hit-from-behind, multi-NPC scrums).
 * Clamp to playfield bounds [1, PLAYER_MAX_X] so a hit near the edge
 * doesn't fling the body offscreen. Hitting the wall stops horizontal
 * motion for the rest of the arc — sprite still rises and falls.
- ldy #4
- lda (info_ptr),y
- beq :ftraj_dx_neg
+ lda billy_sprite+4    ; Billy's mirror byte
+ bne :ftraj_dx_neg
 * Moving right: skip if xpos already at PLAYER_MAX_X.
  ldy #2
  lda (info_ptr),y
@@ -7719,6 +7767,53 @@ update_anims
  lda #UPPERCUT_WINDOW
  sta landing_window
 :ad_not_jump
+* === Burnov boss-death state machine ===
+* Triggered for any sprite whose frame_bank == $19 (currently
+* only Burnov). Three transitions:
+*   anim_bnfall ended  →  start anim_bn_diss (BURNGONE) OR permadeath
+*   anim_bn_diss ended →  teleport + start anim_bn_recon (BURNBACK)
+*   anim_bn_recon ended →  reset punch_count, increment death_count,
+*                          fall through to :normal_end (idle restore).
+ ldy #56
+ lda (info_ptr),y      ; frame_bank
+ cmp #$19
+ bne :ad_normal_flow   ; not Burnov, take existing path
+* This sprite is Burnov. Was the just-ended anim a fall_anim?
+ ldy #50
+ lda (info_ptr),y
+ cmp anim_ptr
+ bne :ad_bn_check_diss
+ iny
+ lda (info_ptr),y
+ cmp anim_ptr+1
+ bne :ad_bn_check_diss
+* fall_anim ended on Burnov. Permadeath on the 3rd kill,
+* dissolve on the 1st and 2nd.
+ lda boss_death_count
+ cmp #2
+ bcs :ad_do_death      ; >= 2: real death, level ends
+ jsr start_burnov_dissolve
+ jmp :next
+:ad_bn_check_diss
+ lda anim_ptr
+ cmp #<anim_bn_diss
+ bne :ad_bn_check_recon
+ lda anim_ptr+1
+ cmp #>anim_bn_diss
+ bne :ad_bn_check_recon
+ jsr start_burnov_recon
+ jmp :next
+:ad_bn_check_recon
+ lda anim_ptr
+ cmp #<anim_bn_recon
+ bne :ad_normal_flow
+ lda anim_ptr+1
+ cmp #>anim_bn_recon
+ bne :ad_normal_flow
+ jsr finish_burnov_recon
+ jmp :normal_end       ; restore idle frame & resume FACEOFF
+
+:ad_normal_flow
 * Check if this was a fall_anim and punch_count >= 6 (death)
  ldy #50
  lda (info_ptr),y     ; fall_anim low
@@ -7732,6 +7827,7 @@ update_anims
  lda (info_ptr),y     ; punch_count
  cmp #6
  bcc :normal_end
+:ad_do_death
 * Death: set $FFFF sentinel, mark dirty for erase+removal.
 *
 * For a fall-anim death, the sprite has a history of drawings
@@ -8222,6 +8318,112 @@ update_anims
 :kick_saved_fy   dfb 0
 
 *----------------------------------------------------------
+* Burnov boss-death state-machine helpers. Called from
+* update_anims:ad_not_jump when the just-ended anim matches
+* one of the boss-death stages. info_ptr = Burnov on entry,
+* MX = %11.
+*----------------------------------------------------------
+
+* start_burnov_dissolve - fall_anim ended on Burnov (kill 1 or 2).
+* Trigger BURNGONE and install anim_bn_diss. The fall already
+* left ypos at the bumped FALLEN position; we un-bump it here so
+* the bigger BDISS frames render around Burnov's standing height
+* instead of being shoved down by FALL_Y_OFFSET.
+start_burnov_dissolve
+ ldx #SND_BURNGONE
+ jsr sound_trigger
+* Snapshot prev_* so the fallen sprite gets erased cleanly when
+* the new (taller) dissolve frame paints. Use a generous prev_w/h
+* (24×24) to cover BNFALLEN's 23×23 footprint.
+ ldy #0
+ lda (info_ptr),y      ; current ypos (bumped)
+ ldy #32
+ sta (info_ptr),y      ; prev_ypos
+ ldy #2
+ lda (info_ptr),y
+ ldy #34
+ sta (info_ptr),y      ; prev_xpos
+ lda #24
+ ldy #36
+ sta (info_ptr),y      ; prev_frame_x
+ ldy #38
+ sta (info_ptr),y      ; prev_frame_y
+* Un-bump ypos so the BDISS frames draw at standing height.
+ ldy #0
+ lda (info_ptr),y
+ sec
+ sbc #FALL_Y_OFFSET
+ sta (info_ptr),y
+* Install anim_bn_diss
+ lda #<anim_bn_diss
+ ldx #>anim_bn_diss
+ jsr start_anim
+ rts
+
+* start_burnov_recon - anim_bn_diss ended. Move Burnov to the
+* alternate boss spawn position, trigger BURNBACK, install
+* anim_bn_recon. Position alternates by boss_death_count parity:
+*   count=0 (1st kill, hasn't incremented yet) → teleport to x=$10
+*   count=1 (2nd kill, hasn't incremented yet) → teleport to x=$58
+* y is reset to the boss spawn y ($43) regardless.
+start_burnov_recon
+* Snapshot prev_* for clean erase of the small BDISS8 helmet.
+ ldy #0
+ lda (info_ptr),y
+ ldy #32
+ sta (info_ptr),y      ; prev_ypos
+ ldy #2
+ lda (info_ptr),y
+ ldy #34
+ sta (info_ptr),y      ; prev_xpos
+ ldy #10
+ lda (info_ptr),y
+ ldy #36
+ sta (info_ptr),y      ; prev_frame_x
+ ldy #12
+ lda (info_ptr),y
+ ldy #38
+ sta (info_ptr),y      ; prev_frame_y
+* Pick teleport target X.
+ lda boss_death_count
+ and #$01
+ beq :br_far_x
+ lda #$58              ; 2nd teleport target — back to original
+ bra :br_set_x
+:br_far_x
+ lda #$10              ; 1st teleport target — left side
+:br_set_x
+ ldy #2
+ sta (info_ptr),y      ; new xpos
+ lda #$43              ; spawn y for the boss screen
+ ldy #0
+ sta (info_ptr),y
+ ldx #SND_BURNBACK
+ jsr sound_trigger
+ lda #<anim_bn_recon
+ ldx #>anim_bn_recon
+ jsr start_anim
+ rts
+
+* finish_burnov_recon - anim_bn_recon ended. Reset punch_count to
+* 0 so the next 3 hits trigger the next dissolve cycle, reset
+* behavior_state to FO_APPROACH so the boss starts walking
+* toward Billy again, increment boss_death_count, and let
+* :normal_end's idle-restore put Burnov back to BNWALK1.
+finish_burnov_recon
+ lda #0
+ ldy #48
+ sta (info_ptr),y      ; punch_count
+ ldy #7
+ sta (info_ptr),y      ; behavior_state = FO_APPROACH (0)
+ ldy #8
+ sta (info_ptr),y      ; behavior_timer low
+ ldy #9
+ sta (info_ptr),y      ; behavior_timer high
+ inc boss_death_count
+ rts
+
+*----------------------------------------------------------
 * toolbox_init - Start IIgs Toolbox tools
 * (So we can have DrawCString)
 * TL, MT, MM, then allocate DP for QD and start QD.
@@ -8591,6 +8793,10 @@ copy_03_to_50
 *----------------------------------------------------------
  mx %11
 init_level
+* Reset boss-death cycle counter so the boss restarts fresh
+* every time init_level runs (new game, etc.).
+ stz boss_death_count
+
  clc
  xce                   ; native mode
  rep $30
@@ -9415,6 +9621,25 @@ spr_bnfall1  ds 2
 spr_bnfallen ds 2
 spr_bnpunch1 ds 2
 spr_bnpunch2 ds 2
+
+* Burnov "dissolving" animation frames (8 frames, body → helmet).
+* Played after each non-final fall as part of his teleport-and-
+* respawn boss death cycle. Played in reverse for the recon back.
+spr_bdiss1   ds 2
+spr_bdiss2   ds 2
+spr_bdiss3   ds 2
+spr_bdiss4   ds 2
+spr_bdiss5   ds 2
+spr_bdiss6   ds 2
+spr_bdiss7   ds 2
+spr_bdiss8   ds 2
+
+* Burnov "death counter" — how many times he's gone through the
+* dissolve/teleport/reconstitute cycle. Reset at level init.
+*   0 → on next fall, dissolve + teleport (1st kill)
+*   1 → on next fall, dissolve + teleport (2nd kill)
+*   2 → on next fall, permadeath (3rd kill, level ends)
+boss_death_count dfb 0
 spr_wsomer1  ds 2     ; somersault frame 1 (and 5 mirrored)
 spr_wsomer2  ds 2     ; somersault frame 3 (apex)
 spr_wsomer3  ds 2     ; somersault frame 2 (and 4 mirrored)
@@ -9680,6 +9905,33 @@ init_mission12
  lda [$F0],y
  sta spr_bnpunch2
 
+* BDISS frames — indices 49-56 in spr_addr_tbl ($62-$70). Skip
+* indices 46-48 (BNBILLY1-3, head-grab variants — not yet used).
+ ldy #$62
+ lda [$F0],y
+ sta spr_bdiss1
+ ldy #$64
+ lda [$F0],y
+ sta spr_bdiss2
+ ldy #$66
+ lda [$F0],y
+ sta spr_bdiss3
+ ldy #$68
+ lda [$F0],y
+ sta spr_bdiss4
+ ldy #$6A
+ lda [$F0],y
+ sta spr_bdiss5
+ ldy #$6C
+ lda [$F0],y
+ sta spr_bdiss6
+ ldy #$6E
+ lda [$F0],y
+ sta spr_bdiss7
+ ldy #$70
+ lda [$F0],y
+ sta spr_bdiss8
+
 * Patch Burnov animation descriptors. Per-frame frame_addr
 * lives at +3+3 (frame 0), +3+8 (frame 1), etc. (5-byte stride
 * for legacy/uncompiled animations).
@@ -9704,6 +9956,43 @@ init_mission12
  sta anim_bnfall+3+3
  lda spr_bnfallen
  sta anim_bnfall+3+8
+
+* Patch anim_bn_diss (BDISS1→8) — 8 frames at +3+3, +3+8, ...
+* +3+3, +3+8, +3+13, +3+18, +3+23, +3+28, +3+33, +3+38
+ lda spr_bdiss1
+ sta anim_bn_diss+3+3
+ lda spr_bdiss2
+ sta anim_bn_diss+3+8
+ lda spr_bdiss3
+ sta anim_bn_diss+3+13
+ lda spr_bdiss4
+ sta anim_bn_diss+3+18
+ lda spr_bdiss5
+ sta anim_bn_diss+3+23
+ lda spr_bdiss6
+ sta anim_bn_diss+3+28
+ lda spr_bdiss7
+ sta anim_bn_diss+3+33
+ lda spr_bdiss8
+ sta anim_bn_diss+3+38
+
+* Patch anim_bn_recon (BDISS8→1) — same 8 frames in reverse.
+ lda spr_bdiss8
+ sta anim_bn_recon+3+3
+ lda spr_bdiss7
+ sta anim_bn_recon+3+8
+ lda spr_bdiss6
+ sta anim_bn_recon+3+13
+ lda spr_bdiss5
+ sta anim_bn_recon+3+18
+ lda spr_bdiss4
+ sta anim_bn_recon+3+23
+ lda spr_bdiss3
+ sta anim_bn_recon+3+28
+ lda spr_bdiss2
+ sta anim_bn_recon+3+33
+ lda spr_bdiss1
+ sta anim_bn_recon+3+38
 
  sec
  xce                   ; back to emulation
@@ -9860,8 +10149,10 @@ doc_wait
 *
 * SFX share interrupt+playback osc 8/9; triggering a new
 * sound stops the previous one. DOC RAM pages $80, $82, $84,
-* $86, $88 are reserved for the SFX (512 bytes each).
-* Samples live in CPU RAM bank $11 at fixed 4 KB offsets.
+* $86, $88, $8A, $8C, $8E, $90, $92 are reserved for the SFX
+* (512 bytes each — 10 SFX × 512 B = 5 KB of DOC RAM).
+* Samples live in CPU RAM banks $11 and $1A; bank comes from
+* each struct's "sample addr hi word" (struct +2/+3).
 *----------------------------------------------------------
 
 SND_PUNCH        equ 0
@@ -9869,7 +10160,12 @@ SND_PUNCHLANDED  equ 1
 SND_FINGER       equ 2
 SND_POW          equ 3
 SND_FALLEN       equ 4
-SND_COUNT        equ 5
+SND_JUMP         equ 5
+SND_DOOR         equ 6
+SND_SPINKICK     equ 7
+SND_BURNGONE     equ 8
+SND_BURNBACK     equ 9
+SND_COUNT        equ 10
 
 sound_ptr equ $F6   ; ZP: 2-byte pointer to current SFX struct
 
@@ -9879,6 +10175,11 @@ sound_table
  da sfx_finger_struct
  da sfx_pow_struct
  da sfx_fallen_struct
+ da sfx_jump_struct
+ da sfx_door_struct
+ da sfx_spinkick_struct
+ da sfx_burngone_struct
+ da sfx_burnback_struct
 
 sound_path_table
  da sfx_punch_path
@@ -9886,6 +10187,11 @@ sound_path_table
  da sfx_finger_path
  da sfx_pow_path
  da sfx_fallen_path
+ da sfx_jump_path
+ da sfx_door_path
+ da sfx_spinkick_path
+ da sfx_burngone_path
+ da sfx_burnback_path
 
 * Each sample loads to bank $11 at offset = (sound_index * $1000).
 * Byte at offset +15 is our private "amplification shift" used
@@ -9960,6 +10266,81 @@ sfx_fallen_struct
  dfb $00
  dfb 2              ; gain shift (×4)
 
+* JUMP fits in one 4 KB slot at $11/7000 (FALLEN's tail ends at
+* $11/6A00, so $7000 is clear).
+sfx_jump_struct
+ da $7000           ; sample at $11/7000
+ da $0011
+ da $07B0           ; length 1968
+ da $0000
+ da $009C
+ dfb $8A            ; doc_ram_page → DOC $8A00
+ dfb $08
+ dfb $01
+ dfb $FF
+ dfb $00
+ dfb 2              ; gain shift (×4)
+
+* DOOR is 5896 bytes — claims two 4 KB slots at $11/8000-$11/9708.
+sfx_door_struct
+ da $8000           ; sample at $11/8000
+ da $0011
+ da $1708           ; length 5896
+ da $0000
+ da $009C
+ dfb $8C            ; doc_ram_page → DOC $8C00
+ dfb $08
+ dfb $01
+ dfb $FF
+ dfb $00
+ dfb 2              ; gain shift (×4)
+
+* SPINKICK is 7368 bytes — two 4 KB slots at $11/A000-$11/BCC8.
+* (Skips $11/9000-$11/9708 because DOOR's tail clobbers it.)
+sfx_spinkick_struct
+ da $A000           ; sample at $11/A000
+ da $0011
+ da $1CC8           ; length 7368
+ da $0000
+ da $009C
+ dfb $8E            ; doc_ram_page → DOC $8E00
+ dfb $08
+ dfb $01
+ dfb $FF
+ dfb $00
+ dfb 2              ; gain shift (×4)
+
+* Boss SFX live in their own bank ($1A) — together they're ~57 KB
+* and won't fit alongside the other SFX in $11. The install loop
+* now reads each struct's bank from offset +2, so this works
+* without further changes.
+sfx_burngone_struct
+ da $0000           ; sample at $1A/0000
+ da $001A
+ da $65D0           ; length 26064
+ da $0000
+ da $009C
+ dfb $90            ; doc_ram_page → DOC $9000
+ dfb $08
+ dfb $01
+ dfb $FF
+ dfb $00
+ dfb 2              ; gain shift (×4)
+
+* BURNBACK at $1A/8000 (clear of BURNGONE's $1A/0000-$65D0 tail).
+sfx_burnback_struct
+ da $8000           ; sample at $1A/8000
+ da $001A
+ da $76F2           ; length 30450
+ da $0000
+ da $009C
+ dfb $92            ; doc_ram_page → DOC $9200
+ dfb $08
+ dfb $01
+ dfb $FF
+ dfb $00
+ dfb 2              ; gain shift (×4)
+
 sfx_punch_path        dfb 21
                       asc '/DDIIGS/SFX/PUNCH.RAW'
 sfx_punchlanded_path  dfb 27
@@ -9970,6 +10351,16 @@ sfx_pow_path          dfb 19
                       asc '/DDIIGS/SFX/POW.RAW'
 sfx_fallen_path       dfb 22
                       asc '/DDIIGS/SFX/FALLEN.RAW'
+sfx_jump_path         dfb 20
+                      asc '/DDIIGS/SFX/JUMP.RAW'
+sfx_door_path         dfb 20
+                      asc '/DDIIGS/SFX/DOOR.RAW'
+sfx_spinkick_path     dfb 24
+                      asc '/DDIIGS/SFX/SPINKICK.RAW'
+sfx_burngone_path     dfb 24
+                      asc '/DDIIGS/SFX/BURNGONE.RAW'
+sfx_burnback_path     dfb 24
+                      asc '/DDIIGS/SFX/BURNBACK.RAW'
 
 sound_len           ds 2   ; scratch — 16-bit length for sfx_amplify
 sfx_gain_shift      ds 2   ; 16-bit: low byte = shift, high byte = 0
@@ -10028,8 +10419,11 @@ sound_install_all
  iny
  lda (sound_ptr),y
  sta file_dest+1
-
- lda #$11              ; SFX scratch bank (NOT $19 — that's mission12)
+* Bank comes from struct +2 (the low byte of "sample addr hi
+* word"). Was hardcoded to $11 — now per-struct so big SFX
+* (e.g. boss audio) can live in their own bank.
+ ldy #2
+ lda (sound_ptr),y
  sta file_bank
  jsr load_file
 
@@ -13592,6 +13986,53 @@ anim_bnfall
  dfb $17,$17,60      ; BNFALLEN: 23 wide, 23 tall
   hex 0000             ; patched
 
+* Burnov dissolve (BDISS1 → BDISS8). One-shot, ~7 VBLs/frame ≈
+* 1 second total. Played after each non-final fall as the boss
+* "first death" before he teleports.
+anim_bn_diss
+ dfb 8                ; num_frames
+ dfb $16              ; max_width (BDISS2-4 are 22 wide)
+ dfb $00              ; flags: one-shot
+ dfb $10,$2F,7        ; BDISS1: 16×47
+  hex 0000             ; patched
+ dfb $16,$33,7        ; BDISS2: 22×51
+  hex 0000             ; patched
+ dfb $16,$33,7        ; BDISS3: 22×51
+  hex 0000             ; patched
+ dfb $16,$32,7        ; BDISS4: 22×50
+  hex 0000             ; patched
+ dfb $15,$30,7        ; BDISS5: 21×48
+  hex 0000             ; patched
+ dfb $15,$30,7        ; BDISS6: 21×48
+  hex 0000             ; patched
+ dfb $06,$0B,7        ; BDISS7: 6×11 (helmet, vertical)
+  hex 0000             ; patched
+ dfb $07,$0B,7        ; BDISS8: 7×11 (helmet, sideways)
+  hex 0000             ; patched
+
+* Burnov reconstitute (BDISS8 → BDISS1). Same frames in reverse;
+* triggers BURNBACK and runs as Burnov rematerializes elsewhere.
+anim_bn_recon
+ dfb 8
+ dfb $16
+ dfb $00
+ dfb $07,$0B,7        ; BDISS8
+  hex 0000             ; patched
+ dfb $06,$0B,7        ; BDISS7
+  hex 0000             ; patched
+ dfb $15,$30,7        ; BDISS6
+  hex 0000             ; patched
+ dfb $15,$30,7        ; BDISS5
+  hex 0000             ; patched
+ dfb $16,$32,7        ; BDISS4
+  hex 0000             ; patched
+ dfb $16,$33,7        ; BDISS3
+  hex 0000             ; patched
+ dfb $16,$33,7        ; BDISS2
+  hex 0000             ; patched
+ dfb $10,$2F,7        ; BDISS1
+  hex 0000             ; patched
+
 *----------------------------------------------------------
 * check_punch_hit - Check if the punching sprite (whose
 * state is in globals) hit any other sprite in the table.
@@ -14089,7 +14530,10 @@ check_punch_hit
  bne :not_god
  jmp :advance          ; player is invincible
 :not_god
-* Check if target is immune (fall_anim active)
+* Check if target is immune. Three cases grant immunity:
+*   1) fall_anim is currently playing (any sprite)
+*   2) target is Burnov AND playing anim_bn_diss (dissolving)
+*   3) target is Burnov AND playing anim_bn_recon (reforming)
  ldy #24
  lda (info_ptr),y     ; anim_ptr low
  sta anim_ptr
@@ -14098,16 +14542,32 @@ check_punch_hit
  sta anim_ptr+1
  ora anim_ptr
  beq :not_immune      ; no animation, punchable
-* Check if active animation is the fall_anim
+* Check fall_anim
  ldy #50
- lda (info_ptr),y     ; fall_anim low
+ lda (info_ptr),y
  cmp anim_ptr
- bne :not_immune
+ bne :imm_check_diss
  iny
- lda (info_ptr),y     ; fall_anim high
+ lda (info_ptr),y
  cmp anim_ptr+1
+ bne :imm_check_diss
+ jmp :advance         ; fall_anim → immune
+:imm_check_diss
+ lda anim_ptr
+ cmp #<anim_bn_diss
+ bne :imm_check_recon
+ lda anim_ptr+1
+ cmp #>anim_bn_diss
+ bne :imm_check_recon
+ jmp :advance         ; dissolving → immune
+:imm_check_recon
+ lda anim_ptr
+ cmp #<anim_bn_recon
  bne :not_immune
- jmp :advance         ; fall_anim active, immune
+ lda anim_ptr+1
+ cmp #>anim_bn_recon
+ bne :not_immune
+ jmp :advance         ; reconstituting → immune
 :not_immune
 
 * Read target's ypos, xpos, frame_x, frame_y
@@ -14124,33 +14584,28 @@ check_punch_hit
  lda (info_ptr),y     ; target frame_y
  sta :tgt_h
 
-* Vertical check: puncher bottom within 5 of target bottom
+* Vertical check: body overlap. Puncher and target bodies
+* overlap iff puncher_bottom >= tgt_y AND puncher_top <= tgt_bottom.
+* (Older code compared bottom-to-bottom with a fixed tolerance,
+* which broke for tall bosses like Burnov: when fo_approach
+* aligned his TOP with Billy's, his BOTTOM ended up 8 lines
+* below Billy's, failing the "above" tolerance of 5.)
  lda :tgt_y
  clc
  adc :tgt_h
  sec
- sbc #1              ; target bottom
+ sbc #1              ; tgt_bottom
  sta :tgt_bottom
  lda :punch_bottom
+ cmp :tgt_y
+ bcs :v_check_top
+ jmp :advance        ; punch_bottom < tgt_y → no overlap
+:v_check_top
+ lda IMAGE01_YPOS    ; puncher's top (preserved from caller)
  cmp :tgt_bottom
- bcs :check_below
-* punch_bottom < tgt_bottom — check distance
- lda :tgt_bottom
- sec
- sbc :punch_bottom
- cmp #6              ; > 5 away?
- bcc :not_far_above
- jmp :advance        ; too far above
-:not_far_above
- bra :h_check
-:check_below
-* punch_bottom >= tgt_bottom
- lda :punch_bottom
- sec
- sbc :tgt_bottom
- cmp #11             ; > 10 away?
- bcc :h_check
- jmp :advance        ; too far below
+ beq :h_check
+ bcc :h_check        ; puncher_top <= tgt_bottom → overlap
+ jmp :advance        ; puncher_top > tgt_bottom → no overlap
 
 :h_check
 * Horizontal check: overlap or within 2 bytes

@@ -76,6 +76,14 @@ NTPstreamsound          =   NinjaTrackerPlus+24
   xce                  ; back to native + 16-bit for SHR + fade
   rep $30
 
+; clear screen so no weird artifacts before the fadeIn
+  lda #0000
+  ldx #$7d00
+]xcls stal $012000,x
+  dex
+  dex
+  bpl ]xcls
+
 * Clear $019E00..$019FFE (palette area). Already black from
 * CCC's fadeOut, but keep the pattern parallel to the CCC
 * sequence so the snap-into-target-palette behavior matches.
@@ -101,6 +109,14 @@ NTPstreamsound          =   NinjaTrackerPlus+24
   jsr half_sec
   jsr half_sec
   jsr fadeOut
+
+; again clear for no weird artifacts
+  lda #0000
+  ldx #$7d00
+]xcls stal $012000,x
+  dex
+  dex
+  bpl ]xcls
 
   sec
   xce
