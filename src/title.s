@@ -62,6 +62,46 @@ NTPstreamsound          =   NinjaTrackerPlus+24
 
   jsr fadeOut
 
+* DRUGS.SHR fade in/out — second splash, between CCC and the
+* DDII title sequence. Same shape as the CCC sequence above:
+* load to $02/2000, copy to $01/2000, fadeIn, hold ~2s, fadeOut.
+* Loading drugs into bank $02 overwrites the (now invisible)
+* CCC pixel data — fine, CCC has already faded out.
+  sec
+  xce                  ; emulation + 8-bit MX for ProDOS 8
+  sep $30
+  jsr load_drugs
+
+  clc
+  xce                  ; back to native + 16-bit for SHR + fade
+  rep $30
+
+* Clear $019E00..$019FFE (palette area). Already black from
+* CCC's fadeOut, but keep the pattern parallel to the CCC
+* sequence so the snap-into-target-palette behavior matches.
+  ldx #$01FE
+  lda #$0000
+]dcls stal $019E00,x
+  dex
+  dex
+  bpl ]dcls
+
+* Copy drugs.shr from $02/2000 → $01/2000 (full 32 KB,
+* including palette + SCBs at the end).
+  ldx #$7e00
+]dcpy ldal $022000,x
+  stal $012000,x
+  dex
+  dex
+  bpl ]dcpy
+
+  jsr fadeIn
+  jsr half_sec
+  jsr half_sec
+  jsr half_sec
+  jsr half_sec
+  jsr fadeOut
+
   sec
   xce
   sep $30
@@ -1224,6 +1264,57 @@ load_ccc
 :err rts
 
 *----------------------------------------------------------
+* load_drugs - Load DRUGS.SHR to bank $02 starting at $02/2000.
+* Same protocol as load_ccc: 4 KB chunks via ProDOS 8 read,
+* destination address advances $1000 per chunk and rolls into
+* the next bank if it wraps. drugs.shr is 32 KB, so it lives
+* entirely in bank $02 ($02/2000..$02/9FFF), including its
+* palette + SCBs at $02/9E00..$02/9FFE.
+*----------------------------------------------------------
+ mx %11
+load_drugs
+ jsr $BF00
+ dfb $C8              ; OPEN
+ da drugs_open
+ bcs :err
+ lda drugs_oref
+ sta drugs_rref
+ sta drugs_cref
+
+ lda #$00
+ sta t_dest
+ lda #$20
+ sta t_dest+1          ; destination starts at $xx/2000
+ lda #$02
+ sta t_bank
+
+:readlp
+ jsr $BF00
+ dfb $CA              ; READ
+ da drugs_read
+ bcs :close
+
+ jsr copy_chunk_bank
+
+ lda t_dest+1
+ clc
+ adc #$10
+ sta t_dest+1
+ bcc :readlp
+ lda #$00
+ sta t_dest+1
+ inc t_bank
+ bra :readlp
+
+:close
+ php
+ jsr $BF00
+ dfb $CC              ; CLOSE
+ da drugs_close
+ plp
+:err rts
+
+*----------------------------------------------------------
 * load_ntpplayer - Load NTPPLAYER file from disk via ProDOS 8
 * in 4KB chunks to ]RDBUF, copying each chunk to $12/xxxx.
 *----------------------------------------------------------
@@ -1506,6 +1597,23 @@ ccc_cref dfb 0
 
 ccc_path dfb 15
  asc '/DDIIGS/CCC.SHR'
+
+drugs_open dfb 3
+ da drugs_path
+ da ]IOBUF
+drugs_oref dfb 0
+
+drugs_read dfb 4
+drugs_rref dfb 0
+ da ]RDBUF
+ da $1000
+ ds 2
+
+drugs_close dfb 1
+drugs_cref dfb 0
+
+drugs_path dfb 17
+ asc '/DDIIGS/DRUGS.SHR'
 
 *----------------------------------------------------------
 * fadeOut - Fade all 16 palettes (256 words at $019E00) to

@@ -117,6 +117,9 @@ $(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.sh
 	cp assets/ccc.shr out/CCC.SHR\#C10000
 	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/CCC.SHR\#C10000 --quiet
 	rm out/CCC.SHR\#C10000
+	cp assets/drugs.shr out/DRUGS.SHR\#C10000
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/DRUGS.SHR\#C10000 --quiet
+	rm out/DRUGS.SHR\#C10000
 	# Add NTP music assets
 	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ res/ntpplayer\#060000 --quiet
 	python3 tools/packbytes.py pack assets/audio/TITLE.NTP\#000000 out/TITLE.NTP.PAK\#C00000
