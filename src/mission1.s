@@ -327,6 +327,12 @@ level_script
 
     db OP_WAITX
     dw 450
+
+    db OP_NPC
+    db williams_knife_sprite
+    db $58,$32,$01,BEHAV_FACEOFF
+    db OP_WAITCLR
+
 * Pre-climb golden state for ladder2 (recorded 'g' below ladder2
 * on scr7). DEFERRED: applied at first scroll_up call (= climb
 * start). Two repaint regions paint scr5 (left) and scr7 (right)
@@ -450,6 +456,11 @@ level_script
     db $1C              ; scroll_up_off = 28
     dw $0128            ; scroll_min_wo = 296
     dw $FFFF            ; scroll_max_wo (unlocked)
+
+    db OP_NPC           ; williams with pipe at top of ladder
+    dw williams_pipe_sprite
+    db $58,$43,$01,BEHAV_FACEOFF
+    db OP_WAITCLR
 
     db OP_WAITX
     dw $0198              ; wait for player abs X >= 600

@@ -1510,10 +1510,11 @@ script_spawn_npc
  ldy #43
  sta (info_ptr),y
 * Animation pointers. Walk uses anim_wpipewalk (bank-$19 walk
-* with pipe visible). punched_anim = null for now (no reaction
-* placeholder). fall_anim = anim_wpfall placeholder. atk_anim =
-* anim_wpipewalk too (he just keeps walking when "attacking" —
-* placeholder until a proper bank-$19 pipe-swing exists).
+* with pipe visible). atk_anim is anim_wpipeswing — a 5-frame
+* pipe swing using WPIPE1, WPIPE4, WPIPE2, WPIPE6, WPIPE3.
+* punched_anim = null for now (no reaction placeholder).
+* fall_anim = anim_wpfall placeholder until cross-bank-per-anim
+* is wired and we can reuse the bank-$02 anim_wfall.
  lda #$00
  sta :punch_lo
  sta :punch_hi
@@ -1525,9 +1526,9 @@ script_spawn_npc
  sta :walk_lo
  lda #>anim_wpipewalk
  sta :walk_hi
- lda #<anim_wpipewalk
+ lda #<anim_wpipeswing
  sta :atk_lo
- lda #>anim_wpipewalk
+ lda #>anim_wpipeswing
  sta :atk_hi
  lda #1
  sta :is_bn
@@ -9793,6 +9794,16 @@ spr_wpipewalk1 ds 2
 spr_wpipewalk2 ds 2
 spr_wpipewalk3 ds 2
 
+* Williams-with-pipe swing frames (WPIPE1-6). His attack uses
+* a 5-frame sequence: WPIPE1, WPIPE4, WPIPE2, WPIPE6, WPIPE3.
+* WPIPE5 isn't used by the swing but is loaded for completeness.
+spr_wpipe1   ds 2
+spr_wpipe2   ds 2
+spr_wpipe3   ds 2
+spr_wpipe4   ds 2
+spr_wpipe5   ds 2
+spr_wpipe6   ds 2
+
 * Burnov "death counter" — how many times he's gone through the
 * dissolve/teleport/reconstitute cycle. Reset at level init.
 *   0 → on next fall, dissolve + teleport (1st kill)
@@ -10123,6 +10134,26 @@ init_mission12
  lda [$F0],y
  sta spr_wpipewalk3
 
+* WPIPE1-6 (pipe-swing frames) at indices 10-15 ($14-$1E).
+ ldy #$14
+ lda [$F0],y
+ sta spr_wpipe1
+ ldy #$16
+ lda [$F0],y
+ sta spr_wpipe2
+ ldy #$18
+ lda [$F0],y
+ sta spr_wpipe3
+ ldy #$1A
+ lda [$F0],y
+ sta spr_wpipe4
+ ldy #$1C
+ lda [$F0],y
+ sta spr_wpipe5
+ ldy #$1E
+ lda [$F0],y
+ sta spr_wpipe6
+
 * Patch Burnov animation descriptors. Per-frame frame_addr
 * lives at +3+3 (frame 0), +3+8 (frame 1), etc. (5-byte stride
 * for legacy/uncompiled animations).
@@ -10223,6 +10254,20 @@ init_mission12
  lda spr_wpipewalk1
  sta anim_wpfall+3+3
  sta anim_wpfall+3+8
+
+* Patch anim_wpipeswing: 5 frames in design order
+* (WPIPE1, WPIPE4, WPIPE2, WPIPE6, WPIPE3). Frame stride = 5
+* (legacy): offsets +3+3, +3+8, +3+13, +3+18, +3+23.
+ lda spr_wpipe1
+ sta anim_wpipeswing+3+3
+ lda spr_wpipe4
+ sta anim_wpipeswing+3+8
+ lda spr_wpipe2
+ sta anim_wpipeswing+3+13
+ lda spr_wpipe6
+ sta anim_wpipeswing+3+18
+ lda spr_wpipe3
+ sta anim_wpipeswing+3+23
 
  sec
  xce                   ; back to emulation
@@ -14332,6 +14377,24 @@ anim_wpfall
  dfb $09,$28,FALL_ARC_FRAMES ; WPIPEWALK1 placeholder
   hex 0000             ; patched
  dfb $09,$28,60       ; WPIPEWALK1 placeholder
+  hex 0000             ; patched
+
+* Williams-with-pipe attack — 5-frame pipe swing.
+* Frame order (per design): WPIPE1, WPIPE4, WPIPE2, WPIPE6, WPIPE3.
+* Each frame ~6 VBLs ≈ 100 ms — total swing ~0.5 s.
+anim_wpipeswing
+ dfb 5
+ dfb $0F              ; max_width (WPIPE2 is 15 wide)
+ dfb $00              ; flags: one-shot
+ dfb $0E,$28,6        ; WPIPE1: 14×40
+  hex 0000             ; patched
+ dfb $0E,$28,6        ; WPIPE4: 14×40
+  hex 0000             ; patched
+ dfb $0F,$28,6        ; WPIPE2: 15×40
+  hex 0000             ; patched
+ dfb $0A,$28,6        ; WPIPE6: 10×40
+  hex 0000             ; patched
+ dfb $0D,$28,6        ; WPIPE3: 13×40
   hex 0000             ; patched
 
 *----------------------------------------------------------
