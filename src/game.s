@@ -7497,6 +7497,14 @@ start_anim
 * fallen frame and un-bump on animation end / death.
 FALL_Y_OFFSET = 24
 
+* Burnov helmet-Y offset. Same idea as FALL_Y_OFFSET but for the
+* BDISS7/BDISS8 helmet frames during the boss dissolve sequence:
+* the body is gone, only the helmet remains, and it should sit
+* on the floor — not float at the body's head height. Applied
+* at the body→helmet transition in :load_frame and reversed at
+* the helmet→body transition during recon.
+BDISS_HELMET_Y = 15
+
 * Fall trajectory (NES-style arc). Frame 0 of fall_anim plays for
 * FALL_ARC_FRAMES VBLs; on each VBL, ypos moves -2 while timer >
 * FALL_ARC_PEAK and +2 otherwise (so the apex is FALL_ARC_PEAK*2 px
@@ -8151,6 +8159,53 @@ update_anims
  sta (info_ptr),y
 
 :lf_load_done
+* Burnov helmet-Y offset. BDISS7 and BDISS8 are the small
+* helmet sprites — visually the helmet has fallen to the ground
+* while the body is gone. Without offset they paint at the body's
+* head height (top of frame). At the transitions BDISS6→BDISS7
+* (anim_bn_diss frame 6) and BDISS7→BDISS6 (anim_bn_recon frame 2)
+* we shift ypos down/up by BDISS_HELMET_Y so the helmet sits on
+* the floor. start_burnov_recon's teleport already accounts for
+* the bump on its initial BDISS8 frame.
+ ldy #56
+ lda (info_ptr),y      ; frame_bank
+ cmp #$19
+ bne :lf_no_helmet_y
+ lda anim_ptr
+ cmp #<anim_bn_diss
+ bne :lf_check_recon_y
+ lda anim_ptr+1
+ cmp #>anim_bn_diss
+ bne :lf_check_recon_y
+* anim_bn_diss: bump down on transition to frame 6 (BDISS7).
+ ldy #26
+ lda (info_ptr),y
+ cmp #6
+ bne :lf_no_helmet_y
+ ldy #0
+ lda (info_ptr),y
+ clc
+ adc #BDISS_HELMET_Y
+ sta (info_ptr),y
+ bra :lf_no_helmet_y
+:lf_check_recon_y
+ lda anim_ptr
+ cmp #<anim_bn_recon
+ bne :lf_no_helmet_y
+ lda anim_ptr+1
+ cmp #>anim_bn_recon
+ bne :lf_no_helmet_y
+* anim_bn_recon: un-bump on transition to frame 2 (BDISS6).
+ ldy #26
+ lda (info_ptr),y
+ cmp #2
+ bne :lf_no_helmet_y
+ ldy #0
+ lda (info_ptr),y
+ sec
+ sbc #BDISS_HELMET_Y
+ sta (info_ptr),y
+:lf_no_helmet_y
 * Check for punch hit (frame 1 of any punch animation)
  ldy #26
  lda (info_ptr),y     ; anim_frame
@@ -8395,7 +8450,12 @@ start_burnov_recon
 :br_set_x
  ldy #2
  sta (info_ptr),y      ; new xpos
- lda #$43              ; spawn y for the boss screen
+* Spawn y is $43 for the body, but recon's first frame is BDISS8
+* (helmet) which renders BDISS_HELMET_Y px down from the body's
+* top. Teleport directly to the bumped y so :load_frame doesn't
+* need to adjust on frame 0 — the un-bump at frame 2 (BDISS6)
+* drops us back to standing height for the body frames.
+ lda #$43+BDISS_HELMET_Y
  ldy #0
  sta (info_ptr),y
  ldx #SND_BURNBACK
@@ -13986,9 +14046,10 @@ anim_bnfall
  dfb $17,$17,60      ; BNFALLEN: 23 wide, 23 tall
   hex 0000             ; patched
 
-* Burnov dissolve (BDISS1 → BDISS8). One-shot, ~7 VBLs/frame ≈
-* 1 second total. Played after each non-final fall as the boss
-* "first death" before he teleports.
+* Burnov dissolve (BDISS1 → BDISS8). BDISS1-7 play at 7 VBLs
+* each (~0.8 sec body→helmet); BDISS8 (the sideways helmet on
+* the ground) holds for 60 VBLs so it visibly sits there for
+* ~1 second before the teleport+recon kicks in. Total ≈ 1.8 s.
 anim_bn_diss
  dfb 8                ; num_frames
  dfb $16              ; max_width (BDISS2-4 are 22 wide)
@@ -14007,7 +14068,7 @@ anim_bn_diss
   hex 0000             ; patched
  dfb $06,$0B,7        ; BDISS7: 6×11 (helmet, vertical)
   hex 0000             ; patched
- dfb $07,$0B,7        ; BDISS8: 7×11 (helmet, sideways)
+ dfb $07,$0B,60       ; BDISS8: 7×11 — 60 VBLs = 1-sec pause
   hex 0000             ; patched
 
 * Burnov reconstitute (BDISS8 → BDISS1). Same frames in reverse;
