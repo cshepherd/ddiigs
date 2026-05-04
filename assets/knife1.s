@@ -1,0 +1,14 @@
+*-------------------------------
+* $05 bytes (b4 pack), from X - $22 to $26, Y - $30 to $39.
+*-------------------------------
+IMAGE01 HEX CCCCCCCCCC
+ HEX CCCC160CCC
+ HEX CCCC110CCC
+ HEX CCCC110CCC
+ HEX CCCC110CCC
+ HEX CC6666660C
+ HEX CC0066000C
+ HEX CCCC660CCC
+ HEX CCCC000CCC
+ HEX CCCCCCCCCC
+IMLEN01 EQU *-IMAGE01
