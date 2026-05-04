@@ -133,6 +133,12 @@ spr_lfwalk1    dw LFWALK1
 spr_lfwalk2    dw LFWALK2
 spr_lfwalk3    dw LFWALK3
 
+* Williams-with-pipe walking (3 frames). Pipe is visible during
+* locomotion; non-walk states use bank-$19 placeholders for now.
+spr_wpipewalk1 dw WPIPEWALK1
+spr_wpipewalk2 dw WPIPEWALK2
+spr_wpipewalk3 dw WPIPEWALK3
+
 *==========================================================
 * Sprite pixel data
 *==========================================================

@@ -1000,6 +1000,79 @@ linda_flail_sprite
  hex 0000             ; +48 punch_count
  hex 0000             ; +50 fall_anim (sentinel — patched runtime)
 
+*-------------------------------
+* Williams with pipe (mission12 / bank $19). Walking animation
+* uses WPIPEWALK1-3 (pipe visible during locomotion). Other
+* anims are bank-$19 placeholders for now (WPIPEWALK1 reused)
+* until a per-anim frame_bank refactor lets him reuse the
+* bank-$02 William frames for punched/fall/attack. Sentinel
+* idle_addr = $0002 distinguishes him in script_spawn_npc.
+*-------------------------------
+williams_pipe_sprite
+ hex 5F00             ; +0  ypos
+ hex 5800             ; +2  xpos
+ hex 0100             ; +4  mirror
+ hex 0000             ; +6
+ hex 0000             ; +8
+ hex 0900             ; +10 frame_x = 9 (WPIPEWALK1)
+ hex 2800             ; +12 frame_y = 40
+ hex 0000             ; +14 frame_addr (sentinel — patched runtime)
+ hex EE00             ; +16 mask = $EE
+ hex E000             ; +18 maskhi
+ hex 0E00             ; +20 masklo
+ hex 0000             ; +22 controller (NPC)
+ hex 0000             ; +24 anim_ptr
+ hex 0000             ; +26 anim_frame
+ hex 0000             ; +28 anim_timer
+ hex 0100             ; +30 dirty
+ hex 5F00             ; +32 prev_ypos
+ hex 5800             ; +34 prev_xpos
+ hex 0900             ; +36 prev_frame_x
+ hex 2800             ; +38 prev_frame_y
+ hex 0000             ; +40 punched_anim (sentinel — patched runtime)
+ hex 0200             ; +42 idle_addr — sentinel: $0002 = williams_pipe
+ hex 0900             ; +44 idle_x
+ hex 2800             ; +46 idle_y
+ hex 0000             ; +48 punch_count
+ hex 0000             ; +50 fall_anim (sentinel — patched runtime)
+
+*-------------------------------
+* Williams with knife (mission1 / bank $02). The knife isn't
+* visible during locomotion, so this is a verbatim copy of the
+* regular william_sprite template — engine treats him as a
+* William through the existing dispatch (idle_addr = WILLIAM1
+* matches the William default branch). Future game logic that
+* wants to distinguish him would need a separate marker byte
+* added at spawn time, but for now he's identical.
+*-------------------------------
+williams_knife_sprite
+ hex 5F00             ; +0  ypos
+ hex 5800             ; +2  xpos
+ hex 0100             ; +4  mirror
+ hex 0000             ; +6
+ hex 0500             ; +8
+ hex 0900             ; +10 frame_x (WILLIAM1)
+ hex 2800             ; +12 frame_y (WILLIAM1)
+  da WILLIAM1          ; +14 frame_addr
+ hex EE00             ; +16 mask
+ hex E000             ; +18 maskhi
+ hex 0E00             ; +20 masklo
+ hex 0000             ; +22 controller (NPC)
+ hex 0000             ; +24 anim_ptr
+ hex 0000             ; +26 anim_frame
+ hex 0000             ; +28 anim_timer
+ hex 0100             ; +30 dirty
+ hex 5F00             ; +32 prev_ypos
+ hex 5800             ; +34 prev_xpos
+ hex 0900             ; +36 prev_frame_x
+ hex 2800             ; +38 prev_frame_y
+ da anim_wpunched     ; +40 punched_anim
+  da WILLIAM1          ; +42 idle_addr
+ hex 0900             ; +44 idle_x
+ hex 2800             ; +46 idle_y
+ hex 0000             ; +48 punch_count
+ da anim_wfall        ; +50 fall_anim
+
 *==========================================================
 * Ladder definitions (world-absolute byte coordinates)
 * count byte, then per ladder:

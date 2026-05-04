@@ -1492,7 +1492,46 @@ script_spawn_npc
  lda :id_lo
  cmp #$01
  beq :is_linda_flail
+ cmp #$02
+ beq :is_williams_pipe
  jmp :is_burnov              ; $0000 sentinel — fall through to Burnov
+:is_williams_pipe
+* Patch frame_addr/idle_addr to spr_wpipewalk1.
+ lda spr_wpipewalk1
+ ldy #14
+ sta (info_ptr),y
+ lda spr_wpipewalk1+1
+ ldy #15
+ sta (info_ptr),y
+ lda spr_wpipewalk1
+ ldy #42
+ sta (info_ptr),y
+ lda spr_wpipewalk1+1
+ ldy #43
+ sta (info_ptr),y
+* Animation pointers. Walk uses anim_wpipewalk (bank-$19 walk
+* with pipe visible). punched_anim = null for now (no reaction
+* placeholder). fall_anim = anim_wpfall placeholder. atk_anim =
+* anim_wpipewalk too (he just keeps walking when "attacking" —
+* placeholder until a proper bank-$19 pipe-swing exists).
+ lda #$00
+ sta :punch_lo
+ sta :punch_hi
+ lda #<anim_wpfall
+ sta :fall_lo
+ lda #>anim_wpfall
+ sta :fall_hi
+ lda #<anim_wpipewalk
+ sta :walk_lo
+ lda #>anim_wpipewalk
+ sta :walk_hi
+ lda #<anim_wpipewalk
+ sta :atk_lo
+ lda #>anim_wpipewalk
+ sta :atk_hi
+ lda #1
+ sta :is_bn
+ jmp :do_patch
 :is_linda_flail
 * Patch frame_addr/idle_addr to spr_lfwalk1 (her standing pose).
  lda spr_lfwalk1
@@ -9748,6 +9787,12 @@ spr_lmace1   ds 2
 spr_lmace2   ds 2
 spr_lmace3   ds 2
 
+* Williams-with-pipe walk frames (WPIPEWALK1/2/3). Same dimensions
+* as regular William.
+spr_wpipewalk1 ds 2
+spr_wpipewalk2 ds 2
+spr_wpipewalk3 ds 2
+
 * Burnov "death counter" — how many times he's gone through the
 * dissolve/teleport/reconstitute cycle. Reset at level init.
 *   0 → on next fall, dissolve + teleport (1st kill)
@@ -10067,6 +10112,17 @@ init_mission12
  lda [$F0],y
  sta spr_lfwalk3
 
+* Williams-with-pipe walk frames (WPIPEWALK1/2/3) at indices 60-62.
+ ldy #$78
+ lda [$F0],y
+ sta spr_wpipewalk1
+ ldy #$7A
+ lda [$F0],y
+ sta spr_wpipewalk2
+ ldy #$7C
+ lda [$F0],y
+ sta spr_wpipewalk3
+
 * Patch Burnov animation descriptors. Per-frame frame_addr
 * lives at +3+3 (frame 0), +3+8 (frame 1), etc. (5-byte stride
 * for legacy/uncompiled animations).
@@ -10152,6 +10208,21 @@ init_mission12
  lda spr_lfwalk1
  sta anim_lffall+3+3
  sta anim_lffall+3+8
+
+* Patch anim_wpipewalk: 4 frames (WPIPEWALK1, 2, 3, 2 cycle).
+ lda spr_wpipewalk1
+ sta anim_wpipewalk+3+3
+ lda spr_wpipewalk2
+ sta anim_wpipewalk+3+8
+ lda spr_wpipewalk3
+ sta anim_wpipewalk+3+13
+ lda spr_wpipewalk2
+ sta anim_wpipewalk+3+18
+
+* Patch anim_wpfall: placeholder using WPIPEWALK1 for both frames.
+ lda spr_wpipewalk1
+ sta anim_wpfall+3+3
+ sta anim_wpfall+3+8
 
  sec
  xce                   ; back to emulation
@@ -14234,6 +14305,33 @@ anim_lffall
  dfb $09,$28,FALL_ARC_FRAMES ; LFWALK1 (placeholder fall)
   hex 0000             ; patched
  dfb $09,$28,60       ; LFWALK1 (placeholder fallen)
+  hex 0000             ; patched
+
+* Williams-with-pipe walk (WPIPEWALK1, 2, 3, 2 cycle). Same
+* shape as anim_wwalk (frame_x=$09).
+anim_wpipewalk
+ dfb 4
+ dfb $09
+ dfb $02              ; flags: loop
+ dfb $09,$28,5        ; WPIPEWALK1
+  hex 0000             ; patched
+ dfb $09,$28,5        ; WPIPEWALK2
+  hex 0000             ; patched
+ dfb $09,$28,5        ; WPIPEWALK3
+  hex 0000             ; patched
+ dfb $09,$28,5        ; WPIPEWALK2 (cycle back)
+  hex 0000             ; patched
+
+* Williams-with-pipe fall placeholder — both frames are
+* WPIPEWALK1 (visible-pipe pose). Replace with proper sprites
+* and the bank-$02 anim_wfall once cross-bank-per-anim is wired.
+anim_wpfall
+ dfb 2
+ dfb $09
+ dfb $10              ; flags: bit 4 = fall trajectory
+ dfb $09,$28,FALL_ARC_FRAMES ; WPIPEWALK1 placeholder
+  hex 0000             ; patched
+ dfb $09,$28,60       ; WPIPEWALK1 placeholder
   hex 0000             ; patched
 
 *----------------------------------------------------------
