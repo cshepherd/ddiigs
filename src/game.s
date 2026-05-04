@@ -7827,18 +7827,20 @@ update_anims
  ldy #56
  lda (info_ptr),y      ; frame_bank
  cmp #$19
- bne :ad_normal_flow   ; not Burnov, take existing path
-* This sprite is Burnov. Was the just-ended anim a fall_anim?
- ldy #50
- lda (info_ptr),y
- cmp anim_ptr
+ bne :ad_normal_flow   ; not bank-$19 (Burnov/linda_flail), take existing path
+* Was the just-ended anim specifically anim_bnfall? Compare
+* against the descriptor address directly rather than against
+* the sprite's +50 field — linda_flail also lives in bank $19
+* and has her own fall_anim (anim_lffall) which we DON'T want
+* to trigger the boss dissolve cycle.
+ lda anim_ptr
+ cmp #<anim_bnfall
  bne :ad_bn_check_diss
- iny
- lda (info_ptr),y
- cmp anim_ptr+1
+ lda anim_ptr+1
+ cmp #>anim_bnfall
  bne :ad_bn_check_diss
-* fall_anim ended on Burnov. Permadeath on the 3rd kill,
-* dissolve on the 1st and 2nd.
+* anim_bnfall ended. Permadeath on the 3rd kill, dissolve on
+* the 1st and 2nd.
  lda boss_death_count
  cmp #2
  bcs :ad_do_death      ; >= 2: real death, level ends
