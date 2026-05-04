@@ -312,7 +312,7 @@ level_script
 ; upper level (screen 5)
     db OP_SCRLOCK       ; lock scrolling on upper level
     db OP_NPC           ; William on upper level
-    dw william_sprite
+    dw linda_flail_sprite
     db $58,$32,$01,BEHAV_FACEOFF  ; y=$32 (50) within walkable band
     db OP_WAITCLR       ; wait for enemies defeated
 
@@ -960,6 +960,45 @@ burnov_sprite
  hex 3000             ; +46 idle_y
  hex 0000             ; +48 punch_count
  hex 0000             ; +50 fall_anim   (sentinel — patched runtime)
+
+*-------------------------------
+* Linda with flail (mission12 / bank $19). Walks with LFWALK1-3
+* and her attack is the LMACE1-3 mace-swing instead of a punch.
+* Sentinel idle_addr = $0001 distinguishes her from Burnov ($0000)
+* in script_spawn_npc's bank-$19 dispatch. Real bank-$02 sprite
+* idle_addrs always have a non-zero high byte (mission1's data
+* lives above $0100), so any low value with hi=0 is reserved for
+* bank-$19 NPC sentinels.
+* Mask color is $EE (regular Linda's mask, since the bank-$19
+* sprite data uses the same $E surround as bank-$02 Linda).
+*-------------------------------
+linda_flail_sprite
+ hex 5F00             ; +0  ypos
+ hex 5800             ; +2  xpos
+ hex 0100             ; +4  mirror
+ hex 0000             ; +6
+ hex 0000             ; +8
+ hex 0900             ; +10 frame_x = 9 (LFWALK1)
+ hex 2800             ; +12 frame_y = 40
+ hex 0000             ; +14 frame_addr (sentinel — patched runtime)
+ hex EE00             ; +16 mask = $EE
+ hex E000             ; +18 maskhi
+ hex 0E00             ; +20 masklo
+ hex 0000             ; +22 controller (NPC)
+ hex 0000             ; +24 anim_ptr
+ hex 0000             ; +26 anim_frame
+ hex 0000             ; +28 anim_timer
+ hex 0100             ; +30 dirty
+ hex 5F00             ; +32 prev_ypos
+ hex 5800             ; +34 prev_xpos
+ hex 0900             ; +36 prev_frame_x
+ hex 2800             ; +38 prev_frame_y
+ hex 0000             ; +40 punched_anim (sentinel — patched runtime)
+ hex 0100             ; +42 idle_addr — sentinel: $0001 = linda_flail
+ hex 0900             ; +44 idle_x
+ hex 2800             ; +46 idle_y
+ hex 0000             ; +48 punch_count
+ hex 0000             ; +50 fall_anim (sentinel — patched runtime)
 
 *==========================================================
 * Ladder definitions (world-absolute byte coordinates)

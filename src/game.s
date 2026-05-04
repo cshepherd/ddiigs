@@ -1478,16 +1478,58 @@ script_spawn_npc
  ldy #43
  lda (info_ptr),y      ; idle_addr high
  sta :id_hi
-* Check Burnov first — sentinel idle_addr=$0000 means "bank-$06
-* NPC, look up the real address from the spr_bn* cache vars
-* (populated by init_mission12)." We also patch +14 and +42
-* with the bank-$06 BNWALK1 address since the template can't
-* reference cross-bank labels at link time. frame_bank gets
-* set to $0006 below to override the default $0002.
- lda :id_lo
- ora :id_hi
- beq :is_burnov
+* Bank-$19 NPC dispatch — driven by the template's idle_addr
+* sentinel. Real bank-$02 sprite addresses always have a non-zero
+* high byte (mission1's data lives above $0100), so anything with
+* hi=0 is reserved as a sentinel. Currently:
+*   $0000 → Burnov (boss, special death cycle)
+*   $0001 → linda_flail (Linda carrying a mace, attacks with it)
+* Future armed variants get higher low-byte values.
+ lda :id_hi
+ beq :is_bank19_npc
  jmp :not_burnov
+:is_bank19_npc
+ lda :id_lo
+ cmp #$01
+ beq :is_linda_flail
+ jmp :is_burnov              ; $0000 sentinel — fall through to Burnov
+:is_linda_flail
+* Patch frame_addr/idle_addr to spr_lfwalk1 (her standing pose).
+ lda spr_lfwalk1
+ ldy #14
+ sta (info_ptr),y
+ lda spr_lfwalk1+1
+ ldy #15
+ sta (info_ptr),y
+ lda spr_lfwalk1
+ ldy #42
+ sta (info_ptr),y
+ lda spr_lfwalk1+1
+ ldy #43
+ sta (info_ptr),y
+* Animation pointers. punched_anim = null (no reaction frame
+* yet — when "drop the mace, become regular Linda" is wired up,
+* this becomes anim_lpunched after a frame_bank swap to $02).
+* fall_anim = anim_lffall placeholder (LFWALK1 for both frames).
+* walk_anim = anim_lfwalk (LFWALK1-3). atk_anim = anim_lmace.
+ lda #$00
+ sta :punch_lo
+ sta :punch_hi
+ lda #<anim_lffall
+ sta :fall_lo
+ lda #>anim_lffall
+ sta :fall_hi
+ lda #<anim_lfwalk
+ sta :walk_lo
+ lda #>anim_lfwalk
+ sta :walk_hi
+ lda #<anim_lmace
+ sta :atk_lo
+ lda #>anim_lmace
+ sta :atk_hi
+ lda #1
+ sta :is_bn
+ jmp :do_patch
 :is_burnov
 * DEBUG: print "BN!" when the Burnov dispatch fires, then dump
 * the actual bytes at $19/3DCB (BNWALK1 row 1) to verify mission12
@@ -9694,6 +9736,16 @@ spr_bdiss6   ds 2
 spr_bdiss7   ds 2
 spr_bdiss8   ds 2
 
+* Linda-with-flail walk frames (LFWALK1/2/3) and her mace-swing
+* attack frames (LMACE1/2/3). Loaded from mission12 by
+* init_mission12.
+spr_lfwalk1  ds 2
+spr_lfwalk2  ds 2
+spr_lfwalk3  ds 2
+spr_lmace1   ds 2
+spr_lmace2   ds 2
+spr_lmace3   ds 2
+
 * Burnov "death counter" — how many times he's gone through the
 * dissolve/teleport/reconstitute cycle. Reset at level init.
 *   0 → on next fall, dissolve + teleport (1st kill)
@@ -9992,6 +10044,27 @@ init_mission12
  lda [$F0],y
  sta spr_bdiss8
 
+* Linda-with-flail: walk frames at indices 57-59 ($72-$76),
+* mace-swing frames at indices 1-3 ($02-$06).
+ ldy #$02
+ lda [$F0],y
+ sta spr_lmace1
+ ldy #$04
+ lda [$F0],y
+ sta spr_lmace2
+ ldy #$06
+ lda [$F0],y
+ sta spr_lmace3
+ ldy #$72
+ lda [$F0],y
+ sta spr_lfwalk1
+ ldy #$74
+ lda [$F0],y
+ sta spr_lfwalk2
+ ldy #$76
+ lda [$F0],y
+ sta spr_lfwalk3
+
 * Patch Burnov animation descriptors. Per-frame frame_addr
 * lives at +3+3 (frame 0), +3+8 (frame 1), etc. (5-byte stride
 * for legacy/uncompiled animations).
@@ -10053,6 +10126,30 @@ init_mission12
  sta anim_bn_recon+3+33
  lda spr_bdiss1
  sta anim_bn_recon+3+38
+
+* Patch anim_lfwalk: 4 frames (LFWALK1, 2, 3, 2 cycle).
+ lda spr_lfwalk1
+ sta anim_lfwalk+3+3
+ lda spr_lfwalk2
+ sta anim_lfwalk+3+8
+ lda spr_lfwalk3
+ sta anim_lfwalk+3+13
+ lda spr_lfwalk2
+ sta anim_lfwalk+3+18
+
+* Patch anim_lmace: 3 frames (LMACE1, 2, 3) — Linda's mace-swing
+* attack, replaces anim_lpunch for the armed variant.
+ lda spr_lmace1
+ sta anim_lmace+3+3
+ lda spr_lmace2
+ sta anim_lmace+3+8
+ lda spr_lmace3
+ sta anim_lmace+3+13
+
+* Patch anim_lffall: placeholder using LFWALK1 for both frames.
+ lda spr_lfwalk1
+ sta anim_lffall+3+3
+ sta anim_lffall+3+8
 
  sec
  xce                   ; back to emulation
@@ -14092,6 +14189,49 @@ anim_bn_recon
  dfb $16,$33,7        ; BDISS2
   hex 0000             ; patched
  dfb $10,$2F,7        ; BDISS1
+  hex 0000             ; patched
+
+* Linda-with-flail walk (LFWALK1, 2, 3, 2 cycle). Same shape as
+* anim_lwalk (frame_x=$09) — same character, just a different
+* frame source (bank-$19 instead of $02).
+anim_lfwalk
+ dfb 4
+ dfb $09
+ dfb $02              ; flags: loop
+ dfb $09,$28,5        ; LFWALK1: 9 wide, 40 tall
+  hex 0000             ; patched
+ dfb $09,$27,5        ; LFWALK2: 9 wide, 39 tall
+  hex 0000             ; patched
+ dfb $09,$28,5        ; LFWALK3
+  hex 0000             ; patched
+ dfb $09,$27,5        ; LFWALK2 (cycle back)
+  hex 0000             ; patched
+
+* Linda mace-swing attack (LMACE1, 2, 3). Wider sprite (mace
+* swings out to the side); max_width tracks LMACE1 at 24 bytes.
+anim_lmace
+ dfb 3
+ dfb $18              ; max_width (LMACE1 is 24 wide)
+ dfb $00              ; flags: one-shot
+ dfb $18,$28,6        ; LMACE1: 24×40
+  hex 0000             ; patched
+ dfb $14,$26,6        ; LMACE2: 20×38
+  hex 0000             ; patched
+ dfb $10,$26,6        ; LMACE3: 16×38
+  hex 0000             ; patched
+
+* Linda-with-flail fall — placeholder, both frames just reuse
+* LFWALK1 for now. When the "drop the mace and turn into a
+* regular Linda on hit" behavior is implemented, this descriptor
+* can be retired and linda_flail will use the existing anim_lfall
+* (after switching frame_bank → $02 on hit).
+anim_lffall
+ dfb 2
+ dfb $09
+ dfb $10              ; flags: bit 4 = fall trajectory
+ dfb $09,$28,FALL_ARC_FRAMES ; LFWALK1 (placeholder fall)
+  hex 0000             ; patched
+ dfb $09,$28,60       ; LFWALK1 (placeholder fallen)
   hex 0000             ; patched
 
 *----------------------------------------------------------
