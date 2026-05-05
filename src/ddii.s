@@ -115,7 +115,11 @@ open_ref     dfb 0
 read_pblock  dfb 4
 read_ref     dfb 0
 read_buf     dw $2000        ; load address for the SYS file
-read_count   dw $7600        ; max bytes ($2000-$9600 ≈ 30 KB)
+read_count   dw $9700        ; max bytes ($2000-$B700 ≈ 46 KB) —
+                              ; $B700 = ProDOS RDBUF inside game.s, so
+                              ; growth past here would clobber it. If
+                              ; game.s ever needs more, move RDBUF/IOBUF
+                              ; and bump this in lockstep.
 read_xfer    dw 0            ; bytes actually read
 
 close_pblock dfb 1

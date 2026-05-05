@@ -15,8 +15,12 @@ NTPgetsongpos           =   NinjaTrackerPlus+18
 NTPsetplayvolume        =   NinjaTrackerPlus+21
 NTPstreamsound          =   NinjaTrackerPlus+24
 
-]IOBUF = $AB00        ; 1024-byte ProDOS I/O buffer (page-aligned), $AB00-$AEFF
-]RDBUF = $AF00         ; 4KB read buffer, $AF00-$BEFF (ends just below ProDOS Global Page at $BF00)
+]IOBUF = $BB00        ; 1024-byte ProDOS I/O buffer (page-aligned), $BB00-$BEFF
+                       ; (ends just below ProDOS Global Page at $BF00)
+]RDBUF = $B700         ; 1024-byte read buffer (= 2 disk blocks), $B700-$BAFF.
+                       ; Was 4 KB, but the loaders only ever issue 512-byte
+                       ; READs, so 1 KB is plenty and frees 3 KB for game.s
+                       ; growth. game.s code/data must end before $B700.
 
 * Clear text screen so diagnostic prints start on a fresh page.
  sec
@@ -3186,7 +3190,13 @@ update_npcs
  beq :done            ; null terminator
  ldy #22
  lda (info_ptr),y     ; controller
- bne :skip            ; non-zero = player, skip
+ beq :is_npc          ; $00 = NPC — dispatch by behavior
+ cmp #$03
+ bne :skip            ; $01/$02 = player/static item, skip
+* $03 = projectile (flying knife etc.) — flies, hit-checks Billy.
+ jsr update_projectile
+ bra :skip
+:is_npc
 * Dispatch by behavior at offset +6
  ldy #6
  lda (info_ptr),y
@@ -3205,6 +3215,11 @@ update_npcs
  jsr behav_ladder
  bra :skip
 :nbld
+ cmp #BEHAV_KNIFER
+ bne :nbkn
+ jsr behav_knifer
+ bra :skip
+:nbkn
 * BEHAV_NONE or unknown — do nothing
 :skip
  lda spr_ptr
@@ -5654,6 +5669,21 @@ BEHAV_FACEOFF = 1
 BEHAV_FLANK   = 2
 BEHAV_LURK    = 3
 BEHAV_LADDER  = 4
+BEHAV_KNIFER  = 5     ; williams_knife: backpedal to 12px (= 6 byte
+                      ; xpos units), throw KNIFE2/4 projectile, then
+                      ; transform to regular williams + BEHAV_FACEOFF.
+                      ; Falling mid-elude drops the knife and downgrades.
+
+* Knife-thrower tunables
+KN_RANGE      = 30    ; xpos bytes (= 60 px in 320 mode) — minimum gap
+                      ; between williams_knife and Billy before he can throw.
+                      ; Picked so the projectile is visible for many frames
+                      ; (~10) before reaching Billy. Smaller values → knife
+                      ; hits Billy in 1-2 frames and is barely visible.
+KN_SPEED      = 3     ; bytes/frame — projectile xpos delta per frame
+                      ; (= 6 px/frame ≈ 110-byte traversal in ~37 frames)
+KN_THROW_Y_OFF = 14   ; ypos offset from williams' anchor to the knife's
+                      ; spawn position so it leaves at hand height
 
 * Ladder sub-states (stored at info_block+7)
 LD_INIT      = 0      ; first frame: snap to ladder top
@@ -8079,6 +8109,27 @@ update_anims
  lda (info_ptr),y
  jsr dbg_print_hex8
  jsr dbg_print_nl
+* williams_knife throw-end hook: if the anim that just ended is
+* anim_wkthrow, spawn the knife projectile and downgrade
+* williams_knife to a regular williams (BEHAV_FACEOFF). Only
+* BEHAV_KNIFER ever runs this anim, so the lookup is safe.
+* Falls through to the rest of :normal_end (fall un-bump skips
+* because anim_wkthrow != fall_anim, idle restore loads williams'
+* WILLIAM1 idle frame).
+ lda anim_ptr
+ cmp #<anim_wkthrow
+ bne :ne_not_wkthrow
+ lda anim_ptr+1
+ cmp #>anim_wkthrow
+ bne :ne_not_wkthrow
+ jsr spawn_thrown_knife
+ lda #BEHAV_FACEOFF
+ ldy #6
+ sta (info_ptr),y
+ lda #FO_APPROACH
+ ldy #7
+ sta (info_ptr),y
+:ne_not_wkthrow
  ldy #50
  lda (info_ptr),y
  cmp anim_ptr
@@ -8121,12 +8172,39 @@ update_anims
  ldy #52
  lda (info_ptr),y
  cmp #<anim_lfwalk
- bne :ne_no_unbump
+ bne :ne_not_lfflail
  ldy #53
  lda (info_ptr),y
  cmp #>anim_lfwalk
- bne :ne_no_unbump
+ bne :ne_not_lfflail
  jsr linda_flail_drop_and_transform
+ bra :ne_no_unbump
+:ne_not_lfflail
+* williams_pipe special case: walk_anim = anim_wpipewalk while
+* armed. Drop a PIPE1 item and rewrite the block to be a regular
+* williams (walk_anim → anim_wwalk, etc.). After the transform
+* this branch won't fire again.
+ ldy #52
+ lda (info_ptr),y
+ cmp #<anim_wpipewalk
+ bne :ne_not_wpipe
+ ldy #53
+ lda (info_ptr),y
+ cmp #>anim_wpipewalk
+ bne :ne_not_wpipe
+ jsr williams_pipe_drop_and_transform
+ bra :ne_no_unbump
+:ne_not_wpipe
+* williams_knife special case: he uses the regular williams
+* template (walk_anim = anim_wwalk) so we can't key on walk_anim
+* like linda. Behavior at +6 == BEHAV_KNIFER means he hadn't
+* thrown yet — drop the knife and downgrade to BEHAV_FACEOFF
+* so subsequent falls take the normal williams path.
+ ldy #6
+ lda (info_ptr),y
+ cmp #BEHAV_KNIFER
+ bne :ne_no_unbump
+ jsr williams_knife_drop_and_transform
 :ne_no_unbump
 * Clamp ypos so the sprite's bottom stays on-screen
 * (ypos + frame_y <= 200). NPCs drift below the walkable floor
@@ -8897,10 +8975,947 @@ spawn_dropped_mace
 :sm_y dfb 0
 
 *----------------------------------------------------------
-* toolbox_init - Start IIgs Toolbox tools
-* (So we can have DrawCString)
-* TL, MT, MM, then allocate DP for QD and start QD.
+* behav_knifer - williams_knife AI. Backpedal until at least
+* KN_RANGE bytes from the player, then start
+* anim_wkthrow. The throw-end hook in :normal_end spawns the
+* projectile and downgrades him to BEHAV_FACEOFF. Falling at
+* any point during this routine drops the knife instead (also
+* via :normal_end, when anim_wfall ends with BEHAV_KNIFER).
+*
+* On entry: info_ptr = williams_knife block. update_npcs has
+* already verified controller=$00. anim_ptr nonzero means a
+* stun/throw/walk anim is running — we leave it alone.
 *----------------------------------------------------------
+behav_knifer
+ jsr npc_behavior_blocked
+ beq :kn_free
+ rts                   ; an action anim is mid-play, do nothing
+:kn_free
+ jsr fo_find_player
+ bne :kn_have_player
+ rts
+:kn_have_player
+ jsr npc_ensure_walking ; idle frame → anim_wwalk for backpedal cycle
+
+* Snapshot prev fields so erase_all wipes the previous draw rect
+ ldy #0
+ lda (info_ptr),y
+ ldy #32
+ sta (info_ptr),y
+ ldy #2
+ lda (info_ptr),y
+ ldy #34
+ sta (info_ptr),y
+ ldy #10
+ lda (info_ptr),y
+ ldy #36
+ sta (info_ptr),y
+ ldy #12
+ lda (info_ptr),y
+ ldy #38
+ sta (info_ptr),y
+
+* dx = npc.xpos - player.xpos. CS=NPC right of player, CC=NPC
+* left. Compute |dx| and stash sign for facing/movement choice.
+ ldy #2
+ lda (info_ptr),y
+ sec
+ sbc fo_plr_x
+ bcs :kn_dx_pos
+ eor #$FF
+ clc
+ adc #1                ; |dx|
+ sta :kn_dx_abs
+ lda #1
+ sta :kn_left_of_plr   ; 1 = npc is left of player
+ bra :kn_have_dx
+:kn_dx_pos
+ sta :kn_dx_abs
+ lda #0
+ sta :kn_left_of_plr   ; 0 = npc is right of (or at) player
+:kn_have_dx
+
+* Mirror so williams faces the player (still facing him while
+* backpedaling — that's the whole "backpedal" look).
+*   left of player  → face right (mirror=0)
+*   right of player → face left  (mirror=1)
+ lda :kn_left_of_plr
+ eor #$01
+ ldy #4
+ sta (info_ptr),y
+
+* If far enough away, throw. anim_wkthrow plays for ~16 VBLs;
+* :normal_end finishes the job (spawn projectile + downgrade).
+ lda :kn_dx_abs
+ cmp #KN_RANGE
+ bcc :kn_too_close
+
+* Start anim_wkthrow. Bypasses atk_anim (+54) so the regular
+* williams template can stay verbatim — the only thing that
+* differs about williams_knife is his behavior + this throw.
+ lda #<anim_wkthrow
+ ldx #>anim_wkthrow
+ jsr start_anim
+ ldy #30
+ lda #$03
+ sta (info_ptr),y
+ rts
+
+:kn_too_close
+* Backpedal: step xpos AWAY from player by 1 byte if y-bounds
+* allow it. (We're already facing the player from above.)
+*   npc left of player  → step left  (xpos--)
+*   npc right of player → step right (xpos++)
+ lda :kn_left_of_plr
+ bne :kn_back_left
+
+* Step right
+ ldy #2
+ lda (info_ptr),y
+ ldy #10
+ clc
+ adc (info_ptr),y      ; right edge after step would be xpos + frame_x
+ sta chk_xpos
+ ldy #0
+ lda (info_ptr),y
+ jsr check_y_bounds
+ bcs :kn_no_step
+ ldy #2
+ lda (info_ptr),y
+ clc
+ adc #1
+ sta (info_ptr),y
+ bra :kn_no_step
+
+:kn_back_left
+ ldy #2
+ lda (info_ptr),y
+ sec
+ sbc #1
+ sta chk_xpos
+ ldy #0
+ lda (info_ptr),y
+ jsr check_y_bounds
+ bcs :kn_no_step
+ ldy #2
+ lda chk_xpos
+ sta (info_ptr),y
+
+:kn_no_step
+ ldy #30
+ lda #$03
+ sta (info_ptr),y
+ rts
+
+:kn_dx_abs       dfb 0
+:kn_left_of_plr  dfb 0
+
+*----------------------------------------------------------
+* spawn_thrown_knife - Allocate a new sprite_table entry and
+* npc_buffer slot for a flying knife. Called from :normal_end
+* when anim_wkthrow finishes on a BEHAV_KNIFER williams.
+* Picks KNIFE2 (right) or KNIFE4 (left) by williams' mirror
+* (info+4). The projectile is controller=$03; update_projectile
+* in update_npcs advances it each frame.
+* On entry: info_ptr = williams_knife block (the thrower).
+* On exit: info_ptr restored to the thrower so :normal_end's
+* idle-restore picks up where it left off.
+*----------------------------------------------------------
+spawn_thrown_knife
+ lda info_ptr
+ pha
+ lda info_ptr+1
+ pha
+* Capture williams' position + facing.
+ ldy #0
+ lda (info_ptr),y
+ clc
+ adc #KN_THROW_Y_OFF
+ sta :tk_y
+ ldy #2
+ lda (info_ptr),y
+ sta :tk_x_anchor
+ ldy #4
+ lda (info_ptr),y
+ sta :tk_dir           ; 0=right, 1=left
+
+* Find first null sprite_table entry.
+ lda #<sprite_table
+ sta spr_ptr
+ lda #>sprite_table
+ sta spr_ptr+1
+:tk_find
+ ldy #0
+ lda (spr_ptr),y
+ iny
+ ora (spr_ptr),y
+ beq :tk_found
+ lda spr_ptr
+ clc
+ adc #2
+ sta spr_ptr
+ bcc :tk_find
+ inc spr_ptr+1
+ bra :tk_find
+:tk_found
+
+* Bounds-check npc_buf_next.
+ lda npc_buf_next+1
+ cmp #>npc_buffers_end
+ bcc :tk_buf_ok
+ beq :tk_buf_check_lo
+ jmp :tk_done
+:tk_buf_check_lo
+ lda npc_buf_next
+ cmp #<npc_buffers_end
+ bcc :tk_buf_ok
+ jmp :tk_done
+:tk_buf_ok
+
+ lda npc_buf_next
+ sta info_ptr
+ lda npc_buf_next+1
+ sta info_ptr+1
+
+* Zero 60 bytes (clear stale data).
+ ldy #59
+ lda #0
+:tk_clear
+ sta (info_ptr),y
+ dey
+ bpl :tk_clear
+
+* xpos: spawn at williams' near edge so the knife flies clear
+* of him. Right-thrower: xpos = williams.xpos + williams.frame_x.
+* Left-thrower:  xpos = williams.xpos - knife.frame_x (= 4).
+ lda :tk_dir
+ bne :tk_left_spawn
+ lda :tk_x_anchor
+ clc
+ adc #$09              ; williams' frame_x
+ bra :tk_x_done
+:tk_left_spawn
+ lda :tk_x_anchor
+ sec
+ sbc #$04              ; knife frame_x
+:tk_x_done
+ ldy #2
+ sta (info_ptr),y
+ ldy #34
+ sta (info_ptr),y
+
+ ldy #0
+ lda :tk_y
+ sta (info_ptr),y
+ ldy #32
+ sta (info_ptr),y
+
+* mirror = 0 (KNIFE2 / KNIFE4 are pre-flipped sprites — the
+* drawer must NOT flip them again). Direction lives at +6.
+ ldy #4
+ lda #0
+ sta (info_ptr),y
+ ldy #6
+ lda :tk_dir
+ sta (info_ptr),y      ; +6 = projectile direction (0=right, 1=left)
+
+* frame_x / frame_y / prev_frame_x / prev_frame_y (KNIFE2 = 4×7).
+ lda #$04
+ ldy #10
+ sta (info_ptr),y
+ ldy #36
+ sta (info_ptr),y
+ ldy #44
+ sta (info_ptr),y      ; idle_x
+ lda #$07
+ ldy #12
+ sta (info_ptr),y
+ ldy #38
+ sta (info_ptr),y
+ ldy #46
+ sta (info_ptr),y      ; idle_y
+
+* frame_addr / idle_addr → spr_knife2 (right) or spr_knife4 (left).
+ lda :tk_dir
+ bne :tk_left_sprite
+ lda spr_knife2
+ ldy #14
+ sta (info_ptr),y
+ ldy #42
+ sta (info_ptr),y
+ lda spr_knife2+1
+ ldy #15
+ sta (info_ptr),y
+ ldy #43
+ sta (info_ptr),y
+ bra :tk_sprite_done
+:tk_left_sprite
+ lda spr_knife4
+ ldy #14
+ sta (info_ptr),y
+ ldy #42
+ sta (info_ptr),y
+ lda spr_knife4+1
+ ldy #15
+ sta (info_ptr),y
+ ldy #43
+ sta (info_ptr),y
+:tk_sprite_done
+
+* Mask = $CC (background of KNIFE2/KNIFE4 — see mission12.s).
+ lda #$CC
+ ldy #16
+ sta (info_ptr),y
+ lda #$C0
+ ldy #18
+ sta (info_ptr),y
+ lda #$0C
+ ldy #20
+ sta (info_ptr),y
+
+* controller = $03 (projectile — flies, hit-checks Billy, dies
+* on screen edge). update_npcs routes this to update_projectile.
+ lda #$03
+ ldy #22
+ sta (info_ptr),y
+
+ lda #$01
+ ldy #30
+ sta (info_ptr),y      ; dirty (needs draw)
+
+ lda #$19
+ ldy #56
+ sta (info_ptr),y      ; frame_bank
+ ldy #58
+ sta (info_ptr),y      ; idle_bank
+
+* Write info_ptr into sprite_table slot.
+ ldy #0
+ lda info_ptr
+ sta (spr_ptr),y
+ iny
+ lda info_ptr+1
+ sta (spr_ptr),y
+
+* Advance npc_buf_next.
+ lda npc_buf_next
+ clc
+ adc #60
+ sta npc_buf_next
+ lda npc_buf_next+1
+ adc #0
+ sta npc_buf_next+1
+
+:tk_done
+ pla
+ sta info_ptr+1
+ pla
+ sta info_ptr
+ rts
+:tk_x_anchor dfb 0
+:tk_y        dfb 0
+:tk_dir      dfb 0
+
+*----------------------------------------------------------
+* update_projectile - Advance a controller=$03 sprite by
+* KN_SPEED bytes per frame in its facing direction (info+6).
+* Bbox-checks against Billy each frame; on hit, tags Billy
+* with his fall_anim and tags the projectile with the death
+* sentinel ($FFFF in anim_ptr). Falling off the playfield
+* also tags the death sentinel.
+*
+* Today only the thrown knife uses this path, but the routine
+* is sprite-agnostic and any future projectile (rock, etc.)
+* can reuse it.
+*----------------------------------------------------------
+update_projectile
+* Snapshot prev for erase_all.
+ ldy #0
+ lda (info_ptr),y
+ ldy #32
+ sta (info_ptr),y
+ ldy #2
+ lda (info_ptr),y
+ ldy #34
+ sta (info_ptr),y
+
+* Move xpos by ±KN_SPEED per direction at +6.
+ ldy #6
+ lda (info_ptr),y
+ bne :up_left
+
+* Going right
+ ldy #2
+ lda (info_ptr),y
+ clc
+ adc #KN_SPEED
+ sta :up_newx
+* Off right edge if newx + frame_x > PLAYFIELD_EDGE.
+ ldy #10
+ clc
+ adc (info_ptr),y
+ cmp #PLAYFIELD_EDGE
+ bcc :up_commit
+ bra :up_die
+:up_left
+ ldy #2
+ lda (info_ptr),y
+ sec
+ sbc #KN_SPEED
+ bcs :up_left_ok
+ bra :up_die           ; underflow → off left edge
+:up_left_ok
+ sta :up_newx
+:up_commit
+ ldy #2
+ lda :up_newx
+ sta (info_ptr),y
+ ldy #30
+ lda #$03
+ sta (info_ptr),y      ; dirty
+
+* Hit-check against Billy.
+ jsr knife_hit_billy
+ rts
+
+:up_die
+ lda #$FF
+ ldy #24
+ sta (info_ptr),y
+ iny
+ sta (info_ptr),y
+ rts
+:up_newx dfb 0
+
+*----------------------------------------------------------
+* knife_hit_billy - Bbox overlap test of caller's projectile
+* (info_ptr) against billy_sprite. On hit:
+*   - tag the projectile $FFFF in anim_ptr (death sentinel)
+*   - if Billy isn't already in fall_anim, copy his fall_anim
+*     to anim_ptr / anim_frame=$FF / anim_timer=1 so the
+*     next update_anims plays it (mirrors the grab-fall path
+*     at lines 4422-4435).
+* Caller's info_ptr is restored on exit.
+*----------------------------------------------------------
+knife_hit_billy
+ ldy #0
+ lda (info_ptr),y
+ sta :kh_y
+ ldy #2
+ lda (info_ptr),y
+ sta :kh_x
+ ldy #10
+ lda (info_ptr),y
+ sta :kh_w
+ ldy #12
+ lda (info_ptr),y
+ sta :kh_h
+
+* Knife edges
+ lda :kh_x
+ clc
+ adc :kh_w
+ sta :kh_right
+ lda :kh_y
+ clc
+ adc :kh_h
+ sec
+ sbc #1
+ sta :kh_bottom
+
+* Billy from billy_sprite
+ lda billy_sprite
+ sta :bb_y
+ lda billy_sprite+2
+ sta :bb_x
+ lda billy_sprite+10
+ sta :bb_w
+ lda billy_sprite+12
+ sta :bb_h
+ clc
+ adc :bb_y
+ sec
+ sbc #1
+ sta :bb_bottom
+ lda :bb_x
+ clc
+ adc :bb_w
+ sta :bb_right
+
+* Horizontal overlap: knife_right >= billy_x AND knife_x <= billy_right
+ lda :kh_right
+ cmp :bb_x
+ bcc :kh_no_hit
+ lda :kh_x
+ cmp :bb_right
+ beq :kh_vcheck
+ bcc :kh_vcheck
+ bra :kh_no_hit
+:kh_vcheck
+* Vertical overlap: knife_bottom >= billy_y AND knife_y <= billy_bottom
+ lda :kh_bottom
+ cmp :bb_y
+ bcc :kh_no_hit
+ lda :kh_y
+ cmp :bb_bottom
+ beq :kh_hit
+ bcc :kh_hit
+ bra :kh_no_hit
+
+:kh_hit
+* Tag the knife as dead.
+ lda #$FF
+ ldy #24
+ sta (info_ptr),y
+ iny
+ sta (info_ptr),y
+
+* Trigger Billy fall_anim if not already falling. Save info_ptr.
+ lda info_ptr
+ pha
+ lda info_ptr+1
+ pha
+ lda #<billy_sprite
+ sta info_ptr
+ lda #>billy_sprite
+ sta info_ptr+1
+
+* Already in fall_anim? Compare anim_ptr (+24/+25) to fall_anim (+50/+51).
+ ldy #50
+ lda (info_ptr),y
+ ldy #24
+ cmp (info_ptr),y
+ bne :kh_do_fall
+ ldy #51
+ lda (info_ptr),y
+ ldy #25
+ cmp (info_ptr),y
+ bne :kh_do_fall
+ bra :kh_restore       ; already falling — knife passes (logically)
+
+:kh_do_fall
+ ldy #50
+ lda (info_ptr),y
+ ldy #24
+ sta (info_ptr),y
+ ldy #51
+ lda (info_ptr),y
+ ldy #25
+ sta (info_ptr),y
+ ldy #26
+ lda #$FF
+ sta (info_ptr),y      ; anim_frame = $FF (so update_anims rolls to 0)
+ ldy #28
+ lda #1
+ sta (info_ptr),y      ; anim_timer = 1 (play next tick)
+
+:kh_restore
+ pla
+ sta info_ptr+1
+ pla
+ sta info_ptr
+:kh_no_hit
+ rts
+
+:kh_x      dfb 0
+:kh_y      dfb 0
+:kh_w      dfb 0
+:kh_h      dfb 0
+:kh_right  dfb 0
+:kh_bottom dfb 0
+:bb_x      dfb 0
+:bb_y      dfb 0
+:bb_w      dfb 0
+:bb_h      dfb 0
+:bb_right  dfb 0
+:bb_bottom dfb 0
+
+
+williams_knife_drop_and_transform
+ jsr spawn_dropped_knife
+ lda #BEHAV_FACEOFF
+ ldy #6
+ sta (info_ptr),y
+ lda #FO_APPROACH
+ ldy #7
+ sta (info_ptr),y
+ rts
+
+spawn_dropped_knife
+ lda info_ptr
+ pha
+ lda info_ptr+1
+ pha
+ ldy #0
+ lda (info_ptr),y
+ clc
+ adc #16
+ sta :sk_y
+ ldy #2
+ lda (info_ptr),y
+ sta :sk_x
+ ldy #4
+ lda (info_ptr),y
+ sta :sk_dir
+
+* Find first null sprite_table entry.
+ lda #<sprite_table
+ sta spr_ptr
+ lda #>sprite_table
+ sta spr_ptr+1
+:sk_find
+ ldy #0
+ lda (spr_ptr),y
+ iny
+ ora (spr_ptr),y
+ beq :sk_found
+ lda spr_ptr
+ clc
+ adc #2
+ sta spr_ptr
+ bcc :sk_find
+ inc spr_ptr+1
+ bra :sk_find
+:sk_found
+
+* Bounds-check npc_buf_next.
+ lda npc_buf_next+1
+ cmp #>npc_buffers_end
+ bcc :sk_buf_ok
+ beq :sk_buf_check_lo
+ jmp :sk_done
+:sk_buf_check_lo
+ lda npc_buf_next
+ cmp #<npc_buffers_end
+ bcc :sk_buf_ok
+ jmp :sk_done
+:sk_buf_ok
+
+ lda npc_buf_next
+ sta info_ptr
+ lda npc_buf_next+1
+ sta info_ptr+1
+
+ ldy #59
+ lda #0
+:sk_clear
+ sta (info_ptr),y
+ dey
+ bpl :sk_clear
+
+ ldy #0
+ lda :sk_y
+ sta (info_ptr),y
+ ldy #32
+ sta (info_ptr),y
+ ldy #2
+ lda :sk_x
+ sta (info_ptr),y
+ ldy #34
+ sta (info_ptr),y
+
+* frame_x / frame_y (KNIFE2/KNIFE4 = 4×7).
+ lda #$04
+ ldy #10
+ sta (info_ptr),y
+ ldy #36
+ sta (info_ptr),y
+ ldy #44
+ sta (info_ptr),y
+ lda #$07
+ ldy #12
+ sta (info_ptr),y
+ ldy #38
+ sta (info_ptr),y
+ ldy #46
+ sta (info_ptr),y
+
+* frame_addr / idle_addr → spr_knife2 if facing right, else spr_knife4.
+ lda :sk_dir
+ bne :sk_left_sprite
+ lda spr_knife2
+ ldy #14
+ sta (info_ptr),y
+ ldy #42
+ sta (info_ptr),y
+ lda spr_knife2+1
+ ldy #15
+ sta (info_ptr),y
+ ldy #43
+ sta (info_ptr),y
+ bra :sk_sprite_done
+:sk_left_sprite
+ lda spr_knife4
+ ldy #14
+ sta (info_ptr),y
+ ldy #42
+ sta (info_ptr),y
+ lda spr_knife4+1
+ ldy #15
+ sta (info_ptr),y
+ ldy #43
+ sta (info_ptr),y
+:sk_sprite_done
+
+* mask = $CC, maskhi = $C0, masklo = $0C.
+ lda #$CC
+ ldy #16
+ sta (info_ptr),y
+ lda #$C0
+ ldy #18
+ sta (info_ptr),y
+ lda #$0C
+ ldy #20
+ sta (info_ptr),y
+
+* controller = $02 (static item — skipped by check_punch_hit
+* and WAITCLR; OP_KILLOBJ wipes it at end of encounter).
+ lda #$02
+ ldy #22
+ sta (info_ptr),y
+
+ lda #$01
+ ldy #30
+ sta (info_ptr),y
+
+ lda #$19
+ ldy #56
+ sta (info_ptr),y
+ ldy #58
+ sta (info_ptr),y
+
+* Write info_ptr into sprite_table slot.
+ ldy #0
+ lda info_ptr
+ sta (spr_ptr),y
+ iny
+ lda info_ptr+1
+ sta (spr_ptr),y
+
+ lda npc_buf_next
+ clc
+ adc #60
+ sta npc_buf_next
+ lda npc_buf_next+1
+ adc #0
+ sta npc_buf_next+1
+
+:sk_done
+ pla
+ sta info_ptr+1
+ pla
+ sta info_ptr
+ rts
+:sk_x   dfb 0
+:sk_y   dfb 0
+:sk_dir dfb 0
+
+*----------------------------------------------------------
+* williams_pipe_drop_and_transform - Called from :normal_end
+* when anim_wfall ends on a williams_pipe NPC (detected via
+* walk_anim = anim_wpipewalk). Drops a PIPE1 at his feet
+* (controller=$02 static item) and rewrites the block to a
+* regular williams so subsequent falls take the standard path.
+* On entry: info_ptr = williams_pipe. Restored on exit.
+*----------------------------------------------------------
+williams_pipe_drop_and_transform
+ jsr spawn_dropped_pipe
+* Transform → regular williams. idle_addr/frame_addr → spr_william1.
+ lda spr_william1
+ ldy #14
+ sta (info_ptr),y
+ lda spr_william1+1
+ ldy #15
+ sta (info_ptr),y
+ lda spr_william1
+ ldy #42
+ sta (info_ptr),y
+ lda spr_william1+1
+ ldy #43
+ sta (info_ptr),y
+* walk_anim → anim_wwalk
+ lda #<anim_wwalk
+ ldy #52
+ sta (info_ptr),y
+ lda #>anim_wwalk
+ ldy #53
+ sta (info_ptr),y
+* atk_anim → anim_wpunch
+ lda #<anim_wpunch
+ ldy #54
+ sta (info_ptr),y
+ lda #>anim_wpunch
+ ldy #55
+ sta (info_ptr),y
+* frame_bank / idle_bank → $02
+ lda #$02
+ ldy #56
+ sta (info_ptr),y
+ ldy #58
+ sta (info_ptr),y
+ lda #$00
+ ldy #57
+ sta (info_ptr),y
+ ldy #59
+ sta (info_ptr),y
+ rts
+
+*----------------------------------------------------------
+* spawn_dropped_pipe - Allocate a sprite_table+npc_buffer slot
+* for a static PIPE1 item at the source sprite's xpos and
+* (ypos + 20). Mirrors spawn_dropped_mace's structure. PIPE1
+* is 9×5 with mask color $1.
+*----------------------------------------------------------
+spawn_dropped_pipe
+ lda info_ptr
+ pha
+ lda info_ptr+1
+ pha
+ ldy #0
+ lda (info_ptr),y
+ clc
+ adc #20
+ sta :sp_y
+ ldy #2
+ lda (info_ptr),y
+ sta :sp_x
+
+* Find first null sprite_table entry.
+ lda #<sprite_table
+ sta spr_ptr
+ lda #>sprite_table
+ sta spr_ptr+1
+:sp_find
+ ldy #0
+ lda (spr_ptr),y
+ iny
+ ora (spr_ptr),y
+ beq :sp_found
+ lda spr_ptr
+ clc
+ adc #2
+ sta spr_ptr
+ bcc :sp_find
+ inc spr_ptr+1
+ bra :sp_find
+:sp_found
+
+* Bounds-check npc_buf_next.
+ lda npc_buf_next+1
+ cmp #>npc_buffers_end
+ bcc :sp_buf_ok
+ beq :sp_buf_check_lo
+ jmp :sp_done
+:sp_buf_check_lo
+ lda npc_buf_next
+ cmp #<npc_buffers_end
+ bcc :sp_buf_ok
+ jmp :sp_done
+:sp_buf_ok
+
+ lda npc_buf_next
+ sta info_ptr
+ lda npc_buf_next+1
+ sta info_ptr+1
+
+ ldy #59
+ lda #0
+:sp_clear
+ sta (info_ptr),y
+ dey
+ bpl :sp_clear
+
+ ldy #0
+ lda :sp_y
+ sta (info_ptr),y
+ ldy #32
+ sta (info_ptr),y
+ ldy #2
+ lda :sp_x
+ sta (info_ptr),y
+ ldy #34
+ sta (info_ptr),y
+
+* frame_x / frame_y (PIPE1 = 9 × 5).
+ lda #$09
+ ldy #10
+ sta (info_ptr),y
+ ldy #36
+ sta (info_ptr),y
+ ldy #44
+ sta (info_ptr),y
+ lda #$05
+ ldy #12
+ sta (info_ptr),y
+ ldy #38
+ sta (info_ptr),y
+ ldy #46
+ sta (info_ptr),y
+
+* frame_addr / idle_addr → spr_pipe1.
+ lda spr_pipe1
+ ldy #14
+ sta (info_ptr),y
+ ldy #42
+ sta (info_ptr),y
+ lda spr_pipe1+1
+ ldy #15
+ sta (info_ptr),y
+ ldy #43
+ sta (info_ptr),y
+
+* mask = $11 (transparent color 1), maskhi = $10, masklo = $01.
+ lda #$11
+ ldy #16
+ sta (info_ptr),y
+ lda #$10
+ ldy #18
+ sta (info_ptr),y
+ lda #$01
+ ldy #20
+ sta (info_ptr),y
+
+* controller = $02 (static item — skipped by check_punch_hit
+* and WAITCLR; OP_KILLOBJ wipes it at end of encounter).
+ lda #$02
+ ldy #22
+ sta (info_ptr),y
+
+ lda #$01
+ ldy #30
+ sta (info_ptr),y      ; dirty (needs draw)
+
+ lda #$19
+ ldy #56
+ sta (info_ptr),y      ; frame_bank
+ ldy #58
+ sta (info_ptr),y      ; idle_bank
+
+* Write info_ptr into sprite_table slot.
+ ldy #0
+ lda info_ptr
+ sta (spr_ptr),y
+ iny
+ lda info_ptr+1
+ sta (spr_ptr),y
+
+ lda npc_buf_next
+ clc
+ adc #60
+ sta npc_buf_next
+ lda npc_buf_next+1
+ adc #0
+ sta npc_buf_next+1
+
+:sp_done
+ pla
+ sta info_ptr+1
+ pla
+ sta info_ptr
+ rts
+:sp_x dfb 0
+:sp_y dfb 0
+
 errorspot
   hex 00000000
   hex 00000000
@@ -9016,8 +10031,9 @@ load_to_bank
  sta dest
  lda #$20
  sta dest+1            ; destination starts at $2000
- lda #8
- sta :count            ; 8 chunks x 4KB = 32KB
+ lda #32
+ sta :count            ; 32 chunks x 1KB = 32KB upper bound;
+                       ; loop exits early on EOF (READ returns C=1)
 
 :readlp
  jsr $BF00
@@ -9027,10 +10043,10 @@ load_to_bank
 
  jsr copy_to_bank
 
-* Advance destination by $1000
+* Advance destination by $0400 (1 KB = 4 pages)
  lda dest+1
  clc
- adc #$10
+ adc #$04
  sta dest+1
 
  dec :count
@@ -9049,7 +10065,7 @@ load_to_bank
 load_bank dfb 0        ; destination bank for load_to_bank
 
 *----------------------------------------------------------
-* copy_to_bank - Copy 4KB from ]RDBUF to load_bank/dest
+* copy_to_bank - Copy 1KB from ]RDBUF to load_bank/dest
 * Uses ZP $F0-$F2 for indirect long pointer.
 *----------------------------------------------------------
 copy_to_bank
@@ -9065,7 +10081,7 @@ copy_to_bank
 
  rep $30
  ldy #$0000
- ldx #$0800            ; $1000/2 = $0800 word copies
+ ldx #$0200            ; $0400/2 = $0200 word copies (1 KB)
 
 :loop lda ]RDBUF,y
  sta [$F0],y
@@ -10132,6 +11148,9 @@ spr_mace3    ds 2
 spr_mace4    ds 2
 spr_mace5    ds 2
 
+* Standalone pipe (recoverable item — dropped by williams_pipe).
+spr_pipe1    ds 2
+
 * Williams-with-pipe swing frames (WPIPE1-6). His attack uses
 * a 5-frame sequence: WPIPE1, WPIPE4, WPIPE2, WPIPE6, WPIPE3.
 * WPIPE5 isn't used by the swing but is loaded for completeness.
@@ -10141,6 +11160,14 @@ spr_wpipe3   ds 2
 spr_wpipe4   ds 2
 spr_wpipe5   ds 2
 spr_wpipe6   ds 2
+
+* Williams-with-knife throw frames (WKNIFE1, WKNIFE2) and the
+* knife projectile/dropped-item sprites (KNIFE2 right, KNIFE4 left).
+* Loaded from mission12 by init_mission12.
+spr_wknife1  ds 2
+spr_wknife2  ds 2
+spr_knife2   ds 2     ; thrown/dropped, pointing right
+spr_knife4   ds 2     ; thrown/dropped, pointing left
 
 * Burnov "death counter" — how many times he's gone through the
 * dissolve/teleport/reconstitute cycle. Reset at level init.
@@ -10492,6 +11519,12 @@ init_mission12
  lda [$F0],y
  sta spr_wpipe6
 
+* Standalone pipe (PIPE1, horizontal) at index 16 ($20). Used as
+* the dropped-pipe item when williams_pipe falls.
+ ldy #$20
+ lda [$F0],y
+ sta spr_pipe1
+
 * Standalone mace weapon (MACE1-5) at indices 18-22 ($24-$2C).
  ldy #$24
  lda [$F0],y
@@ -10508,6 +11541,23 @@ init_mission12
  ldy #$2C
  lda [$F0],y
  sta spr_mace5
+
+* Williams-with-knife throw frames at indices 4-5 ($08, $0A) and
+* the standalone knife sprites (KNIFE2 right, KNIFE4 left) at
+* indices 7 and 9 ($0E, $12). KNIFE1/3 (held/falling) aren't
+* used by the engine yet so we don't cache them.
+ ldy #$08
+ lda [$F0],y
+ sta spr_wknife1
+ ldy #$0A
+ lda [$F0],y
+ sta spr_wknife2
+ ldy #$0E
+ lda [$F0],y
+ sta spr_knife2
+ ldy #$12
+ lda [$F0],y
+ sta spr_knife4
 
 * Patch Burnov animation descriptors. Per-frame frame_addr
 * lives at +3+3 (frame 0), +3+8 (frame 1), etc. (5-byte stride
@@ -10623,6 +11673,12 @@ init_mission12
  sta anim_wpipeswing+3+18
  lda spr_wpipe3
  sta anim_wpipeswing+3+23
+
+* Patch anim_wkthrow: 2 frames (WKNIFE1, WKNIFE2).
+ lda spr_wknife1
+ sta anim_wkthrow+3+3
+ lda spr_wknife2
+ sta anim_wkthrow+3+8
 
  sec
  xce                   ; back to emulation
@@ -11426,10 +12482,10 @@ load_file
 
  jsr file_copy_chunk
 
-* Advance destination by $1000
+* Advance destination by $0400 (1 KB = 4 pages)
  lda file_dest+1
  clc
- adc #$10
+ adc #$04
  sta file_dest+1
  bcc :readlp
 * Address wrapped — next bank
@@ -11447,7 +12503,7 @@ load_file
 :err rts
 
 *----------------------------------------------------------
-* file_copy_chunk - Copy 4KB from ]RDBUF to file_bank/file_dest
+* file_copy_chunk - Copy 1KB from ]RDBUF to file_bank/file_dest
 *----------------------------------------------------------
 file_copy_chunk
  clc
@@ -11463,7 +12519,7 @@ file_copy_chunk
  rep $30
 
  ldy #$0000
- ldx #$0800            ; $1000/2 = $0800 word copies
+ ldx #$0200            ; $0400/2 = $0200 word copies (1 KB)
 
 :loop lda ]RDBUF,y
  sta [$F0],y
@@ -11477,7 +12533,7 @@ file_copy_chunk
  rts
 
 *----------------------------------------------------------
-* fill_rdbuf_silence - Fill ]RDBUF (4 KB) with $80 (silence
+* fill_rdbuf_silence - Fill ]RDBUF (1 KB) with $80 (silence
 * centre). Called by load_file before each ProDOS READ so
 * bytes past file EOF in the destination bank are silent.
 *----------------------------------------------------------
@@ -11489,7 +12545,7 @@ fill_rdbuf_silence
  mx %00
  lda #$8080            ; word fill
  ldy #$0000
- ldx #$0800            ; 2048 word writes = 4 KB
+ ldx #$0200            ; 512 word writes = 1 KB
 :loop
  sta ]RDBUF,y
  iny
@@ -11515,7 +12571,7 @@ file_oref dfb 0
 file_read dfb 4
 file_rref dfb 0
  da ]RDBUF
- da $1000
+ da $0400              ; request count (1KB = 2 disk blocks)
  ds 2                  ; transfer count
 
 file_close dfb 1
@@ -14752,6 +15808,18 @@ anim_wpipeswing
  dfb $0D,$28,6        ; WPIPE3: 13×40
   hex 0000             ; patched
 
+* Williams-with-knife throw — 2 frames (WKNIFE1 wind-up, WKNIFE2
+* release). When the anim ends, :normal_end spawns the knife
+* projectile and downgrades williams_knife to a regular williams.
+anim_wkthrow
+ dfb 2
+ dfb $0D              ; max_width (both frames are 13 wide)
+ dfb $20              ; flags: bit 5 = bank $19
+ dfb $0D,$2F,8        ; WKNIFE1: 13×47
+  hex 0000             ; patched
+ dfb $0D,$27,8        ; WKNIFE2: 13×39
+  hex 0000             ; patched
+
 *----------------------------------------------------------
 * check_punch_hit - Check if the punching sprite (whose
 * state is in globals) hit any other sprite in the table.
@@ -16116,7 +17184,7 @@ o_refnum dfb 0        ; ref_num (returned by OPEN)
 p_read dfb 4           ; param count
 r_refnum dfb 0        ; ref_num
  da ]RDBUF            ; data buffer
- da $1000             ; request count (4KB)
+ da $0400             ; request count (1KB = 2 disk blocks)
  ds 2                 ; transfer count (returned)
 
 p_close dfb 1          ; param count

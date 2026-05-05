@@ -41,6 +41,8 @@ BEHAV_FACEOFF EQU 1 ; approach player to 5px and punch
 BEHAV_FLANK   EQU 2 ; approach player from behind (TBD)
 BEHAV_LURK    EQU 3 ; stay on opposite side of screen (TBD)
 BEHAV_LADDER  EQU 4 ; descend ladder, then face off
+BEHAV_KNIFER  EQU 5 ; williams_knife: backpedal to 12px, throw knife,
+                    ; then transform to regular williams + BEHAV_FACEOFF
 
 *==========================================================
 * Level header
@@ -332,7 +334,7 @@ level_script
 
     db OP_NPC
     dw williams_knife_sprite
-    db $58,$32,$01,BEHAV_FACEOFF
+    db $58,$32,$01,BEHAV_KNIFER
     db OP_WAITCLR
     db OP_KILLOBJ       ; clean up any dropped knives
 
