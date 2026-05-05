@@ -6380,6 +6380,23 @@ process_input
 *----------------------------------------------------------
 btn_action_fire
  sta :baf_key
+* Pipe handling — L key only.
+*   armed:    L → swing the pipe (anim_bpipeswing)
+*   unarmed:  L → try to pick up a nearby pipe; on success play
+*             anim_bpickup, on no-pickup fall through to the
+*             normal direction-based punch/kick dispatch below.
+ cmp #'l'
+ bne :baf_dispatch
+ lda billy_pipe_armed
+ beq :baf_l_pickup
+ lda #<anim_bpipeswing
+ ldx #>anim_bpipeswing
+ jsr start_anim
+ rts
+:baf_l_pickup
+ jsr billy_try_pickup_pipe
+ bcs :baf_l_done          ; pickup fired anim_bpickup, return
+:baf_dispatch
  ldy #4
  lda (info_ptr),y       ; mirror
  beq :baf_face_right
@@ -6393,6 +6410,8 @@ btn_action_fire
  cmp #'j'
  beq :baf_kick          ; J when facing right → back-kick
  jmp :baf_punch         ; L when facing right → punch
+:baf_l_done
+ rts
 :baf_kick
  lda #<anim_kick
  ldx #>anim_kick
@@ -7224,6 +7243,25 @@ advance_walk
  txa
  asl
  tax
+* Armed dispatch: if Billy is carrying a pipe, walk uses
+* pipe_walk_addr_tbl (BPIPEW frames in bank $19) via the legacy
+* renderer. Clear MASK_ADDR so draw_all routes to draw_sprite,
+* and set sprite_bank = $19 so cross-bank long-indirect reads
+* hit BPIPEW data.
+ lda billy_pipe_armed
+ beq :aw_unarmed
+ lda pipe_walk_addr_tbl,x
+ sta FRAME_ADDR
+ lda pipe_walk_addr_tbl+1,x
+ sta FRAME_ADDR+1
+ lda #0
+ sta MASK_ADDR
+ sta MASK_ADDR+1
+ lda #$19
+ sta sprite_bank
+ stz sprite_bank+1
+ rts
+:aw_unarmed
 * Pick data + mask table pair based on Billy's mirror flag.
 * walk_addr_tbl/walk_mask_tbl  for forward (mirror=0).
 * walk_addr_tbl_mirror/walk_mask_tbl_mirror for left-facing (mirror=1).
@@ -8130,6 +8168,19 @@ update_anims
  ldy #7
  sta (info_ptr),y
 :ne_not_wkthrow
+* Billy pipe-pickup hook: anim_bpickup ending → mark Billy
+* armed and rewrite his idle pose to BPIPEW1. The idle restore
+* later in :normal_end will load BPIPEW1/+58→+56 = $19, and
+* the Billy-mask block gates on billy_pipe_armed so it skips
+* MASK_ADDR setup for armed Billy.
+ lda anim_ptr
+ cmp #<anim_bpickup
+ bne :ne_not_bpickup
+ lda anim_ptr+1
+ cmp #>anim_bpickup
+ bne :ne_not_bpickup
+ jsr billy_arm_pipe
+:ne_not_bpickup
  ldy #50
  lda (info_ptr),y
  cmp anim_ptr
@@ -8264,9 +8315,13 @@ update_anims
 * For Billy (controller=$01): pick compiled idle data + mask whose
 * orientation matches IMAGE01_MIRROR. Mirror is baked into the
 * pre-rotated arrays — draw_sprite_compiled has no mirror branch.
+* Skip entirely when Billy is armed with a pipe — armed renders
+* through the legacy path (MASK_ADDR=0).
  ldy #22
  lda (info_ptr),y
  cmp #$01
+ bne :ne_no_billy_mask
+ lda billy_pipe_armed
  bne :ne_no_billy_mask
  lda IMAGE01_MIRROR
  bne :ne_billy_mirror
@@ -8520,9 +8575,17 @@ update_anims
 :try_upr
  lda anim_ptr
  cmp #<anim_uppercut
- bne :try_kick
+ bne :try_bpipe
  lda anim_ptr+1
  cmp #>anim_uppercut
+ bne :try_bpipe
+ jmp :do_hit_now
+:try_bpipe
+ lda anim_ptr
+ cmp #<anim_bpipeswing
+ bne :try_kick
+ lda anim_ptr+1
+ cmp #>anim_bpipeswing
  bne :try_kick
  jmp :do_hit_now
 :try_kick
@@ -9916,6 +9979,216 @@ spawn_dropped_pipe
 :sp_x dfb 0
 :sp_y dfb 0
 
+*----------------------------------------------------------
+* billy_try_pickup_pipe - L was pressed while Billy is unarmed.
+* Scan sprite_table for a controller=$02 item whose frame_addr
+* matches spr_pipe1 AND whose bbox overlaps Billy + |Δy| ≤ 3.
+* If found: tag the pipe with the death sentinel (it disappears
+* on this frame's erase_all), start anim_bpickup on Billy, and
+* return C=1. Otherwise C=0 — caller falls through to its
+* normal punch dispatch.
+* On entry: info_ptr = billy_sprite. spr_ptr is clobbered.
+*----------------------------------------------------------
+billy_try_pickup_pipe
+* Snapshot Billy's bbox.
+ lda billy_sprite        ; ypos
+ sta :tp_by
+ lda billy_sprite+2      ; xpos
+ sta :tp_bx
+ lda billy_sprite+10     ; frame_x
+ sta :tp_bw
+ clc
+ adc :tp_bx
+ sta :tp_bright          ; billy_right = billy_x + billy_w
+
+* Iterate sprite_table looking for an item whose frame_addr
+* matches spr_pipe1.
+ lda #<sprite_table
+ sta spr_ptr
+ lda #>sprite_table
+ sta spr_ptr+1
+:tp_loop
+ ldy #0
+ lda (spr_ptr),y
+ sta info_ptr
+ iny
+ lda (spr_ptr),y
+ sta info_ptr+1
+ ora info_ptr
+ bne :tp_not_null
+ jmp :tp_no               ; null terminator (long jump for range)
+:tp_not_null
+ ldy #22
+ lda (info_ptr),y         ; controller
+ cmp #$02
+ bne :tp_advance          ; not a static item
+ ldy #14
+ lda (info_ptr),y
+ cmp spr_pipe1
+ bne :tp_advance
+ ldy #15
+ lda (info_ptr),y
+ cmp spr_pipe1+1
+ bne :tp_advance
+
+* Vertical bbox overlap (treat the pipe as "touchable" if Billy's
+* body overlaps it vertically — the user's "y within 2-3 bytes"
+* spec, but honoured as bbox overlap because Billy is 40 tall and
+* the pipe only 5, so top-to-top distance is large by definition).
+* Test: pipe_bottom ≥ billy_y AND pipe_y ≤ billy_bottom.
+ ldy #0
+ lda (info_ptr),y         ; pipe.y
+ sta :tp_py
+ ldy #12
+ clc
+ adc (info_ptr),y         ; pipe_bottom = pipe.y + pipe.h
+ cmp :tp_by
+ bcc :tp_advance          ; pipe_bottom < billy_y → above billy
+ lda :tp_py
+ lda :tp_by
+ clc
+ adc #40                  ; billy_bottom (Billy's frame_y is 40)
+ sta :tp_bbottom
+ lda :tp_py
+ cmp :tp_bbottom
+ beq :tp_v_ok
+ bcs :tp_advance          ; pipe_y > billy_bottom → below billy
+:tp_v_ok
+
+* Horizontal bbox overlap: pipe_right ≥ billy_x AND pipe_x ≤ billy_right
+ ldy #2
+ lda (info_ptr),y         ; pipe.x
+ sta :tp_px
+ ldy #10
+ clc
+ adc (info_ptr),y         ; pipe.x + pipe.w = pipe_right
+ cmp :tp_bx
+ bcc :tp_advance          ; pipe_right < billy_x
+ lda :tp_px
+ cmp :tp_bright
+ beq :tp_pickup
+ bcs :tp_advance          ; pipe_x > billy_right
+:tp_pickup
+* Tag the pipe dead so erase_all wipes it this frame.
+ lda #$FF
+ ldy #24
+ sta (info_ptr),y
+ iny
+ sta (info_ptr),y
+* Restore info_ptr to Billy and start anim_bpickup.
+ lda #<billy_sprite
+ sta info_ptr
+ lda #>billy_sprite
+ sta info_ptr+1
+ lda #<anim_bpickup
+ ldx #>anim_bpickup
+ jsr start_anim
+ sec                      ; pickup happened
+ rts
+
+:tp_advance
+ lda spr_ptr
+ clc
+ adc #2
+ sta spr_ptr
+ bcc :tp_jloop
+ inc spr_ptr+1
+:tp_jloop jmp :tp_loop
+:tp_no
+* No pipe in pickup range. Restore info_ptr to Billy.
+ lda #<billy_sprite
+ sta info_ptr
+ lda #>billy_sprite
+ sta info_ptr+1
+ clc                      ; no pickup
+ rts
+
+:tp_by      dfb 0
+:tp_bx      dfb 0
+:tp_bw      dfb 0
+:tp_bright  dfb 0
+:tp_bbottom dfb 0
+:tp_px      dfb 0
+:tp_py      dfb 0
+
+*----------------------------------------------------------
+* billy_arm_pipe - Called from :normal_end when anim_bpickup
+* ends. Sets billy_pipe_armed and rewrites Billy's idle pose
+* to BPIPEW1 so :normal_end's idle restore picks it up.
+* On entry: info_ptr = billy_sprite. Mode: emulation, 8-bit.
+*----------------------------------------------------------
+billy_arm_pipe
+ lda #1
+ sta billy_pipe_armed
+* anim_bpickup was compiled (it set MASK_ADDR + info+52 to the
+* JUMP3 mask). Clear both now so the next draw routes Billy
+* through the legacy path with BPIPEW1 data.
+ lda #0
+ sta MASK_ADDR
+ sta MASK_ADDR+1
+ ldy #52
+ sta (info_ptr),y
+ iny
+ sta (info_ptr),y
+* idle_addr → spr_bpipew1
+ lda spr_bpipew1
+ ldy #42
+ sta (info_ptr),y
+ lda spr_bpipew1+1
+ ldy #43
+ sta (info_ptr),y
+* idle_x / idle_y (BPIPEW1 = 9×40)
+ lda #$09
+ ldy #44
+ sta (info_ptr),y
+ lda #$28
+ ldy #46
+ sta (info_ptr),y
+* idle_bank = $19 — :normal_end's frame_bank restore copies
+* info+58/+59 → info+56/+57, so info+56 ends at $19/$00.
+ lda #$19
+ ldy #58
+ sta (info_ptr),y
+ lda #0
+ ldy #59
+ sta (info_ptr),y
+ rts
+
+*----------------------------------------------------------
+* billy_disarm_pipe - Called from kill_objects when OP_KILLOBJ
+* fires while Billy is armed. Restores Billy's compiled walk
+* pipeline: idle_addr → IMAGE01, idle_bank → $02, info+52
+* (compiled mask) → spr_image01_mask, MASK_ADDR seeded so the
+* very next draw routes through draw_sprite_compiled again.
+*----------------------------------------------------------
+billy_disarm_pipe
+ stz billy_pipe_armed
+ lda spr_img01
+ sta billy_sprite+14      ; frame_addr (live)
+ sta billy_sprite+42      ; idle_addr
+ lda spr_img01+1
+ sta billy_sprite+15
+ sta billy_sprite+43
+ lda spr_image01_mask
+ sta billy_sprite+52      ; mask_addr (live)
+ sta MASK_ADDR
+ lda spr_image01_mask+1
+ sta billy_sprite+53
+ sta MASK_ADDR+1
+ lda #$09
+ sta billy_sprite+10
+ sta billy_sprite+44
+ lda #$28
+ sta billy_sprite+12
+ sta billy_sprite+46
+ lda #$02
+ sta billy_sprite+56      ; frame_bank → $02
+ sta billy_sprite+58      ; idle_bank → $02
+ lda #0
+ sta billy_sprite+57
+ sta billy_sprite+59
+ rts
+
 errorspot
   hex 00000000
   hex 00000000
@@ -10789,6 +11062,17 @@ init_level
  lda spr_jump3_mask_mirror
  sta anim_jump+34
 
+* Patch anim_bpickup: 1 compiled frame (JUMP3 hold, 11-byte
+* stride). data/mask/dmir/mmir at +6/+8/+10/+12.
+ lda spr_jump3
+ sta anim_bpickup+6
+ lda spr_jump3_mask
+ sta anim_bpickup+8
+ lda spr_jump3_data_mirror
+ sta anim_bpickup+10
+ lda spr_jump3_mask_mirror
+ sta anim_bpickup+12
+
 * Patch anim_kick: 2 compiled frames (11-byte stride)
  lda spr_kick1
  sta anim_kick+6
@@ -11150,6 +11434,28 @@ spr_mace5    ds 2
 
 * Standalone pipe (recoverable item — dropped by williams_pipe).
 spr_pipe1    ds 2
+
+* Billy with pipe — walking frames (BPIPEW1-3) and swing frames
+* (BPIPE1-4). Used when billy_pipe_armed != 0. Same dimensions as
+* WPIPEW (9-11 wide × 40 tall), Billy mask = $66.
+spr_bpipew1  ds 2
+spr_bpipew2  ds 2
+spr_bpipew3  ds 2
+spr_bpipe1   ds 2
+spr_bpipe2   ds 2
+spr_bpipe3   ds 2
+spr_bpipe4   ds 2
+
+* Set non-zero when Billy has picked up a pipe. Cleared by
+* OP_KILLOBJ. Drives advance_walk's frame-table choice and L-key
+* attack dispatch (anim_bpipeswing vs anim_punch1).
+billy_pipe_armed dfb 0
+
+* Walk-frame address table for armed Billy. Patched by
+* init_mission12 with BPIPEW1, BPIPEW2, BPIPEW3, BPIPEW2.
+* advance_walk reads this when billy_pipe_armed != 0; otherwise
+* it uses walk_addr_tbl (the compiled IMAGE01-03 table).
+pipe_walk_addr_tbl ds 8
 
 * Williams-with-pipe swing frames (WPIPE1-6). His attack uses
 * a 5-frame sequence: WPIPE1, WPIPE4, WPIPE2, WPIPE6, WPIPE3.
@@ -11525,6 +11831,31 @@ init_mission12
  lda [$F0],y
  sta spr_pipe1
 
+* Billy-with-pipe walk frames (BPIPEW1-3) at indices 30-32
+* ($3C-$40), and swing frames (BPIPE1-4) at indices 33-36
+* ($42-$48). Used when Billy is armed.
+ ldy #$3C
+ lda [$F0],y
+ sta spr_bpipew1
+ ldy #$3E
+ lda [$F0],y
+ sta spr_bpipew2
+ ldy #$40
+ lda [$F0],y
+ sta spr_bpipew3
+ ldy #$42
+ lda [$F0],y
+ sta spr_bpipe1
+ ldy #$44
+ lda [$F0],y
+ sta spr_bpipe2
+ ldy #$46
+ lda [$F0],y
+ sta spr_bpipe3
+ ldy #$48
+ lda [$F0],y
+ sta spr_bpipe4
+
 * Standalone mace weapon (MACE1-5) at indices 18-22 ($24-$2C).
  ldy #$24
  lda [$F0],y
@@ -11679,6 +12010,36 @@ init_mission12
  sta anim_wkthrow+3+3
  lda spr_wknife2
  sta anim_wkthrow+3+8
+
+* Patch anim_bpipewalk: 4 frames (BPIPEW1, 2, 3, 2 cycle).
+ lda spr_bpipew1
+ sta anim_bpipewalk+3+3
+ lda spr_bpipew2
+ sta anim_bpipewalk+3+8
+ lda spr_bpipew3
+ sta anim_bpipewalk+3+13
+ lda spr_bpipew2
+ sta anim_bpipewalk+3+18
+
+* Patch anim_bpipeswing: 4 frames (BPIPE1, 2, 3, 4).
+ lda spr_bpipe1
+ sta anim_bpipeswing+3+3
+ lda spr_bpipe2
+ sta anim_bpipeswing+3+8
+ lda spr_bpipe3
+ sta anim_bpipeswing+3+13
+ lda spr_bpipe4
+ sta anim_bpipeswing+3+18
+
+* Patch pipe_walk_addr_tbl with BPIPEW1, 2, 3, 2 (4 entries × 2 bytes).
+ lda spr_bpipew1
+ sta pipe_walk_addr_tbl
+ lda spr_bpipew2
+ sta pipe_walk_addr_tbl+2
+ lda spr_bpipew3
+ sta pipe_walk_addr_tbl+4
+ lda spr_bpipew2
+ sta pipe_walk_addr_tbl+6
 
  sec
  xce                   ; back to emulation
@@ -15820,6 +16181,56 @@ anim_wkthrow
  dfb $0D,$27,8        ; WKNIFE2: 13×39
   hex 0000             ; patched
 
+* Billy-with-pipe walk — 4-frame cycle (BPIPEW1, 2, 3, 2). Same
+* shape as anim_wpipewalk but with Billy's frames. NOT installed
+* via start_anim — driven by advance_walk reading
+* pipe_walk_addr_tbl when billy_pipe_armed != 0.
+anim_bpipewalk
+ dfb 4
+ dfb $0B              ; max_width (BPIPEW3 is 11 wide)
+ dfb $22              ; flags: bit 1 = loop, bit 5 = bank $19
+ dfb $09,$28,5        ; BPIPEW1
+  hex 0000             ; patched
+ dfb $08,$28,5        ; BPIPEW2
+  hex 0000             ; patched
+ dfb $0B,$28,5        ; BPIPEW3
+  hex 0000             ; patched
+ dfb $08,$28,5        ; BPIPEW2 (cycle back)
+  hex 0000             ; patched
+
+* Billy-with-pipe swing — 4 frames (BPIPE1-4). At anim end Billy
+* returns to idle (BPIPEW1 if still armed). check_punch_hit reads
+* the puncher's anim_ptr to deal 3-hit damage on contact (mirrors
+* the anim_uppercut damage-3 path).
+anim_bpipeswing
+ dfb 4
+ dfb $11              ; max_width (BPIPE2 is 17 wide)
+ dfb $20              ; flags: bit 5 = bank $19
+ dfb $09,$28,6        ; BPIPE1
+  hex 0000             ; patched
+ dfb $11,$28,6        ; BPIPE2
+  hex 0000             ; patched
+ dfb $0F,$28,6        ; BPIPE3
+  hex 0000             ; patched
+ dfb $0C,$28,6        ; BPIPE4
+  hex 0000             ; patched
+
+* Billy pipe-pickup pose — 1 frame (JUMP3 = crouch) held for
+* 30 VBLs (~½ s). Compiled (11-byte stride) so it renders
+* through the same draw_sprite_compiled path as Billy's normal
+* idle/walk — JUMP3_DATA is compiled-format with a paired mask.
+* At anim end :normal_end calls billy_arm_pipe which clears
+* MASK_ADDR and switches Billy's idle to BPIPEW1.
+anim_bpickup
+ dfb 1
+ dfb $0D              ; max_width (JUMP3 is 13 wide)
+ dfb $80              ; flags: bit 7 = compiled, bank $02
+ dfb $0D,$20,30       ; JUMP3 — 13×32, 30 VBLs
+  hex 0000             ; data       (patched → spr_jump3)
+  hex 0000             ; mask       (patched → spr_jump3_mask)
+  hex 0000             ; data_mir   (patched → spr_jump3_data_mirror)
+  hex 0000             ; mask_mir   (patched → spr_jump3_mask_mirror)
+
 *----------------------------------------------------------
 * check_punch_hit - Check if the punching sprite (whose
 * state is in globals) hit any other sprite in the table.
@@ -16101,6 +16512,11 @@ kill_objects
  inc spr_ptr+1
  bra :ko_loop
 :ko_done
+* If Billy was carrying a pipe, OP_KILLOBJ also takes it away.
+ lda billy_pipe_armed
+ beq :ko_real_done
+ jsr billy_disarm_pipe
+:ko_real_done
  rts
 
 *----------------------------------------------------------
@@ -16468,12 +16884,22 @@ check_punch_hit
  jmp :advance        ; target too far left
 :hit
 
-* Hit! Damage = 3 if puncher is mid-uppercut, else 1.
+* Hit! Damage = 3 if puncher is mid-uppercut OR mid-pipeswing,
+* else 1. Both are forced-fall attacks (handled below).
  lda :puncher_anim_lo
  cmp #<anim_uppercut
- bne :hit_dmg1
+ bne :hit_chk_pipe
  lda :puncher_anim_hi
  cmp #>anim_uppercut
+ bne :hit_chk_pipe
+ lda #3
+ bra :hit_dmg_done
+:hit_chk_pipe
+ lda :puncher_anim_lo
+ cmp #<anim_bpipeswing
+ bne :hit_dmg1
+ lda :puncher_anim_hi
+ cmp #>anim_bpipeswing
  bne :hit_dmg1
  lda #3
  bra :hit_dmg_done
@@ -16499,13 +16925,20 @@ check_punch_hit
 ; ora :tmp
 ; stal $E0C034
 * Check if punch_count triggers a fall (3 or 6) — or force fall
-* immediately if the puncher is mid-uppercut (the +3 damage was
-* meant to send them straight to the ground regardless of count).
+* immediately if the puncher is mid-uppercut OR mid-pipeswing.
  lda :puncher_anim_lo
  cmp #<anim_uppercut
- bne :hit_count_check
+ bne :hit_chk2_pipe
  lda :puncher_anim_hi
  cmp #>anim_uppercut
+ bne :hit_chk2_pipe
+ jmp :use_fall
+:hit_chk2_pipe
+ lda :puncher_anim_lo
+ cmp #<anim_bpipeswing
+ bne :hit_count_check
+ lda :puncher_anim_hi
+ cmp #>anim_bpipeswing
  bne :hit_count_check
  jmp :use_fall
 :hit_count_check
