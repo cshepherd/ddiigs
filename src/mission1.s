@@ -30,6 +30,7 @@ OP_SNAPSTATE EQU 16 ; restore engine to a "golden" state (17-byte payload)
 OP_SNAPSTATE_DEFER EQU 17 ; same as OP_SNAPSTATE but applied at next scroll_up
 OP_BOSSMUSIC EQU 18 ; trigger boss music (no params)
 OP_WAIT     EQU 19 ; wait N frames before continuing the script (params: 1-byte frame count)
+OP_KILLOBJ  EQU 20 ; remove all non-player, non-NPC objects (e.g. dropped items) (no params)
 ; NOTE OP_WAITX and OP_WAITY use 'absolute X' (level-wide) not screen xpos/ypos
 ;  so it's easier to use for game logic
 ; NOTE OP_NPC params are: sprite_ptr (2b), xpos (1b), ypos (1b), orient (1b), behavior (1b)
@@ -315,6 +316,7 @@ level_script
     dw linda_flail_sprite
     db $58,$32,$01,BEHAV_FACEOFF  ; y=$32 (50) within walkable band
     db OP_WAITCLR       ; wait for enemies defeated
+    db OP_KILLOBJ       ; clean up any dropped maces
 
     db OP_RIGHT,7      ; connect screen 5 to screen 7 on the right
 
@@ -332,6 +334,7 @@ level_script
     dw williams_knife_sprite
     db $58,$32,$01,BEHAV_FACEOFF
     db OP_WAITCLR
+    db OP_KILLOBJ       ; clean up any dropped knives
 
 * Pre-climb golden state for ladder2 (recorded 'g' below ladder2
 * on scr7). DEFERRED: applied at first scroll_up call (= climb
@@ -461,6 +464,7 @@ level_script
     dw williams_pipe_sprite
     db $58,$43,$01,BEHAV_FACEOFF
     db OP_WAITCLR
+    db OP_KILLOBJ       ; clean up any dropped pipes
 
     db OP_WAITX
     dw $0198              ; wait for player abs X >= 600

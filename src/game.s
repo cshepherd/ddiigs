@@ -1184,6 +1184,23 @@ run_script
  rts
 
 :not_wait
+ cmp #OP_KILLOBJ
+ bne :not_killobj
+* OP_KILLOBJ: mark every sprite with controller != 0 and != 1
+* (i.e. items) for death. The actual erase + table removal
+* happens in erase_all on the next frame via the $FFFF
+* anim_ptr sentinel — same path used for defeated NPCs.
+ jsr kill_objects
+ lda script_pc          ; opcode only (1 byte)
+ clc
+ adc #1
+ sta script_pc
+ lda script_pc+1
+ adc #0
+ sta script_pc+1
+ jmp :exec_loop
+
+:not_killobj
 * OP_NONE — skip 1 byte and continue
  cmp #OP_NONE
  bne :unknown_op
@@ -2915,7 +2932,11 @@ draw_overlay
  bne :active
  rts
 :active
-* Save current globals
+* Save current globals — including sprite_bank, which the
+* compiled draw uses as the source bank for the indirect-long
+* pixel reads. Without saving/restoring it, bank-$19 NPCs (mace,
+* boss, armed enemies) leave sprite_bank at $19 and the overlay's
+* bank-$02 sprite gets read from the wrong bank → corruption.
  lda IMAGE01_YPOS
  pha
  lda IMAGE01_XPOS
@@ -2931,6 +2952,10 @@ draw_overlay
  lda MASK_ADDR
  pha
  lda MASK_ADDR+1
+ pha
+ lda sprite_bank
+ pha
+ lda sprite_bank+1
  pha
 * Set overlay globals from cached state
  lda overlay_y
@@ -2949,8 +2974,18 @@ draw_overlay
  sta MASK_ADDR
  lda overlay_mask+1
  sta MASK_ADDR+1
+* Overlay sprites live in bank $02 — force sprite_bank to $02
+* for the compiled draw.
+ lda #$02
+ sta sprite_bank
+ lda #$00
+ sta sprite_bank+1
  jsr draw_sprite_compiled
 * Restore globals
+ pla
+ sta sprite_bank+1
+ pla
+ sta sprite_bank
  pla
  sta MASK_ADDR+1
  pla
@@ -3123,7 +3158,7 @@ draw_ladder_debug
 * Ensure size covers the maximum total NPCs spawned over the
 * level's lifetime (not just concurrent), since npc_buf_next
 * only advances, never reuses slots of defeated NPCs.
-NPC_BUFFER_SLOTS = 16
+NPC_BUFFER_SLOTS = 24
 * 60 bytes/slot: 0..51 copied from the bank-$02 template; 52/54
 * (walk_anim/atk_anim), 56 (frame_bank), and 58 (idle_bank — bank
 * of the idle frame, restored on anim end) patched by
@@ -5594,6 +5629,13 @@ OP_SNAPSTATE_DEFER = 17 ; like OP_SNAPSTATE but applied at next
 OP_BOSSMUSIC = 18     ; switch to BOSS.NTP music (no params).
 OP_WAIT     = 19      ; wait N frames before continuing the script.
                       ; 1-byte param: frame count (1-255).
+OP_KILLOBJ  = 20      ; remove all non-player, non-NPC sprites (any
+                      ; controller != 0 and != 1, currently only items
+                      ; like dropped maces). Marks them with the death
+                      ; sentinel ($FFFF in anim_ptr) so the next
+                      ; erase_all wipes them and removes them from
+                      ; sprite_table. No params. Note: forward-only
+                      ; npc_buffer slots are not reclaimed.
 
 * Script interpreter state
 SCRIPT_RUN  = 0       ; executing opcodes
@@ -8069,6 +8111,22 @@ update_anims
  sec
  sbc #FALL_Y_OFFSET
  sta (info_ptr),y     ; ypos -= FALL_Y_OFFSET
+* linda_flail special case: if the just-ended fall_anim is hers
+* (walk_anim still == anim_lfwalk, meaning she hasn't yet
+* transformed), drop her mace and turn her into a regular Linda.
+* The detector keys on walk_anim — once we've transformed her,
+* walk_anim becomes anim_lwalk and this branch won't fire again,
+* so subsequent falls follow the normal fall→get-up→eventual
+* permadeath path.
+ ldy #52
+ lda (info_ptr),y
+ cmp #<anim_lfwalk
+ bne :ne_no_unbump
+ ldy #53
+ lda (info_ptr),y
+ cmp #>anim_lfwalk
+ bne :ne_no_unbump
+ jsr linda_flail_drop_and_transform
 :ne_no_unbump
 * Clamp ypos so the sprite's bottom stays on-screen
 * (ypos + frame_y <= 200). NPCs drift below the walkable floor
@@ -8611,6 +8669,232 @@ finish_burnov_recon
  sta (info_ptr),y      ; behavior_timer high
  inc boss_death_count
  rts
+
+*----------------------------------------------------------
+* linda_flail_drop_and_transform - called when linda_flail's
+* anim_lfall ends. Drops a MACE2 weapon sprite at her current
+* (post-fall) position and rewrites her own sprite block to
+* be a regular Linda — so subsequent walks/punches/falls go
+* through the bank-$02 Linda animation set.
+* On entry: info_ptr = linda_flail. Caller is :normal_end mid-
+* execution; we leave info_ptr pointing back at her on exit so
+* the rest of :normal_end's idle restore picks up the new
+* (regular Linda) idle_addr / idle_bank automatically.
+*----------------------------------------------------------
+linda_flail_drop_and_transform
+ jsr spawn_dropped_mace
+* Transform linda_flail → regular Linda by rewriting her block.
+* idle_addr/frame_addr → spr_linda1 (LINDA1 in bank $02).
+ lda spr_linda1
+ ldy #14
+ sta (info_ptr),y
+ lda spr_linda1+1
+ ldy #15
+ sta (info_ptr),y
+ lda spr_linda1
+ ldy #42
+ sta (info_ptr),y
+ lda spr_linda1+1
+ ldy #43
+ sta (info_ptr),y
+* walk_anim → anim_lwalk
+ lda #<anim_lwalk
+ ldy #52
+ sta (info_ptr),y
+ lda #>anim_lwalk
+ ldy #53
+ sta (info_ptr),y
+* atk_anim → anim_lpunch
+ lda #<anim_lpunch
+ ldy #54
+ sta (info_ptr),y
+ lda #>anim_lpunch
+ ldy #55
+ sta (info_ptr),y
+* frame_bank / idle_bank → $02
+ lda #$02
+ ldy #56
+ sta (info_ptr),y
+ ldy #58
+ sta (info_ptr),y
+ lda #$00
+ ldy #57
+ sta (info_ptr),y
+ ldy #59
+ sta (info_ptr),y
+ rts
+
+*----------------------------------------------------------
+* spawn_dropped_mace - allocate a fresh NPC buffer slot, fill
+* it in as a static MACE2 weapon at the current sprite's xpos/
+* ypos, and add it to sprite_table. Used by linda_flail's
+* transform-on-fall flow. Mace lives in bank $19 (mission12),
+* mask $44, controller=$02 ("item" — never hit-checked, never
+* blocks WAITCLR). On entry: info_ptr = source sprite (pos copied
+* from there). On exit: info_ptr restored to source sprite.
+*----------------------------------------------------------
+spawn_dropped_mace
+* Stash linda's info_ptr & capture her current pos. Mace
+* drops 16 px below linda's anchor so it sits on the
+* ground in front of her crumpled body, not at her head.
+ lda info_ptr
+ pha
+ lda info_ptr+1
+ pha
+ ldy #0
+ lda (info_ptr),y
+ clc
+ adc #16
+ sta :sm_y
+ ldy #2
+ lda (info_ptr),y
+ sta :sm_x
+
+* Find first null sprite_table entry.
+ lda #<sprite_table
+ sta spr_ptr
+ lda #>sprite_table
+ sta spr_ptr+1
+:sm_find
+ ldy #0
+ lda (spr_ptr),y
+ iny
+ ora (spr_ptr),y
+ beq :sm_found
+ lda spr_ptr
+ clc
+ adc #2
+ sta spr_ptr
+ bcc :sm_find
+ inc spr_ptr+1
+ bra :sm_find
+:sm_found
+
+* Bounds-check npc_buf_next (silently drop the spawn if the
+* buffer is exhausted, same policy as script_spawn_npc).
+ lda npc_buf_next+1
+ cmp #>npc_buffers_end
+ bcc :sm_buf_ok
+ beq :sm_buf_check_lo
+ jmp :sm_done           ; high byte > end → exhausted
+:sm_buf_check_lo
+ lda npc_buf_next
+ cmp #<npc_buffers_end
+ bcc :sm_buf_ok
+ jmp :sm_done           ; low byte >= end → exhausted
+:sm_buf_ok
+
+* info_ptr = npc_buf_next; populate the mace block.
+ lda npc_buf_next
+ sta info_ptr
+ lda npc_buf_next+1
+ sta info_ptr+1
+
+* Zero the first 60 bytes (the buffer may carry stale data
+* from a previous occupant).
+ ldy #59
+ lda #0
+:sm_clear
+ sta (info_ptr),y
+ dey
+ bpl :sm_clear
+
+* Write the live fields. ypos / xpos / prev_ypos / prev_xpos
+* all from saved pos.
+ ldy #0
+ lda :sm_y
+ sta (info_ptr),y      ; +0 ypos
+ ldy #32
+ sta (info_ptr),y      ; +32 prev_ypos
+ ldy #2
+ lda :sm_x
+ sta (info_ptr),y      ; +2 xpos
+ ldy #34
+ sta (info_ptr),y      ; +34 prev_xpos
+
+* frame_x / frame_y / prev_frame_x / prev_frame_y (MACE2 = 10×8).
+ lda #$0A
+ ldy #10
+ sta (info_ptr),y
+ ldy #36
+ sta (info_ptr),y
+ ldy #44
+ sta (info_ptr),y      ; +44 idle_x
+ lda #$08
+ ldy #12
+ sta (info_ptr),y
+ ldy #38
+ sta (info_ptr),y
+ ldy #46
+ sta (info_ptr),y      ; +46 idle_y
+
+* frame_addr / idle_addr → spr_mace2.
+ lda spr_mace2
+ ldy #14
+ sta (info_ptr),y
+ ldy #42
+ sta (info_ptr),y
+ lda spr_mace2+1
+ ldy #15
+ sta (info_ptr),y
+ ldy #43
+ sta (info_ptr),y
+
+* mask = $44, maskhi = $40, masklo = $04.
+ lda #$44
+ ldy #16
+ sta (info_ptr),y
+ lda #$40
+ ldy #18
+ sta (info_ptr),y
+ lda #$04
+ ldy #20
+ sta (info_ptr),y
+
+* controller = $02 (item — non-NPC, non-Billy: skipped by
+* check_punch_hit and WAITCLR).
+ lda #$02
+ ldy #22
+ sta (info_ptr),y
+
+* dirty = $01 (needs draw on first frame).
+ lda #$01
+ ldy #30
+ sta (info_ptr),y
+
+* frame_bank / idle_bank → $0019.
+ lda #$19
+ ldy #56
+ sta (info_ptr),y
+ ldy #58
+ sta (info_ptr),y
+
+* Write info_ptr into the sprite_table slot we found.
+ ldy #0
+ lda info_ptr
+ sta (spr_ptr),y
+ iny
+ lda info_ptr+1
+ sta (spr_ptr),y
+
+* Advance npc_buf_next by 60 bytes.
+ lda npc_buf_next
+ clc
+ adc #60
+ sta npc_buf_next
+ lda npc_buf_next+1
+ adc #0
+ sta npc_buf_next+1
+
+:sm_done
+* Restore caller's info_ptr (linda_flail).
+ pla
+ sta info_ptr+1
+ pla
+ sta info_ptr
+ rts
+:sm_x dfb 0
+:sm_y dfb 0
 
 *----------------------------------------------------------
 * toolbox_init - Start IIgs Toolbox tools
@@ -9839,6 +10123,15 @@ spr_wpipewalk1 ds 2
 spr_wpipewalk2 ds 2
 spr_wpipewalk3 ds 2
 
+* Standalone mace weapon (5 orientations). Used for dropped-mace
+* sprites (e.g. when linda_flail falls and her weapon hits the
+* ground as a static MACE2).
+spr_mace1    ds 2
+spr_mace2    ds 2
+spr_mace3    ds 2
+spr_mace4    ds 2
+spr_mace5    ds 2
+
 * Williams-with-pipe swing frames (WPIPE1-6). His attack uses
 * a 5-frame sequence: WPIPE1, WPIPE4, WPIPE2, WPIPE6, WPIPE3.
 * WPIPE5 isn't used by the swing but is loaded for completeness.
@@ -10198,6 +10491,23 @@ init_mission12
  ldy #$1E
  lda [$F0],y
  sta spr_wpipe6
+
+* Standalone mace weapon (MACE1-5) at indices 18-22 ($24-$2C).
+ ldy #$24
+ lda [$F0],y
+ sta spr_mace1
+ ldy #$26
+ lda [$F0],y
+ sta spr_mace2
+ ldy #$28
+ lda [$F0],y
+ sta spr_mace3
+ ldy #$2A
+ lda [$F0],y
+ sta spr_mace4
+ ldy #$2C
+ lda [$F0],y
+ sta spr_mace5
 
 * Patch Burnov animation descriptors. Per-frame frame_addr
 * lives at +3+3 (frame 0), +3+8 (frame 1), etc. (5-byte stride
@@ -14682,6 +14992,50 @@ npc_seek_player
 :err dfb 0            ; Bresenham error accumulator (persists between calls)
 
 *----------------------------------------------------------
+* kill_objects - Walk sprite_table and tag every "item"
+* sprite (controller != $00 and != $01) with the death
+* sentinel ($FFFF in anim_ptr at +24). erase_all on the
+* next frame handles erase + removal via the same path
+* used for defeated NPCs. Forward-only npc_buffer slots
+* are not reclaimed; the table itself is compacted.
+*----------------------------------------------------------
+kill_objects
+ lda #<sprite_table
+ sta spr_ptr
+ lda #>sprite_table
+ sta spr_ptr+1
+:ko_loop
+ ldy #0
+ lda (spr_ptr),y
+ sta info_ptr
+ iny
+ lda (spr_ptr),y
+ sta info_ptr+1
+ ora info_ptr
+ beq :ko_done           ; null terminator → end of table
+ ldy #22
+ lda (info_ptr),y       ; controller
+ beq :ko_skip           ; $00 = NPC, keep
+ cmp #$01
+ beq :ko_skip           ; $01 = player, keep
+* Item: stamp $FFFF into anim_ptr to flag for erase/removal.
+ lda #$FF
+ ldy #24
+ sta (info_ptr),y
+ iny
+ sta (info_ptr),y
+:ko_skip
+ lda spr_ptr
+ clc
+ adc #2
+ sta spr_ptr
+ bcc :ko_loop
+ inc spr_ptr+1
+ bra :ko_loop
+:ko_done
+ rts
+
+*----------------------------------------------------------
 * mark_overlapping - After erasing a sprite, check if the
 * erased rectangle overlaps any other sprite's on-screen
 * position (prev). If so, mark that sprite for redraw.
@@ -14930,14 +15284,23 @@ check_punch_hit
  bne :not_self
  jmp :advance
 :not_self
-* If target is player and god_mode active, skip
- lda god_mode
- beq :not_god
+* Skip non-NPC sprites (controller != 0). Billy is controller=1,
+* dropped weapons / items use controller=$02 — neither should be
+* hit-checked. (god_mode is a separate debug toggle that protects
+* Billy specifically; that branch stays.)
  ldy #22
  lda (info_ptr),y      ; controller
+ beq :is_npc           ; controller=0 → enemy NPC, hit-check
  cmp #$01
- bne :not_god
- jmp :advance          ; player is invincible
+ bne :advance_jmp      ; controller >= $02 → item, skip
+* controller == 1 → Billy. Skip if god_mode is on, else fall
+* through to allow the hit (existing behavior).
+ lda god_mode
+ bne :advance_jmp
+ bra :is_npc
+:advance_jmp
+ jmp :advance
+:is_npc
 :not_god
 * Check if target is immune. Three cases grant immunity:
 *   1) fall_anim is currently playing (any sprite)
