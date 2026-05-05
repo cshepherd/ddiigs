@@ -53,16 +53,9 @@ NTPstreamsound          =   NinjaTrackerPlus+24
   stz cs_dest+1
   jsr load_cutscene1
 
-* Load ntpplayer code to bank $12 starting at $12/0000
-  lda #<ntpplayer_path
-  sta cs_open+1
-  lda #>ntpplayer_path
-  sta cs_open+2
-  lda #$12
-  sta cs_bank
-  stz cs_dest
-  stz cs_dest+1
-  jsr load_cutscene1
+* ntpplayer code is already in bank $12 — title.s loaded it once
+* at boot and bank $12 persists across SYS file loads (each SYS
+* file lands at bank $00/$2000, leaving the music banks alone).
 
 * Load CUTSCENE.NTP.PAK -> $17/$2000, unpack to $13/0000
   lda #<cutscenentp_path
@@ -1022,9 +1015,6 @@ cs_cref dfb 0
 
 cs_path dfb 17
  asc '/DDIIGS/CUTSCENE1'
-
-ntpplayer_path dfb 17
- asc '/DDIIGS/ntpplayer'
 
 * CUTSCENENTP.PAK rather than CUTSCENE.NTP.PAK because ProDOS
 * limits each filename component to 15 chars.

@@ -122,8 +122,17 @@ NTPstreamsound          =   NinjaTrackerPlus+24
   xce
   sep $30
 
-* Load NTPPLAYER to bank $12 starting at $12/0000
-  jsr load_ntpplayer
+* Load NTPPLAYER.PAK → unpack to bank $12 starting at $12/0000.
+* Same load_titlentp_pak path used for the NTP music PAKs.
+  lda #<ntpplayer_path
+  sta t2_open+1
+  lda #>ntpplayer_path
+  sta t2_open+2
+  lda #$12
+  sta t_unpack_bank
+  stz t_unpack_offset
+  stz t_unpack_offset+1
+  jsr load_titlentp_pak
 
 * TITLE.NTP is 68308 bytes. The ROM's destSize counter is
 * 16-bit (max $FFFF per call), but it returns RESULT = bytes
@@ -1333,54 +1342,6 @@ load_drugs
 :err rts
 
 *----------------------------------------------------------
-* load_ntpplayer - Load NTPPLAYER file from disk via ProDOS 8
-* in 4KB chunks to ]RDBUF, copying each chunk to $12/xxxx.
-*----------------------------------------------------------
- mx %11                ; emulation mode for ProDOS 8 calls
-load_ntpplayer
- jsr $BF00
- dfb $C8              ; OPEN
- da t_open
- bcs :err
- lda t_oref
- sta t_rref
- sta t_cref
-
- lda #$00
- sta t_dest
- sta t_dest+1          ; destination starts at $12/0000
- lda #$12
- sta t_bank
-
-:readlp
- jsr $BF00
- dfb $CA              ; READ
- da t_read
- bcs :close
-
- jsr copy_chunk_bank
-
-* Advance destination by $1000
- lda t_dest+1
- clc
- adc #$10
- sta t_dest+1
- bcc :readlp
-* Address wrapped — next bank
- lda #$00
- sta t_dest+1
- inc t_bank
- bra :readlp
-
-:close
- php
- jsr $BF00
- dfb $CC              ; CLOSE
- da t_close
- plp
-:err rts
-
-*----------------------------------------------------------
 * load_titlentp_pak - Load a TITLE.NTPx.PAK file to bank
 * $17/$2000 via ProDOS, then call _UnPackBytes to decompress
 * it to t_unpack_bank/$0000.
@@ -1544,22 +1505,8 @@ copy_chunk_bank
 t_dest ds 2            ; current destination offset
 t_bank dfb 0           ; current destination bank
 
-t_open dfb 3           ; param count
- da t_path             ; pathname pointer
- da ]IOBUF             ; I/O buffer
-t_oref dfb 0           ; ref_num (returned by OPEN)
-
-t_read dfb 4           ; param count
-t_rref dfb 0           ; ref_num
- da ]RDBUF             ; data buffer
- da $1000              ; request count (4KB)
- ds 2                  ; transfer count (returned)
-
-t_close dfb 1          ; param count
-t_cref dfb 0           ; ref_num
-
-t_path dfb 17
- asc '/DDIIGS/NTPPLAYER'
+ntpplayer_path dfb 21
+ asc '/DDIIGS/NTPPLAYER.PAK'
 
 t2_open dfb 3          ; param count
  da titlentp_path      ; pathname pointer (overwritten per call)

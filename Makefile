@@ -120,8 +120,12 @@ $(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.sh
 	cp assets/drugs.shr out/DRUGS.SHR\#C10000
 	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/DRUGS.SHR\#C10000 --quiet
 	rm out/DRUGS.SHR\#C10000
-	# Add NTP music assets
-	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ res/ntpplayer\#060000 --quiet
+	# Add NTP music assets. ntpplayer compresses ~58% (34672 → 14667
+	# bytes) so we ship it PackBytes-compressed and have title.s
+	# unpack it to bank $12 at boot via load_titlentp_pak.
+	python3 tools/packbytes.py pack res/ntpplayer\#060000 out/NTPPLAYER.PAK\#C00000
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/NTPPLAYER.PAK\#C00000 --quiet
+	rm out/NTPPLAYER.PAK\#C00000
 	python3 tools/packbytes.py pack assets/audio/TITLE.NTP\#000000 out/TITLE.NTP.PAK\#C00000
 	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/TITLE.NTP.PAK\#C00000 --quiet
 	rm out/TITLE.NTP.PAK\#C00000

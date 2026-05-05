@@ -82,16 +82,10 @@ NTPstreamsound          =   NinjaTrackerPlus+24
 ; jsr init_doc
 ; jsr sound_install_all
 
-* Load NTP player code to bank $12 starting at $12/0000
- lda #<ntpplayer_path
- sta file_open+1
- lda #>ntpplayer_path
- sta file_open+2
- lda #$12
- sta file_bank
- stz file_dest
- stz file_dest+1
- jsr load_file
+* ntpplayer code is already in bank $12 — title.s loaded it once
+* at boot and bank $12 persists across SYS file loads (each SYS
+* file lands at bank $00/$2000, leaving the music banks alone).
+
 
 * NTP music data is pre-packed with PackBytes. Switch
 * unpack_offset to $0000 so each .PAK lands at bank/$0000
@@ -13111,9 +13105,6 @@ mission1_path dfb 25
 
 mission12_path dfb 26
  asc '/DDIIGS/MISSION1/MISSION12'
-
-ntpplayer_path dfb 17
- asc '/DDIIGS/ntpplayer'
 
 * MISSION1NTP.PAK rather than MISSION1.NTP.PAK because ProDOS
 * limits each filename component to 15 chars.
