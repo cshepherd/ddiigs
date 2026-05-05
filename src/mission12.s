@@ -139,6 +139,12 @@ spr_wpipewalk1 dw WPIPEWALK1
 spr_wpipewalk2 dw WPIPEWALK2
 spr_wpipewalk3 dw WPIPEWALK3
 
+* Billy walking with mace (3 frames). Used when Billy has picked
+* up a MACE2 dropped by linda_flail.
+spr_bmwalk1    dw BMWALK1
+spr_bmwalk2    dw BMWALK2
+spr_bmwalk3    dw BMWALK3
+
 *==========================================================
 * Sprite pixel data
 *==========================================================
