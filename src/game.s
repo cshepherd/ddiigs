@@ -1509,18 +1509,19 @@ script_spawn_npc
  lda spr_wpipewalk1+1
  ldy #43
  sta (info_ptr),y
-* Animation pointers. Walk uses anim_wpipewalk (bank-$19 walk
-* with pipe visible). atk_anim is anim_wpipeswing — a 5-frame
-* pipe swing using WPIPE1, WPIPE4, WPIPE2, WPIPE6, WPIPE3.
-* punched_anim = null for now (no reaction placeholder).
-* fall_anim = anim_wpfall placeholder until cross-bank-per-anim
-* is wired and we can reuse the bank-$02 anim_wfall.
- lda #$00
+* Animation pointers. Walk = anim_wpipewalk and atk = anim_wpipeswing
+* live in bank $19 (bit 5 set in their flags). punched_anim =
+* anim_wpunched and fall_anim = anim_wfall reuse the bank-$02
+* William reaction/fall sprites — start_anim flips info+56 to
+* $02 for those, and :normal_end restores it from idle_bank
+* ($19) when the anim ends.
+ lda #<anim_wpunched
  sta :punch_lo
+ lda #>anim_wpunched
  sta :punch_hi
- lda #<anim_wpfall
+ lda #<anim_wfall
  sta :fall_lo
- lda #>anim_wpfall
+ lda #>anim_wfall
  sta :fall_hi
  lda #<anim_wpipewalk
  sta :walk_lo
@@ -1547,17 +1548,19 @@ script_spawn_npc
  lda spr_lfwalk1+1
  ldy #43
  sta (info_ptr),y
-* Animation pointers. punched_anim = null (no reaction frame
-* yet — when "drop the mace, become regular Linda" is wired up,
-* this becomes anim_lpunched after a frame_bank swap to $02).
-* fall_anim = anim_lffall placeholder (LFWALK1 for both frames).
-* walk_anim = anim_lfwalk (LFWALK1-3). atk_anim = anim_lmace.
- lda #$00
+* Animation pointers. punched_anim = anim_lpunched and fall_anim
+* = anim_lfall — both bank-$02 (regular Linda's reaction/fall
+* sprites). Per-anim frame_bank in start_anim flips info+56 to
+* $02 while these play, then :normal_end restores it from the
+* idle_bank ($19) when the anim ends. walk = anim_lfwalk and
+* atk = anim_lmace are bank-$19.
+ lda #<anim_lpunched
  sta :punch_lo
+ lda #>anim_lpunched
  sta :punch_hi
- lda #<anim_lffall
+ lda #<anim_lfall
  sta :fall_lo
- lda #>anim_lffall
+ lda #>anim_lfall
  sta :fall_hi
  lda #<anim_lfwalk
  sta :walk_lo
@@ -1723,23 +1726,31 @@ script_spawn_npc
  iny
  lda :atk_hi
  sta (info_ptr),y      ; +55
-* Set frame_bank (+56). Burnov (and any future bank-$19 NPC
-* identified by the idle_addr=$0000 sentinel) lives in bank
-* $19; everything else is bank $02.
+* Set frame_bank (+56) and idle_bank (+58). Bank-$19 NPCs (Burnov,
+* linda_flail, williams_pipe — anything with sentinel idle_addr)
+* live in $19. Everything else is bank $02. The two fields start
+* equal; start_anim may flip frame_bank temporarily for a
+* cross-bank anim, and :normal_end restores it from idle_bank.
  lda :is_bn
  beq :fb_bank2
  ldy #56
  lda #$19
+ sta (info_ptr),y
+ ldy #58
  sta (info_ptr),y
  bra :fb_done
 :fb_bank2
  ldy #56
  lda #$02
  sta (info_ptr),y      ; +56 frame_bank low
+ ldy #58
+ sta (info_ptr),y      ; +58 idle_bank low
 :fb_done
- iny
  lda #$00
+ ldy #57
  sta (info_ptr),y      ; +57 frame_bank high
+ ldy #59
+ sta (info_ptr),y      ; +59 idle_bank high
 * Set dirty = draw only (bit 0)
  ldy #30
  lda #$01
@@ -1794,10 +1805,10 @@ script_spawn_npc
  jsr dbg_print_hex8
  jsr dbg_print_nl
 :no_dbg_dump
-* Advance NPC buffer pointer (58 bytes per block)
+* Advance NPC buffer pointer (60 bytes per block)
  lda npc_buf_next
  clc
- adc #58
+ adc #60
  sta npc_buf_next
  lda npc_buf_next+1
  adc #0
@@ -3113,10 +3124,11 @@ draw_ladder_debug
 * level's lifetime (not just concurrent), since npc_buf_next
 * only advances, never reuses slots of defeated NPCs.
 NPC_BUFFER_SLOTS = 16
-* 58 bytes/slot: 0..51 copied from the bank-$02 template, 52/54
-* (walk_anim/atk_anim) and 56 (frame_bank) patched by
+* 60 bytes/slot: 0..51 copied from the bank-$02 template; 52/54
+* (walk_anim/atk_anim), 56 (frame_bank), and 58 (idle_bank — bank
+* of the idle frame, restored on anim end) patched by
 * script_spawn_npc post-copy.
-npc_buffers ds NPC_BUFFER_SLOTS*58
+npc_buffers ds NPC_BUFFER_SLOTS*60
 npc_buffers_end
 
 *----------------------------------------------------------
@@ -7442,6 +7454,26 @@ start_anim
  ldy #26
  lda #0
  sta (info_ptr),y     ; anim_frame = 0
+* Per-anim frame_bank from descriptor flag bit 5.
+*   bit 5 clear → frames in bank $02 (mission1)
+*   bit 5 set   → frames in bank $19 (mission12)
+* Lets a single sprite straddle both banks (e.g. williams_pipe
+* walks with bank-$19 WPIPEWALK frames but falls with bank-$02
+* anim_wfall). :normal_end restores info+56 from info+58 when the
+* anim ends so the idle frame draws from its own bank.
+ ldy #2
+ lda (anim_ptr),y     ; flags
+ and #$20
+ beq :sa_bank2
+ lda #$19
+ ldy #56
+ sta (info_ptr),y
+ bra :sa_bank_done
+:sa_bank2
+ lda #$02
+ ldy #56
+ sta (info_ptr),y
+:sa_bank_done
 * Detect compiled-format flag (bit 7 of header flags byte at +2).
  ldy #2
  lda (anim_ptr),y
@@ -8080,6 +8112,19 @@ update_anims
  ldy #46
  lda (info_ptr),y     ; idle_y
  sta FRAME_Y
+* Restore frame_bank from idle_bank: a cross-bank anim (e.g.
+* williams_pipe falling with bank-$02 anim_wfall) may have left
+* frame_bank set to the anim's bank, but the idle frame lives
+* in idle_bank. Copy +58 → +56 so subsequent renders pull
+* idle pixels from the right bank.
+ ldy #58
+ lda (info_ptr),y
+ ldy #56
+ sta (info_ptr),y
+ ldy #59
+ lda (info_ptr),y
+ ldy #57
+ sta (info_ptr),y
 * For Billy (controller=$01): pick compiled idle data + mask whose
 * orientation matches IMAGE01_MIRROR. Mirror is baked into the
 * pre-rotated arrays — draw_sprite_compiled has no mirror branch.
@@ -14221,7 +14266,7 @@ anim_lfall
 anim_bnwalk
  dfb 4
  dfb $0D             ; max_width (BNWALK1)
- dfb $02             ; flags: loop
+ dfb $22             ; flags: bit 1 = loop, bit 5 = bank $19
  dfb $0D,$30,5       ; BNWALK1: 13 wide, 48 tall, 5 VBLs
   hex 0000             ; patched
  dfb $0D,$30,5       ; BNWALK2
@@ -14235,7 +14280,7 @@ anim_bnwalk
 anim_bnpunch
  dfb 2
  dfb $17             ; max_width (BNPUNCH2)
- dfb $00
+ dfb $20             ; flags: bit 5 = bank $19
  dfb $11,$30,6       ; BNPUNCH1: 17 wide, 48 tall
   hex 0000             ; patched
  dfb $17,$2E,6       ; BNPUNCH2: 23 wide, 46 tall
@@ -14246,7 +14291,7 @@ anim_bnpunch
 anim_bnpunched
  dfb 1
  dfb $0D
- dfb $00
+ dfb $20             ; flags: bit 5 = bank $19
  dfb $0D,$2E,5       ; BNFALL1
   hex 0000             ; patched
 
@@ -14255,7 +14300,7 @@ anim_bnpunched
 anim_bnfall
  dfb 2
  dfb $17             ; max_width (BNFALLEN)
- dfb $10             ; flags: bit 4 = fall trajectory
+ dfb $30             ; flags: bit 4 = fall trajectory, bit 5 = bank $19
  dfb $0D,$2E,FALL_ARC_FRAMES ; BNFALL1: arc duration
   hex 0000             ; patched
  dfb $17,$17,60      ; BNFALLEN: 23 wide, 23 tall
@@ -14268,7 +14313,7 @@ anim_bnfall
 anim_bn_diss
  dfb 8                ; num_frames
  dfb $16              ; max_width (BDISS2-4 are 22 wide)
- dfb $00              ; flags: one-shot
+ dfb $20              ; flags: bit 5 = bank $19
  dfb $10,$2F,7        ; BDISS1: 16×47
   hex 0000             ; patched
  dfb $16,$33,7        ; BDISS2: 22×51
@@ -14291,7 +14336,7 @@ anim_bn_diss
 anim_bn_recon
  dfb 8
  dfb $16
- dfb $00
+ dfb $20              ; flags: bit 5 = bank $19
  dfb $07,$0B,7        ; BDISS8
   hex 0000             ; patched
  dfb $06,$0B,7        ; BDISS7
@@ -14315,7 +14360,7 @@ anim_bn_recon
 anim_lfwalk
  dfb 4
  dfb $09
- dfb $02              ; flags: loop
+ dfb $22              ; flags: bit 1 = loop, bit 5 = bank $19
  dfb $09,$28,5        ; LFWALK1: 9 wide, 40 tall
   hex 0000             ; patched
  dfb $09,$27,5        ; LFWALK2: 9 wide, 39 tall
@@ -14330,7 +14375,7 @@ anim_lfwalk
 anim_lmace
  dfb 3
  dfb $18              ; max_width (LMACE1 is 24 wide)
- dfb $00              ; flags: one-shot
+ dfb $20              ; flags: bit 5 = bank $19
  dfb $18,$28,6        ; LMACE1: 24×40
   hex 0000             ; patched
  dfb $14,$26,6        ; LMACE2: 20×38
@@ -14346,7 +14391,7 @@ anim_lmace
 anim_lffall
  dfb 2
  dfb $09
- dfb $10              ; flags: bit 4 = fall trajectory
+ dfb $30              ; flags: bit 4 = fall trajectory, bit 5 = bank $19
  dfb $09,$28,FALL_ARC_FRAMES ; LFWALK1 (placeholder fall)
   hex 0000             ; patched
  dfb $09,$28,60       ; LFWALK1 (placeholder fallen)
@@ -14357,7 +14402,7 @@ anim_lffall
 anim_wpipewalk
  dfb 4
  dfb $09
- dfb $02              ; flags: loop
+ dfb $22              ; flags: bit 1 = loop, bit 5 = bank $19
  dfb $09,$28,5        ; WPIPEWALK1
   hex 0000             ; patched
  dfb $09,$28,5        ; WPIPEWALK2
@@ -14373,7 +14418,7 @@ anim_wpipewalk
 anim_wpfall
  dfb 2
  dfb $09
- dfb $10              ; flags: bit 4 = fall trajectory
+ dfb $30              ; flags: bit 4 = fall trajectory, bit 5 = bank $19
  dfb $09,$28,FALL_ARC_FRAMES ; WPIPEWALK1 placeholder
   hex 0000             ; patched
  dfb $09,$28,60       ; WPIPEWALK1 placeholder
@@ -14385,7 +14430,7 @@ anim_wpfall
 anim_wpipeswing
  dfb 5
  dfb $0F              ; max_width (WPIPE2 is 15 wide)
- dfb $00              ; flags: one-shot
+ dfb $20              ; flags: bit 5 = bank $19
  dfb $0E,$28,6        ; WPIPE1: 14×40
   hex 0000             ; patched
  dfb $0E,$28,6        ; WPIPE4: 14×40
@@ -15826,7 +15871,12 @@ billy_sprite
                    ;     data lives. Read by load_sprite into the
                    ;     sprite_bank global so draw_sprite/draw_sprite_compiled
                    ;     pull pixels from the right bank. $0002 = mission1
-                   ;     bank, $0006 = "more sprites" bank (boss + weapons).
+                   ;     bank, $0019 = "more sprites" bank (boss + weapons).
+  hex 0200         ; +58 idle_bank — bank for the idle frame.
+                   ;     :normal_end copies +58 → +56 when restoring
+                   ;     idle frame at anim end, so per-anim
+                   ;     frame_bank changes (set by start_anim from
+                   ;     descriptor flag bit 5) revert correctly.
 
 *-------------------------------
 * Globals (used by erase/draw_sprite)
@@ -15897,6 +15947,7 @@ william_sprite
   hex 0000         ; +52 (compiled mask / NPC walk_anim slot)
   hex 0000         ; +54 (NPC atk_anim slot)
   hex 0200         ; +56 frame_bank ($0002 = mission1 bank)
+  hex 0200         ; +58 idle_bank
 
 william2_sprite
   hex 8400 ; +0  ypos
@@ -15928,6 +15979,7 @@ william2_sprite
   hex 0000         ; +52 (compiled mask / NPC walk_anim slot)
   hex 0000         ; +54 (NPC atk_anim slot)
   hex 0200         ; +56 frame_bank
+  hex 0200         ; +58 idle_bank
 
 **
 ** FLAIL sprite (placeholder, lives in bank $06).
@@ -15966,6 +16018,7 @@ flail_sprite
   hex 0000 ; +52 (compiled mask slot, unused for legacy draw)
   hex 0000 ; +54 (atk_anim slot, unused)
   hex 0600 ; +56 frame_bank = $0006 (bank $06 holds the pixels)
+  hex 0600 ; +58 idle_bank
 
 *-------------------------------
 * Read JoyX,Y every 11cyc on avg

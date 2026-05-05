@@ -329,7 +329,7 @@ level_script
     dw 450
 
     db OP_NPC
-    db williams_knife_sprite
+    dw williams_knife_sprite
     db $58,$32,$01,BEHAV_FACEOFF
     db OP_WAITCLR
 
