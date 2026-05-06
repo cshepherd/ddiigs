@@ -1895,6 +1895,13 @@ npc_buf_next dw npc_buffers   ; next free NPC buffer address
 * Cheat: invincibility toggle
 god_mode       dfb 0          ; 0 = normal, 1 = invincible
 
+* Billy's fall counter. Incremented at :use_fall whenever Billy
+* is the target. Each fall costs 3 hits (punch_count reset to 0
+* per fall) OR is forced by a weapon. At BILLY_MAX_FALLS the
+* game-over screen fires when fall_anim ends.
+billy_fall_count dfb 0
+BILLY_MAX_FALLS  = 5
+
 * Alternates between punch1 and punch2 each time 'p' is pressed
 punch_toggle   dfb 0
 
@@ -2658,6 +2665,85 @@ erase_pause_text
  lda #PAUSE_BH
  sta FRAME_Y
  jmp erase
+
+* GAME OVER overlay text. Mirrors PAUSED but x is shifted left
+* to center 9 chars instead of 6 (each glyph ≈ 8 px → 24 px
+* shift = 12 bytes left of the PAUSED anchor).
+GAMEOVER_TEXT_X = 75
+GAMEOVER_TEXT_Y = 100
+
+game_over_str ASC 'GAME OVER',00
+
+*----------------------------------------------------------
+* draw_game_over_text - Draw "GAME OVER" via QuickDraw II
+* _DrawCString. Same shape as draw_pause_text.
+*----------------------------------------------------------
+draw_game_over_text
+ clc
+ xce                    ; native mode
+ rep $30
+ lda #GAMEOVER_TEXT_X
+ pha
+ lda #GAMEOVER_TEXT_Y
+ pha
+ ldx #$3a04
+ jsl $E10000
+ pea #$0001
+ ldx #$A004
+ jsl $E10000
+ pea #$0000
+ ldx #$A204
+ jsl $E10000
+ pea #$0000         ; normal text style
+ ldx #$9A04
+ jsl $E10000
+ pea ^game_over_str
+ pea game_over_str
+ ldx #$A604
+ jsl $E10000
+ pea #$0001         ; restore bold
+ ldx #$9A04
+ jsl $E10000
+ sec
+ xce
+ rts
+
+*----------------------------------------------------------
+* game_over - Billy ran out of falls. Draws GAME OVER over the
+* current playfield, waits 3 seconds, then chains back to TITLE
+* via the DDII.SYSTEM jump table at $1000. Never returns.
+*----------------------------------------------------------
+GAMEOVER_HOLD_VBLS = 180        ; ~3 seconds at 60 Hz
+
+game_over
+* Re-enable SHR shadow so QuickDraw's writes to bank $01 reach
+* the screen at $E1. erase_all/draw_all could be running with
+* shadow off mid-frame; force it back on.
+ ldal $E0C035
+ and #%11110111         ; bit 3 cleared = enable SHR shadow
+ stal $E0C035
+* Stop the level music before drawing the overlay. NTPstop
+* must be called in native 16-bit mode (same protocol as the
+* OP_END path). draw_game_over_text below switches modes on
+* its own, so leave emulation as-is for it.
+ clc
+ xce
+ rep $30
+ jsl NTPstop
+ sec
+ xce
+ sep $30
+ mx %11
+ jsr draw_game_over_text
+* Hold for 3 seconds.
+ ldx #GAMEOVER_HOLD_VBLS
+:gov_loop
+ jsr wait_for_vbl
+ dex
+ bne :gov_loop
+* Chain back to TITLE via DDII.SYSTEM. Entry $1000 reloads the
+* title program at $2000 and runs it.
+ jmp $1000
 
 * Player 1 score HUD position. Drawn over the "0000000" digits
 * in the static HUD line at startup-MoveTo (3, 195) using the
@@ -7958,6 +8044,15 @@ update_anims
  clc
  adc #1
  sta (info_ptr),y
+* If the falling sprite is Billy, keep abs_x in lockstep so
+* assert_abs_x doesn't fire. NPCs don't track abs_x.
+ ldy #22
+ lda (info_ptr),y
+ cmp #1
+ bne :ftraj_dy
+ inc abs_x
+ bne :ftraj_dy
+ inc abs_x+1
  bra :ftraj_dy
 :ftraj_dx_neg
 * Moving left: skip if xpos already at 1.
@@ -7968,6 +8063,16 @@ update_anims
  sec
  sbc #1
  sta (info_ptr),y
+* If the falling sprite is Billy, keep abs_x in lockstep.
+ ldy #22
+ lda (info_ptr),y
+ cmp #1
+ bne :ftraj_dy
+ lda abs_x
+ bne :ftraj_absx_lo
+ dec abs_x+1
+:ftraj_absx_lo
+ dec abs_x
 :ftraj_dy
 * dy: rising while timer > FALL_ARC_PEAK, falling otherwise.
  ldy #28
@@ -8164,6 +8269,26 @@ update_anims
  jmp :next
 
 :normal_end
+* Billy game-over check: BILLY_MAX_FALLS reached AND the anim
+* that just ended is Billy's fall_anim. game_over never returns
+* (draws overlay, waits, JMP $1000 to TITLE).
+ ldy #22
+ lda (info_ptr),y
+ cmp #$01
+ bne :ne_not_billy_dead
+ ldy #50
+ lda (info_ptr),y
+ cmp anim_ptr
+ bne :ne_not_billy_dead
+ ldy #51
+ lda (info_ptr),y
+ cmp anim_ptr+1
+ bne :ne_not_billy_dead
+ lda billy_fall_count
+ cmp #BILLY_MAX_FALLS
+ bcc :ne_not_billy_dead
+ jmp game_over
+:ne_not_billy_dead
 * If the anim that just ended was a multi-frame fall_anim (so
 * we bumped ypos on entry to the fallen frame), un-bump now:
 * snapshot prev_ypos from the bumped current so erase_all clears
@@ -11309,15 +11434,10 @@ init_level
  lda spr_wfallen
  sta anim_wfall+3+8
 
-* Patch anim_bfall: 1 compiled frame (placeholder uses IMAGE01)
- lda spr_img01
- sta anim_bfall+6
- lda spr_image01_mask
- sta anim_bfall+8
- lda spr_image01_data_mirror
- sta anim_bfall+10
- lda spr_image01_mask_mirror
- sta anim_bfall+12
+* Patch anim_bfall: 2 legacy frames in bank $19. Frame 0 BFALL
+* (in-air arc pose), frame 1 BFALLEN (grounded). Patched here
+* would set the compiled-form fields, but anim_bfall is now
+* legacy — the bank-$19 init below patches the actual addrs.
 
 * Patch anim_wwalk: 4 frames (WILLIAM1, WILLIAM2, WILLIAM3, WILLIAM2)
  lda spr_william1
@@ -11624,6 +11744,11 @@ spr_bmace1   ds 2
 spr_bmace2   ds 2
 spr_bmace3   ds 2
 spr_bmace4   ds 2
+
+* Billy fall pose (BFALL during arc) and fallen pose (BFALLEN
+* on the ground). Bank $19 (mission12). Loaded by init_mission12.
+spr_bfall    ds 2
+spr_bfallen  ds 2
 
 * Williams-with-pipe swing frames (WPIPE1-6). His attack uses
 * a 5-frame sequence: WPIPE1, WPIPE4, WPIPE2, WPIPE6, WPIPE3.
@@ -12058,6 +12183,15 @@ init_mission12
  lda [$F0],y
  sta spr_bmwalk3
 
+* Billy fall sprites at indices 66-67 ($84/$86). BFALL is the
+* in-air pose, BFALLEN is the grounded pose; used by anim_bfall.
+ ldy #$84
+ lda [$F0],y
+ sta spr_bfall
+ ldy #$86
+ lda [$F0],y
+ sta spr_bfallen
+
 * Standalone mace weapon (MACE1-5) at indices 18-22 ($24-$2C).
  ldy #$24
  lda [$F0],y
@@ -12252,6 +12386,14 @@ init_mission12
  sta anim_bmwalk+3+13
  lda spr_bmwalk2
  sta anim_bmwalk+3+18
+
+* Patch anim_bfall: 2 legacy frames (BFALL during arc, BFALLEN
+* held on the ground). Bank-$19 flag in the descriptor header
+* so start_anim sets frame_bank to $19.
+ lda spr_bfall
+ sta anim_bfall+3+3
+ lda spr_bfallen
+ sta anim_bfall+3+8
 
 * Patch anim_bmaceswing: 4 frames (BMACE1, 2, 3, 4).
  lda spr_bmace1
@@ -16100,7 +16242,7 @@ anim_bpunched
  dfb 1               ; num_frames
  dfb $0B             ; max_width
  dfb $80             ; flags: bit 7 = compiled
- dfb $0B,$28,5       ; BPUNCHED: x, y, dur
+ dfb $0B,$28,15      ; BPUNCHED: x, y, dur
   hex 0000             ; +6  patched: BPUNCHED_DATA
   hex 0000             ; +8  patched: BPUNCHED_MASK
   hex 0000             ; +10 patched: BPUNCHED_DATA_MIRROR
@@ -16123,14 +16265,13 @@ anim_wfall
   hex 0000             ; patched: WFALLEN
 
 anim_bfall
- dfb 1               ; num_frames
- dfb $09             ; max_width (IMAGE01)
- dfb $80             ; flags: bit 7 = compiled (placeholder uses IMAGE01)
- dfb $09,$28,33      ; IMAGE01: x, y, dur
-  hex 0000             ; +6  patched: IMAGE01_DATA
-  hex 0000             ; +8  patched: IMAGE01_MASK
-  hex 0000             ; +10 patched: IMAGE01_DATA_MIRROR
-  hex 0000             ; +12 patched: IMAGE01_MASK_MIRROR
+ dfb 2               ; num_frames
+ dfb $13             ; max_width (BFALLEN at $13)
+ dfb $30             ; flags: bit 4 = fall trajectory, bit 5 = bank $19
+ dfb $11,$20,FALL_ARC_FRAMES ; BFALL: 17 wide, 32 tall, arc duration
+  hex 0000             ; patched: BFALL
+ dfb $13,$0D,60      ; BFALLEN: 19 wide, 13 tall, 60 VBLs
+  hex 0000             ; patched: BFALLEN
 
 * William walking cycle (WILLIAM1, 2, 3, 2). Looping, no
 * auto-advance — behavior code controls position.
@@ -17317,7 +17458,21 @@ check_punch_hit
  lda (info_ptr),y     ; fall_anim high
  sta anim_ptr+1
  ora anim_ptr
+ beq :uf_no_anim
+* If target is Billy (controller=1), count this fall and reset
+* his punch_count so the next 3-hit cycle starts fresh. Without
+* the reset, punch_count would walk past 6 and hit the legacy
+* death branch in update_anims (which $FFFFs the sprite).
+ ldy #22
+ lda (info_ptr),y
+ cmp #$01
  bne :do_punched
+ inc billy_fall_count
+ lda #0
+ ldy #48
+ sta (info_ptr),y
+ jmp :do_punched
+:uf_no_anim
  jmp :advance
 :do_punched
 * Confirmed hit — fire SFX. Uppercut connects → SND_POW; otherwise
