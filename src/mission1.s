@@ -197,6 +197,13 @@ spr_rheld2    dw RHELD2
 spr_lheld1    dw LHELD1
 spr_lheld2    dw LHELD2
 
+; Billy spin-kick frames (offsets +216..+220) — legacy data,
+; mask color $66 (Billy's transparent). Played as anim_bspinkick
+; when J+L is pressed during anim_jump.
+spr_bspin1    dw BSPIN1
+spr_bspin2    dw BSPIN2
+spr_bspin3    dw BSPIN3
+
 ; Level 1 script
 level_script
 ; screen 1

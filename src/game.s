@@ -6075,14 +6075,24 @@ process_input
  sta anim_ptr+1
  ora anim_ptr
  beq :accept_input    ; no animation, accept input
-* Animation active — is it walk? (walk = ok to interrupt)
+* Animation active — is it walk or jump? (walk = always ok to
+* interrupt; jump = allow J+L re-press through to trigger the
+* mid-air spin-kick. btn_action_jump's first instruction
+* differentiates the two cases.)
  lda anim_ptr
  cmp #<anim_walk
- bne :blocked
+ bne :pi_chk_jump
  lda anim_ptr+1
  cmp #>anim_walk
- beq :accept_input    ; walk animation, allow input
-:blocked rts           ; action animation, block all input
+ beq :accept_input
+:pi_chk_jump
+ lda anim_ptr
+ cmp #<anim_jump
+ bne :blocked
+ lda anim_ptr+1
+ cmp #>anim_jump
+ beq :accept_input
+:blocked rts           ; other action animation, block all input
 
 :accept_input
 * If a pending J/L single-button action just timed out (no
@@ -6450,6 +6460,22 @@ btn_action_fire
 * btn_action_jump - both J and L pressed within the window.
 *----------------------------------------------------------
 btn_action_jump
+* If Billy is already mid-jump (anim_ptr == anim_jump) and the
+* J+L combo lands again, switch to the spin-kick: replace the
+* current animation with anim_bspinkick and trigger SND_SPINKICK.
+ lda anim_ptr
+ cmp #<anim_jump
+ bne :baj_normal
+ lda anim_ptr+1
+ cmp #>anim_jump
+ bne :baj_normal
+ ldx #SND_SPINKICK
+ jsr sound_trigger
+ lda #<anim_bspinkick
+ ldx #>anim_bspinkick
+ jsr start_anim
+ rts
+:baj_normal
  lda #<anim_jump
  ldx #>anim_jump
  jsr start_anim
@@ -8611,9 +8637,17 @@ update_anims
 :try_bmace
  lda anim_ptr
  cmp #<anim_bmaceswing
- bne :try_kick
+ bne :try_bspin
  lda anim_ptr+1
  cmp #>anim_bmaceswing
+ bne :try_bspin
+ jmp :do_hit_now
+:try_bspin
+ lda anim_ptr
+ cmp #<anim_bspinkick
+ bne :try_kick
+ lda anim_ptr+1
+ cmp #>anim_bspinkick
  bne :try_kick
  jmp :do_hit_now
 :try_kick
@@ -11109,6 +11143,17 @@ init_level
  lda [$F0],y
  sta spr_lheld2
 
+* Billy spin-kick frames (offsets +216..+220).
+ ldy #216
+ lda [$F0],y
+ sta spr_bspin1
+ ldy #218
+ lda [$F0],y
+ sta spr_bspin2
+ ldy #220
+ lda [$F0],y
+ sta spr_bspin3
+
 * Now patch all DA references in animation descriptors
 * and sprite info blocks with bank $02 addresses.
 * Each anim frame has: dfb x,y,dur, DA addr (5 bytes per frame)
@@ -11161,6 +11206,24 @@ init_level
  sta anim_bpickup+10
  lda spr_jump3_mask_mirror
  sta anim_bpickup+12
+
+* Patch anim_bspinkick: 8 legacy frames (BSPIN1/2/3/2 × 2).
+ lda spr_bspin1
+ sta anim_bspinkick+3+3
+ lda spr_bspin2
+ sta anim_bspinkick+3+8
+ lda spr_bspin3
+ sta anim_bspinkick+3+13
+ lda spr_bspin2
+ sta anim_bspinkick+3+18
+ lda spr_bspin1
+ sta anim_bspinkick+3+23
+ lda spr_bspin2
+ sta anim_bspinkick+3+28
+ lda spr_bspin3
+ sta anim_bspinkick+3+33
+ lda spr_bspin2
+ sta anim_bspinkick+3+38
 
 * Patch anim_kick: 2 compiled frames (11-byte stride)
  lda spr_kick1
@@ -11600,6 +11663,13 @@ spr_rheld1   ds 2     ; Roper, held idle
 spr_rheld2   ds 2     ; Roper, taking grab-punch
 spr_lheld1   ds 2     ; Linda, held idle
 spr_lheld2   ds 2     ; Linda, taking grab-punch
+
+* Billy spin-kick frames (legacy data, mask=$66). Loaded by
+* init_level. Played as anim_bspinkick when J+L is pressed
+* during anim_jump.
+spr_bspin1   ds 2
+spr_bspin2   ds 2
+spr_bspin3   ds 2
 
 * Sub-frame -> WSOMER frame address. Filled in by init_level
 * once spr_wsomer{1,2,3} are patched. Indexed by sub-frame×2.
@@ -15941,6 +16011,31 @@ anim_jump
   hex 0000             ; +32 patched: JUMP3_DATA_MIRROR
   hex 0000             ; +34 patched: JUMP3_MASK_MIRROR
 
+* Billy spin-kick — 8 frames (BSPIN1/2/3/2 played twice). Legacy
+* format (mask=$66 from billy_sprite). Triggered by J+L pressed
+* during anim_jump; check_punch_hit treats a hit during it like
+* uppercut/pipeswing — damage 3 + force fall.
+anim_bspinkick
+ dfb 8
+ dfb $0F              ; max_width (BSPIN frames are 15 wide)
+ dfb $00              ; flags: legacy, bank $02, no advance/loop
+ dfb $0F,$28,4        ; BSPIN1
+  hex 0000             ; patched
+ dfb $0F,$28,4        ; BSPIN2
+  hex 0000             ; patched
+ dfb $0F,$28,4        ; BSPIN3
+  hex 0000             ; patched
+ dfb $0F,$28,4        ; BSPIN2
+  hex 0000             ; patched
+ dfb $0F,$28,4        ; BSPIN1 (cycle 2)
+  hex 0000             ; patched
+ dfb $0F,$28,4        ; BSPIN2
+  hex 0000             ; patched
+ dfb $0F,$28,4        ; BSPIN3
+  hex 0000             ; patched
+ dfb $0F,$28,4        ; BSPIN2
+  hex 0000             ; patched
+
 anim_kick
  dfb 2               ; num_frames
  dfb $14             ; max_width (KICK2 is widest)
@@ -17101,9 +17196,18 @@ check_punch_hit
 :hit_chk_mace
  lda :puncher_anim_lo
  cmp #<anim_bmaceswing
- bne :hit_dmg1
+ bne :hit_chk_spin
  lda :puncher_anim_hi
  cmp #>anim_bmaceswing
+ bne :hit_chk_spin
+ lda #3
+ bra :hit_dmg_done
+:hit_chk_spin
+ lda :puncher_anim_lo
+ cmp #<anim_bspinkick
+ bne :hit_dmg1
+ lda :puncher_anim_hi
+ cmp #>anim_bspinkick
  bne :hit_dmg1
  lda #3
  bra :hit_dmg_done
@@ -17148,9 +17252,17 @@ check_punch_hit
 :hit_chk2_mace
  lda :puncher_anim_lo
  cmp #<anim_bmaceswing
- bne :hit_count_check
+ bne :hit_chk2_spin
  lda :puncher_anim_hi
  cmp #>anim_bmaceswing
+ bne :hit_chk2_spin
+ jmp :use_fall
+:hit_chk2_spin
+ lda :puncher_anim_lo
+ cmp #<anim_bspinkick
+ bne :hit_count_check
+ lda :puncher_anim_hi
+ cmp #>anim_bspinkick
  bne :hit_count_check
  jmp :use_fall
 :hit_count_check
