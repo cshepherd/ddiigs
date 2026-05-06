@@ -145,6 +145,11 @@ $(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.sh
 	python3 tools/packbytes.py pack assets/audio/BOSS.NTP\#000000 out/BOSS.NTP.PAK\#C00000
 	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/BOSS.NTP.PAK\#C00000 --quiet
 	rm out/BOSS.NTP.PAK\#C00000
+	# Game-over jingle. Trimmed to GAMEOVERNTP.PAK (15-char ProDOS
+	# limit, same convention as MISSION1NTP.PAK / CUTSCENENTP.PAK).
+	python3 tools/packbytes.py pack assets/audio/clean-mid/gameover.ntp out/GAMEOVERNTP.PAK\#C00000
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/GAMEOVERNTP.PAK\#C00000 --quiet
+	rm out/GAMEOVERNTP.PAK\#C00000
 	# Add sound effect RAW files (in /SFX/ subfolder)
 	cp assets/audio/punch.raw out/PUNCH.RAW\#060000
 	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/SFX/ out/PUNCH.RAW\#060000 --quiet

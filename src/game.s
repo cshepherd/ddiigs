@@ -122,6 +122,16 @@ NTPstreamsound          =   NinjaTrackerPlus+24
  sta unpack_bank
  jsr load_and_unpack
 
+* Load GAMEOVERNTP.PAK -> $17, unpack to $16/0000
+* (game-over jingle; played by game_over before quit-to-TITLE).
+ lda #<gameoverntp_path
+ sta p_open+1
+ lda #>gameoverntp_path
+ sta p_open+2
+ lda #$16
+ sta unpack_bank
+ jsr load_and_unpack
+
 * Restore default unpack offset for the SHR PAK loads below.
  stz unpack_offset
  lda #$20
@@ -2709,12 +2719,12 @@ draw_game_over_text
  rts
 
 *----------------------------------------------------------
-* game_over - Billy ran out of falls. Draws GAME OVER over the
-* current playfield, waits 3 seconds, then chains back to TITLE
-* via the DDII.SYSTEM jump table at $1000. Never returns.
+* game_over - Billy ran out of falls. Stops the level music,
+* draws GAME OVER, plays the game-over jingle (bank $16, loaded
+* at boot from GAMEOVERNTP.PAK) once through, then chains back
+* to TITLE via the DDII.SYSTEM jump table at $1000. Mirrors the
+* OP_END play-once-then-stop pattern. Never returns.
 *----------------------------------------------------------
-GAMEOVER_HOLD_VBLS = 180        ; ~3 seconds at 60 Hz
-
 game_over
 * Re-enable SHR shadow so QuickDraw's writes to bank $01 reach
 * the screen at $E1. erase_all/draw_all could be running with
@@ -2722,10 +2732,8 @@ game_over
  ldal $E0C035
  and #%11110111         ; bit 3 cleared = enable SHR shadow
  stal $E0C035
-* Stop the level music before drawing the overlay. NTPstop
-* must be called in native 16-bit mode (same protocol as the
-* OP_END path). draw_game_over_text below switches modes on
-* its own, so leave emulation as-is for it.
+* Stop the level music. NTPstop must be called in native 16-bit
+* mode (same protocol as the OP_END path).
  clc
  xce
  rep $30
@@ -2735,12 +2743,30 @@ game_over
  sep $30
  mx %11
  jsr draw_game_over_text
-* Hold for 3 seconds.
- ldx #GAMEOVER_HOLD_VBLS
-:gov_loop
- jsr wait_for_vbl
- dex
- bne :gov_loop
+* Prepare and play the game-over jingle from bank $16, play-once
+* mode (NTP zeros the playing flag at end of pattern list when
+* play_song_once != 0). Spin until that flag drops, then full stop.
+ clc
+ xce
+ rep $30
+ ldy #$16              ; GAMEOVER music bank
+ ldx #$00
+ txa
+ jsl NTPprepare
+ lda #$0001            ; non-zero -> play once, then auto-stop
+ jsl NTPplay
+:gov_wait_song
+ jsl NTPgetsongpos     ; X=songinfo low addr, Y=NTP bank
+ stx $F0
+ sty $F2
+ ldy #0
+ lda [$F0],y           ; songinfo[0..1] = playing flag
+ bne :gov_wait_song
+ jsl NTPstop
+ sec
+ xce
+ sep $30
+ mx %11
 * Chain back to TITLE via DDII.SYSTEM. Entry $1000 reloads the
 * title program at $2000 and runs it.
  jmp $1000
@@ -13328,6 +13354,9 @@ bossntp_path dfb 20
 
 completentp_path dfb 23
  asc '/DDIIGS/COMPLETENTP.PAK'
+
+gameoverntp_path dfb 23
+ asc '/DDIIGS/GAMEOVERNTP.PAK'
 
 
 *----------------------------------------------------------
