@@ -587,9 +587,10 @@ run_script
  jsr sound_trigger
  lda #180
  sta overlay_timer
- lda #100
+ lda #98               ; shifted 2 bytes left so 12-wide overlay
+                       ; (98..109) doesn't run past the playfield
  sta overlay_x
- lda #120
+ lda #110
  sta overlay_y
  lda #$0C
  sta overlay_w
@@ -8187,11 +8188,20 @@ update_anims
 * motion for the rest of the arc — sprite still rises and falls.
  lda billy_sprite+4    ; Billy's mirror byte
  bne :ftraj_dx_neg
-* Moving right: skip if xpos already at PLAYER_MAX_X.
+* Moving right: width-aware. Don't push the sprite's right edge
+* (xpos + frame_x) past PLAYFIELD_EDGE. Fall poses are wider
+* than walking sprites (William: walk=9, FALL=19, FALLEN=16);
+* the old fixed PLAYER_MAX_X (98) clamp let wide fall frames
+* poke 8+ bytes past the playable area.
  ldy #2
  lda (info_ptr),y
- cmp #PLAYER_MAX_X
- bcs :ftraj_dy        ; xpos >= PLAYER_MAX_X — clamp (no inc)
+ ldy #10
+ clc
+ adc (info_ptr),y     ; xpos + frame_x = current right edge
+ cmp #PLAYFIELD_EDGE
+ bcs :ftraj_dy        ; right edge >= 109 — moving would push past
+ ldy #2
+ lda (info_ptr),y
  clc
  adc #1
  sta (info_ptr),y
@@ -9016,6 +9026,51 @@ update_anims
  clc
  adc #FALL_Y_OFFSET
  sta (info_ptr),y
+* Clamp xpos so the FALLEN frame doesn't poke past the right
+* edge. The walk/trajectory clamps don't see FALLEN's width
+* (it can be a couple bytes wider than the walking sprite that
+* drove fo_approach to the edge), so without this snap the
+* fallen pose lands with right edge > PLAYFIELD_EDGE. Sync
+* prev_xpos so erase_all clears the right rect on the redraw.
+* For Billy, also subtract the snap delta from abs_x — the
+* trajectory advanced abs_x in lockstep with xpos, and yanking
+* xpos back without matching abs_x trips assert_abs_x.
+ ldy #2
+ lda (info_ptr),y
+ ldy #10
+ clc
+ adc (info_ptr),y     ; xpos + FALLEN frame_x = right edge
+ cmp #PLAYFIELD_EDGE+1
+ bcc :nfb_x_ok
+ lda #PLAYFIELD_EDGE
+ ldy #10
+ sec
+ sbc (info_ptr),y     ; clamped xpos = PLAYFIELD_EDGE - frame_x
+ sta :nfb_new_xpos
+* Billy abs_x adjustment: delta = old_xpos - new_xpos.
+ ldy #22
+ lda (info_ptr),y
+ cmp #$01
+ bne :nfb_commit
+ ldy #2
+ lda (info_ptr),y     ; old xpos
+ sec
+ sbc :nfb_new_xpos    ; A = delta (always >= 1 here)
+ sta :nfb_delta
+ lda abs_x
+ sec
+ sbc :nfb_delta
+ sta abs_x
+ lda abs_x+1
+ sbc #0
+ sta abs_x+1
+:nfb_commit
+ lda :nfb_new_xpos
+ ldy #2
+ sta (info_ptr),y     ; xpos = clamped
+ ldy #34
+ sta (info_ptr),y     ; prev_xpos = clamped (erase anchor)
+:nfb_x_ok
 * Body just landed — fire SND_FALLEN.
  ldx #SND_FALLEN
  jsr sound_trigger
@@ -9037,6 +9092,8 @@ update_anims
 :kick_saved_xpos dfb 0
 :kick_saved_fx   dfb 0
 :kick_saved_fy   dfb 0
+:nfb_new_xpos    dfb 0
+:nfb_delta       dfb 0
 
 *----------------------------------------------------------
 * Burnov boss-death state-machine helpers. Called from
@@ -17314,6 +17371,13 @@ check_punch_hit
  sta :self_lo
  lda info_ptr+1
  sta :self_hi
+* Stash puncher's controller (info+22) — the per-target check
+* below needs to know whether the puncher is an NPC (=0) so it
+* can require the NPC's mirror to point at Billy. Reading from
+* (info_ptr) right now while it still points at the puncher.
+ ldy #22
+ lda (info_ptr),y
+ sta :puncher_ctrl
 * Precompute puncher's bottom and right edge
  lda IMAGE01_YPOS
  clc
@@ -17411,6 +17475,35 @@ check_punch_hit
  jmp :advance         ; reconstituting → immune
 :not_immune
 
+* When an NPC is the puncher and Billy is the target, require
+* the NPC's mirror to point at Billy. Without this, an NPC
+* facing away can still register a hit through its punch
+* animation. Doesn't apply when Billy attacks (back-kick is
+* deliberately rear-facing), or to NPC-vs-NPC (n/a here anyway).
+ lda :puncher_ctrl
+ bne :face_skip       ; puncher isn't an NPC — no constraint
+ ldy #22
+ lda (info_ptr),y     ; target's controller
+ cmp #$01
+ bne :face_skip       ; target isn't Billy
+ lda IMAGE01_MIRROR
+ bne :face_npc_left
+* NPC mirror=0 (faces right): Billy must be at NPC_x or higher.
+ ldy #2
+ lda (info_ptr),y     ; billy_x
+ cmp IMAGE01_XPOS     ; vs npc_x
+ bcs :face_skip       ; billy_x >= npc_x → NPC faces Billy ✓
+ jmp :advance         ; NPC turned away — skip
+:face_npc_left
+* NPC mirror=1 (faces left): Billy must be at NPC_x or lower.
+ ldy #2
+ lda (info_ptr),y
+ cmp IMAGE01_XPOS
+ bcc :face_skip       ; billy_x < npc_x → NPC faces Billy ✓
+ beq :face_skip       ; equal → on top of each other, allow
+ jmp :advance         ; NPC turned away — skip
+:face_skip
+
 * Read target's ypos, xpos, frame_x, frame_y
  ldy #0
  lda (info_ptr),y     ; target ypos
@@ -17449,21 +17542,22 @@ check_punch_hit
  jmp :advance        ; puncher_top > tgt_bottom → no overlap
 
 :h_check
-* Horizontal check: overlap or within 2 bytes
-* punch_right - 2 >= tgt_x
+* Horizontal check: overlap or within 1 byte (was 2 — tightened
+* 2 px per side so glancing approaches don't register as hits).
+* punch_right - 1 >= tgt_x
  lda :punch_right
  sec
- sbc #2
+ sbc #1
  cmp :tgt_x
  bcs :h_check2
  jmp :advance        ; punch too far left
 :h_check2
-* tgt_right + 2 >= punch_x
+* tgt_right + 1 >= punch_x
  lda :tgt_x
  clc
  adc :tgt_w
  clc
- adc #2              ; tgt_right + 2
+ adc #1              ; tgt_right + 1
  cmp IMAGE01_XPOS
  bcs :hit
  jmp :advance        ; target too far left
@@ -17787,6 +17881,7 @@ check_punch_hit
 :hit_damage dfb 0     ; +1 normal punch, +3 uppercut
 :puncher_anim_lo dfb 0
 :puncher_anim_hi dfb 0
+:puncher_ctrl    dfb 0
 
 * (advance_frame removed — animation now data-driven via update_anims)
 
