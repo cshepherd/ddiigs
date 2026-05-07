@@ -318,6 +318,11 @@ string5 ASC 'PLAYER 1: 0000000       PLAYER 2: 0000000',00
 over1
 * Initial draw of all sprites
  jsr draw_all
+* Wire up the health-bar palette (rows 197/198/199 → palette 02)
+* and paint the bar. Both one-shot — erase_all clamps at y=180
+* so no sprite redraw ever touches these rows.
+ jsr setup_health_palette
+ jsr draw_health_bar
 
  clc
  xce
@@ -2675,6 +2680,126 @@ erase_pause_text
  lda #PAUSE_BH
  sta FRAME_Y
  jmp erase
+
+*----------------------------------------------------------
+* setup_health_palette - Override SCBs at rows 197/198/199 to
+* use palette 02 (rest of the screen stays on palette 00),
+* and populate palette 02 with 10 colors:
+*   slots 0,5    deep red     (player 1/2 red segment)
+*   slots 1,6    yellow       (player 1/2 yellow segment)
+*   slots 2,3,4  bright green (player 1's three green segments)
+*   slots 7,8,9  bright green (player 2's three green segments)
+*
+* "Turning off" a segment means writing that slot's palette
+* entry to the background color so any pixels painted with that
+* index disappear — health depletes by changing the palette,
+* not the pixel data.
+*
+* Slots 10-15 are left as whatever MISSION11.PAK shipped; the
+* bar never draws with those indices.
+*
+* Writes through bank $01 so SHR shadowing propagates to $E1.
+* Called once after the initial copy_50_to_01.
+*----------------------------------------------------------
+setup_health_palette
+* SCBs (8-bit). Row N SCB = $9D00 + N. Byte $02 = 320 mode,
+* palette 2.
+ lda #$02
+ stal $019DC5         ; row 197
+ stal $019DC6         ; row 198
+ stal $019DC7         ; row 199
+* Palette 02 base = $9E00 + 2*32 = $9E40. Each entry is a
+* 16-bit $0RGB word. Switch to native 16-bit for word writes.
+ clc
+ xce
+ rep $30
+ mx %00
+* Player 1 — red(10), yellow(1), green×3 (2..4)
+ lda #$0800
+ stal $019E54         ; slot 10  deep red
+ lda #$0FE0
+ stal $019E42         ; slot 1  yellow
+ lda #$00F0
+ stal $019E44         ; slot 2  green
+ stal $019E46         ; slot 3  green
+ stal $019E48         ; slot 4  green
+* Player 2 — red(5), yellow(6), green×3 (7..9)
+ lda #$0800
+ stal $019E4A         ; slot 5  deep red
+ lda #$0FE0
+ stal $019E4C         ; slot 6  yellow
+ lda #$00F0
+ stal $019E4E         ; slot 7  green
+ stal $019E50         ; slot 8  green
+ stal $019E52         ; slot 9  green
+ sec
+ xce
+ sep $30
+ mx %11
+ rts
+
+*----------------------------------------------------------
+* draw_health_bar - Paint two segmented health bars across SHR
+* rows 197/198/199 (palette 02). Each player gets 5 segments
+* of 5 bytes (10 px) each = 25 bytes / 50 px per bar:
+*   red, yellow, green, green, green.
+*
+*   Player 1: bytes 3..27,  color indices 0..4
+*   Player 2: bytes 82..106, color indices 5..9
+*
+* Bar pixels are written once at startup. Depleting health is
+* done by recoloring palette-02 slots, never by repainting the
+* bar pixels themselves. erase_all clamps at y=180 so no sprite
+* redraw ever touches these rows.
+*
+* Row N base in bank $01 = $2000 + N*160:
+*   197 → $9B20    198 → $9BC0    199 → $9C60
+*----------------------------------------------------------
+draw_health_bar
+* Player 1 bar (5 segments at bytes 2..27)
+ ldx #2
+ lda #$AA              ; red    (slot 10)
+ jsr :seg
+ lda #$11              ; yellow (slot 1)
+ jsr :seg
+ lda #$22              ; green  (slot 2)
+ jsr :seg
+ lda #$33              ; green  (slot 3)
+ jsr :seg
+ lda #$44              ; green  (slot 4)
+ jsr :seg
+
+* Player 2 bar (5 segments at bytes 89..106)
+ ldx #89
+ lda #$55              ; red    (slot 5)
+ jsr :seg
+ lda #$66              ; yellow (slot 6)
+ jsr :seg
+ lda #$77              ; green  (slot 7)
+ jsr :seg
+ lda #$88              ; green  (slot 8)
+ jsr :seg
+ lda #$99              ; green  (slot 9)
+ jsr :seg
+ rts
+
+* Local segment writer: A = fill byte, X = start byte.
+* Writes 5 bytes across rows 197/198/199, leaves X pointing at
+* the next segment's start so callers can chain.
+:seg
+ sta :fill
+ ldy #0
+:seg_loop
+ lda :fill
+ stal $019B20,x        ; row 197
+ stal $019BC0,x        ; row 198
+ stal $019C60,x        ; row 199
+ inx
+ iny
+ cpy #5
+ bne :seg_loop
+ rts
+:fill dfb 0
 
 * GAME OVER overlay text. Mirrors PAUSED but x is shifted left
 * to center 9 chars instead of 6 (each glyph ≈ 8 px → 24 px
@@ -17391,7 +17516,15 @@ check_punch_hit
  adc :hit_damage
  sta (info_ptr),y
 * Award 100 points to player 1 and mark score for redraw.
+* Only when the target is an NPC — when an NPC lands a hit on
+* Billy, info_ptr points at billy_sprite and we shouldn't be
+* paying him for getting punched.
+ ldy #22
+ lda (info_ptr),y      ; controller (0=NPC, 1=Billy)
+ cmp #$01
+ beq :no_score
  jsr incp1s_hundreds
+:no_score
 * Increment low nibble of border color
 ; ldal $E0C034
 ; clc
@@ -17500,6 +17633,48 @@ check_punch_hit
  lda #0
  ldy #48
  sta (info_ptr),y
+* Shorten Billy's health bar by killing one palette-02 slot.
+* Each fall blacks out one segment, in this order:
+*   fall 1 → slot 4 ($019E48)  P1 rightmost green
+*   fall 2 → slot 3 ($019E46)  P1 middle green
+*   fall 3 → slot 2 ($019E44)  P1 leftmost green
+*   fall 4 → slot 1 ($019E42)  P1 yellow
+*   fall 5 → slot A ($019E54)  P1 deep red (just before GAME OVER)
+* Each entry is 2 bytes; write 0 to both halves.
+ lda billy_fall_count
+ cmp #1
+ bne :uf_dep_2
+ lda #0
+ stal $019E48
+ stal $019E49
+ jmp :do_punched
+:uf_dep_2
+ cmp #2
+ bne :uf_dep_3
+ lda #0
+ stal $019E46
+ stal $019E47
+ jmp :do_punched
+:uf_dep_3
+ cmp #3
+ bne :uf_dep_4
+ lda #0
+ stal $019E44
+ stal $019E45
+ jmp :do_punched
+:uf_dep_4
+ cmp #4
+ bne :uf_dep_5
+ lda #0
+ stal $019E42
+ stal $019E43
+ jmp :do_punched
+:uf_dep_5
+ cmp #5
+ bne :do_punched
+ lda #0
+ stal $019E54
+ stal $019E55
  jmp :do_punched
 :uf_no_anim
  jmp :advance
