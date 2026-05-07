@@ -8262,7 +8262,14 @@ update_anims
  sta (info_ptr),y
  bra :ftraj_skip_snap
 :ftraj_do_snap
-* Snapshot prev_* before mutating current
+* Snapshot prev_* before mutating current. Same standing-pose
+* minimum clamp as :ftraj_pfx_ok — without it, prev_frame_y
+* drops to LFALL/WFALL/etc. (~23 rows) on tick 2+ and the
+* union erase rect can't reach the bottom rows of last tick's
+* drawing. Most visible as "unerased feet" when an NPC is
+* punched off a ladder while walking up: their LFWALK frames
+* are 39-40 rows tall, but the LFALL frame they snap into is
+* only 23.
  ldy #2
  lda (info_ptr),y
  ldy #34
@@ -8273,12 +8280,20 @@ update_anims
  sta (info_ptr),y     ; prev_ypos
  ldy #10
  lda (info_ptr),y
+ cmp #20
+ bcs :ftraj_snap_pfx_ok
+ lda #20
+:ftraj_snap_pfx_ok
  ldy #36
- sta (info_ptr),y     ; prev_frame_x
+ sta (info_ptr),y     ; prev_frame_x (clamped to >= 20)
  ldy #12
  lda (info_ptr),y
+ cmp #40
+ bcs :ftraj_snap_pfy_ok
+ lda #40
+:ftraj_snap_pfy_ok
  ldy #38
- sta (info_ptr),y     ; prev_frame_y
+ sta (info_ptr),y     ; prev_frame_y (clamped to >= 40)
 :ftraj_skip_snap
 * dx is read from BILLY's facing, not the enemy's: Billy mirror=0
 * (faces right) → enemy falls right (+1 dx); Billy mirror=1 (faces
