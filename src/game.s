@@ -1993,15 +1993,28 @@ check_x_bounds
  lda bounds_tbl_lo,x
  sta :cxb_min
  lda bounds_tbl_hi,x
- beq :cxb_blocked
+ beq :cxb_try_ladder        ; row fully blocked — fall through to ladder
  sta :cxb_max
  lda :cxb_x
  cmp :cxb_min
- bcc :cxb_blocked
+ bcc :cxb_try_ladder        ; below min — could still be a ladder column
  cmp :cxb_max
  beq :cxb_ok
- bcs :cxb_blocked
+ bcs :cxb_try_ladder        ; above max — same fallback so a ladder on
+                            ; the right edge of a platform works too
 :cxb_ok clc
+ rts
+:cxb_try_ladder
+* Bounds rejected the X. Try the ladder list — lets the platform's
+* tight bmin/bmax stop Billy at the actual visible edge while
+* still letting him reach a ladder column that sits outside that
+* range. Mirrors check_y_bounds' ladder fallback.
+ lda :cxb_x
+ sta chk_xpos
+ lda IMAGE01_YPOS
+ jsr check_ladder
+ bcs :cxb_blocked
+ clc
  rts
 :cxb_blocked sec
  rts
@@ -3491,7 +3504,7 @@ PLAYER_MAX_X = 98      ; rightmost xpos the player can walk to — ~22px inset
 UP_X_ANCHOR = 330       ; world byte position of upper-screen left edge
 UP_LEFT_FILL = 20       ; bytes to always fill from left neighbor on upper screen
 UP_LEFT_WIDTH = 52      ; screen 6's content width in bytes (104 pixels)
-FO_RANGE   = 2         ; bytes (= 6 px) — engage punching at this
+FO_RANGE   = 1         ; bytes (= 62 px) — engage punching at this
                         ; distance. Comment used to claim "pixels"
                         ; but the math (player_x + player_w + FO_RANGE)
                         ; is byte-based; pulled in from 4 → 3 so NPCs
@@ -3798,6 +3811,28 @@ fo_approach
  lda chk_xpos
  sta (info_ptr),y
 :x_at_target
+* Reached when xpos already == fo_target_x OR the proposed move
+* was blocked by row bounds. The walk branches above wrote
+* mirror=0/1 before the bounds check, so a blocked attempt
+* leaves the NPC facing his intended walk direction — wrong
+* when target_x is unreachable (e.g., past the playfield edge)
+* and the NPC ends up stuck against the wall facing away from
+* Billy. Force mirror to point at Billy here. For the
+* truly-at-target case this matches the initial face-Billy
+* mirror set above, so it's a no-op there.
+ ldy #2
+ lda (info_ptr),y
+ cmp fo_plr_x
+ bcc :xat_face_right        ; npc_x < player_x → face right (mirror=0)
+* npc_x >= player_x → face left (mirror=1)
+ lda #$01
+ ldy #4
+ sta (info_ptr),y
+ bra :move_y
+:xat_face_right
+ lda #$00
+ ldy #4
+ sta (info_ptr),y
 
 :move_y
 * Move toward player Y at 1 pixel/frame (bounds-checked).
@@ -6858,6 +6893,7 @@ btn_action_jump
  jsr dbg_print_nl
  rts
 :dbg_wx dfb 0
+:up_cur_bmax dfb 0
 :ns_not_space
  jmp :not_up              ; inverted — :not_up moved out of range
 :do_up
@@ -7045,6 +7081,34 @@ btn_action_jump
  sbc #1               ; proposed Y
  jsr check_y_bounds
  bcs :up_blocked_bounds
+* Step rule: if the proposed row's bmax is less than the
+* current row's bmax, the row above is narrower — that's a
+* "step up into a wall," which should require a ladder. Catches
+* scr2's rising staircase: walking up at low xpos passes the
+* bmin/bmax check at every row even though visually Billy is
+* climbing the angled wall edge. Equal/larger proposed bmax is
+* an ordinary vertical walk on a uniform or widening surface
+* (scr5 ledge → corridor transitions, etc.).
+ ldx IMAGE01_YPOS
+ lda bounds_tbl_hi,x
+ sta :up_cur_bmax
+ dex
+ lda bounds_tbl_hi,x
+ cmp :up_cur_bmax
+ bcs :up_no_step      ; proposed >= current → flat or widening
+* Proposed bmax < current → narrower row. Require an active
+* ladder + scroll_up_enabled.
+ lda IMAGE01_YPOS
+ sec
+ sbc #1
+ jsr check_ladder
+ bcs :up_blocked_ladder
+ lda scroll_up_enabled
+ beq :up_blocked_ladder
+ lda #1
+ sta via_ladder       ; force climb anim
+ jmp :up_do_move
+:up_no_step
 * If this upward step is only permitted by the ladder (proposed
 * row is blocked but falls within ladder Y range), also require
 * scroll_up to be enabled. Otherwise Billy would "climb" off the
@@ -7136,13 +7200,20 @@ btn_action_jump
  beq :do_left          ; 'a' → handle left below
  jmp :not_left         ; far jump (out of branch range after walk_x bounds added)
 :do_left
-* Climb lock — if scroll_up is enabled (an OP_UP is active) and
-* Billy's current column is on a ladder, treat him as mid-climb
-* and refuse horizontal movement so he stays centered on the
-* ladder until he reaches the top (snap_transition clears
-* scroll_up_enabled).
+* Climb lock — only fire while Billy is *actually* mid-climb.
+* Conditions:
+*   1. scroll_up_enabled (an OP_UP is active)
+*   2. current row is bounds-blocked (bmax==0) — i.e. Billy is
+*      on a row he could only reach via the ladder
+*   3. current column is on a ladder
+* At floor level the row is walkable, so the lock no-ops and
+* Billy can step on/off the ladder freely; once scroll_up's
+* snap moves him onto a bmax=0 row, the gate keeps him centered.
  lda scroll_up_enabled
  beq :dl_not_climb
+ ldx IMAGE01_YPOS
+ lda bounds_tbl_hi,x
+ bne :dl_not_climb
  lda IMAGE01_XPOS
  sta chk_xpos
  lda IMAGE01_YPOS
@@ -7223,11 +7294,15 @@ btn_action_jump
  beq :ai_do_right
  jmp :not_jump
 :ai_do_right
-* Climb lock — same gate as :do_left. While Billy's mid-climb
-* (scroll_up_enabled set + on a ladder column), refuse horizontal
-* movement so he stays centered on the ladder.
+* Climb lock — same gate as :do_left. Only fires when Billy is
+* mid-climb: scroll_up_enabled set, current row bounds-blocked
+* (bmax==0), and on a ladder column. At floor level the lock
+* no-ops so Billy can walk onto/off the ladder freely.
  lda scroll_up_enabled
  beq :dr_not_climb
+ ldx IMAGE01_YPOS
+ lda bounds_tbl_hi,x
+ bne :dr_not_climb
  lda IMAGE01_XPOS
  sta chk_xpos
  lda IMAGE01_YPOS
@@ -8637,6 +8712,128 @@ update_anims
  ldy #32
  sta (info_ptr),y     ; prev_ypos = clamped (erase anchor)
 :ne_no_clamp
+* Fall rescue: if the just-ended anim was this sprite's fall_anim
+* and the post-un-bump position lands outside the row's bounds,
+* walk ypos up until bounds_tbl_hi[ypos] is non-zero, then clamp
+* xpos into [bmin, bmax-frame_x]. Covers irregular bounds layouts
+* (e.g., scr5's stepped platforms) where the parabolic arc can
+* drop the body just past the walkable area.
+ ldy #50
+ lda (info_ptr),y
+ cmp anim_ptr
+ beq :ne_rescue_check_hi
+ jmp :ne_no_rescue
+:ne_rescue_check_hi
+ ldy #51
+ lda (info_ptr),y
+ cmp anim_ptr+1
+ beq :ne_rescue_do
+ jmp :ne_no_rescue
+:ne_rescue_do
+* Walk ypos up until row is non-blocked. Stop at row 0 if we
+* never find one (defensive — should always find a walkable row
+* somewhere above the fall position).
+ ldy #0
+ lda (info_ptr),y
+ tax                  ; X = current ypos
+:ne_rescue_y_loop
+ lda bounds_tbl_hi,x
+ bne :ne_rescue_y_done
+ cpx #0
+ beq :ne_rescue_y_done
+ dex
+ bra :ne_rescue_y_loop
+:ne_rescue_y_done
+* Commit rescued ypos to info+0 and prev_ypos.
+ txa
+ ldy #0
+ sta (info_ptr),y
+ ldy #32
+ sta (info_ptr),y
+* Read bmin/bmax for this row. If the row is fully blocked
+* (bmax==0 from rescue bailing at row 0), skip the X clamp.
+ lda bounds_tbl_hi,x
+ bne :ne_rescue_have_bmax
+ jmp :ne_no_rescue
+:ne_rescue_have_bmax
+ sta :ne_rescue_xmax
+ lda bounds_tbl_lo,x
+ sta :ne_rescue_xmin
+* Clamp xpos: xpos < bmin → xpos = bmin; right_edge > bmax →
+* xpos = bmax - idle_x. For Billy (controller=1) the trajectory
+* and FALLEN clamps kept abs_x in lockstep with xpos; if THIS
+* snap moves xpos, abs_x has to follow or assert_abs_x trips.
+ ldy #2
+ lda (info_ptr),y
+ sta :ne_rescue_oldx
+ cmp :ne_rescue_xmin
+ bcs :ne_rescue_xmax_chk
+* Snap xpos = bmin.
+ lda :ne_rescue_xmin
+ ldy #2
+ sta (info_ptr),y
+ ldy #34
+ sta (info_ptr),y
+ ldy #22
+ lda (info_ptr),y
+ cmp #$01
+ bne :ne_no_rescue
+* Billy: abs_x += (bmin - old_xpos)  (positive delta)
+ lda :ne_rescue_xmin
+ sec
+ sbc :ne_rescue_oldx
+ sta :ne_rescue_dx
+ lda abs_x
+ clc
+ adc :ne_rescue_dx
+ sta abs_x
+ lda abs_x+1
+ adc #0
+ sta abs_x+1
+ bra :ne_no_rescue
+:ne_rescue_xmax_chk
+* Use idle_x (+44), not the current FALLEN-pose frame_x (+10).
+* The rescue runs before the idle frame restore below, so +10
+* still holds the FALLEN width. Bounds need to fit the post-
+* restore standing pose, which idle_x describes.
+ ldy #2
+ lda (info_ptr),y
+ ldy #44
+ clc
+ adc (info_ptr),y     ; right_edge = xpos + idle_x
+ cmp :ne_rescue_xmax
+ bcc :ne_no_rescue
+ beq :ne_no_rescue
+* Snap xpos = bmax - idle_x.
+ lda :ne_rescue_xmax
+ ldy #44
+ sec
+ sbc (info_ptr),y
+ ldy #2
+ sta (info_ptr),y
+ ldy #34
+ sta (info_ptr),y
+ ldy #22
+ lda (info_ptr),y
+ cmp #$01
+ bne :ne_no_rescue
+* Billy: abs_x -= (old_xpos - new_xpos)  (positive delta)
+ ldy #2
+ lda (info_ptr),y     ; new xpos
+ sta :ne_rescue_dx
+ lda :ne_rescue_oldx
+ sec
+ sbc :ne_rescue_dx
+ sta :ne_rescue_dx
+ lda abs_x
+ sec
+ sbc :ne_rescue_dx
+ sta abs_x
+ lda abs_x+1
+ sbc #0
+ sta abs_x+1
+:ne_no_rescue
+
 * Terminate animation, restore idle frame
  ldy #24
  lda #0
@@ -9130,6 +9327,10 @@ update_anims
 :kick_saved_fy   dfb 0
 :nfb_new_xpos    dfb 0
 :nfb_delta       dfb 0
+:ne_rescue_xmin  dfb 0
+:ne_rescue_xmax  dfb 0
+:ne_rescue_oldx  dfb 0
+:ne_rescue_dx    dfb 0
 
 *----------------------------------------------------------
 * Burnov boss-death state-machine helpers. Called from

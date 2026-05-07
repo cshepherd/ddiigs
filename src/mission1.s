@@ -477,8 +477,8 @@ level_script
     db OP_WAITCLR
     db OP_KILLOBJ       ; clean up any dropped pipes
 
-    db OP_WAITX
-    dw $0198              ; wait for player abs X >= 600
+;    db OP_WAITX
+;    dw $0198              ; wait for player abs X >= 600
 
     db OP_RIGHT,13        ; enable right-scroll → scr13 after scr11
 
@@ -1345,7 +1345,7 @@ bounds_scr9
  dfb 0,0
  --^
  LUP 1
- dfb 0,109
+ dfb 22,109
  --^
  LUP 152
  dfb 0,0
@@ -1357,7 +1357,7 @@ bounds_scr10
  dfb 0,0
  --^
  LUP 1
- dfb 0,80
+ dfb 0,72
  --^
  LUP 152
  dfb 0,0
