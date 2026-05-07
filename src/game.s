@@ -5654,6 +5654,17 @@ draw_all
  lda (info_ptr),y
  and #$01
  beq :skip_draw
+* Burnov-grab lock: skip Billy entirely while bn_grab_active.
+* Burnov's BNBILLY1/2/3 frames are the combined "holding Billy"
+* pose, so Billy's own sprite must not draw.
+ ldy #22
+ lda (info_ptr),y
+ cmp #$01
+ bne :da_grab_chk_done
+ lda bn_grab_active
+ beq :da_grab_chk_done
+ jmp :da_drawn        ; clear dirty bit, skip draw
+:da_grab_chk_done
 * Dispatch: compiled (AND/ORA) path when MASK_ADDR != 0 and the
 * sprite is the keyboard player (Billy). MASK_ADDR is the live
 * signal "current FRAME_ADDR points at compiled DATA"; advance_walk
@@ -6213,6 +6224,12 @@ ADB_KEY_L = $25
 * If an action animation is playing, ignore all input.
 *----------------------------------------------------------
 process_input
+* Burnov-grab lock: while bn_grab_active is set, swallow all
+* input. Billy can't defend the BNBILLY pummel sequence.
+ lda bn_grab_active
+ beq :pi_not_grabbed
+ rts
+:pi_not_grabbed
 * Snapshot last frame's kb_held → kb_held_prev so the action
 * dispatch below can edge-detect just-pressed buttons.
  ldx #15
@@ -8474,28 +8491,39 @@ update_anims
  ldy #50
  lda (info_ptr),y     ; fall_anim low
  cmp anim_ptr
- bne :normal_end
+ beq :ad_check_fall_hi
+ jmp :normal_end
+:ad_check_fall_hi
  iny
  lda (info_ptr),y     ; fall_anim high
  cmp anim_ptr+1
- bne :normal_end
+ beq :ad_check_pc
+ jmp :normal_end
+:ad_check_pc
  ldy #48
  lda (info_ptr),y     ; punch_count
  cmp #6
- bcc :normal_end
+ bcs :ad_do_death
+ jmp :normal_end
 :ad_do_death
 * Death: set $FFFF sentinel, mark dirty for erase+removal.
 *
 * For a fall-anim death, the sprite has a history of drawings
 * at different rects at this xpos: walking/wpunched at ypos-24
-* (40 tall), wfall frame 0 also around ypos-24 (33 tall), and
-* wfall frame 1 (WFALLEN 13 tall) at the bumped ypos. The
+* (40 tall), fall frame 0 also around ypos-24 (33 tall), and
+* fall frame 1 (FALLEN ~13 tall) at the bumped ypos. The
 * death erase needs to cover ALL of these because intermediate
 * transitions might not have fully cleaned them (e.g., rapid
 * punches where save_anim_state races the erase). Set prev to
-* a generous rect that envelops every pre-bump position: start
-* at ypos-FALL_Y_OFFSET and extend 40 rows down (reaching past
-* WFALLEN), width 20 (covers WFALL's 19).
+* a generous rect that envelops every pre-bump position.
+*
+* Per-target sizing:
+*   frame_bank=$19 → Burnov (BNWALK 13×48, BNFALL 13×46,
+*                    BNFALLEN 23×23) → 24 wide × 48 tall
+*   else           → William-class (WFALL 19×33, WFALLEN 16×13,
+*                    walk 9×40) → 20 wide × 40 tall
+* prev_frame_y is also capped at (180 - prev_ypos) so the erase
+* never bleeds into the HUD.
 * DEBUG: log death entry with current ypos/xpos
  lda #$C4              ; 'D'
  jsr dbg_print_char
@@ -8522,18 +8550,35 @@ update_anims
  lda (info_ptr),y
  ldy #34
  sta (info_ptr),y     ; prev_xpos <- current xpos
+* Pick rect dims based on frame_bank. $19 = Burnov (taller +
+* wider sprite set); anything else = William-class.
+ ldy #56
+ lda (info_ptr),y
+ cmp #$19
+ bne :dd_normal_dims
+ lda #24
+ sta :dd_w            ; Burnov width — pad past BNFALLEN's 23
+ lda #48
+ sta :dd_h            ; BNWALK1 standing height
+ bra :dd_dims_set
+:dd_normal_dims
  lda #20
+ sta :dd_w            ; covers WFALL's 19
+ lda #40
+ sta :dd_h            ; covers walking-pose height
+:dd_dims_set
+ lda :dd_w
  ldy #36
- sta (info_ptr),y     ; prev_frame_x <- 20 (covers WFALL/WPUNCH)
-* Cap height so erase doesn't extend into the HUD at y=180+.
-* prev_frame_y = min(40, 180 - prev_ypos)
+ sta (info_ptr),y     ; prev_frame_x
+* Cap height so erase doesn't bleed into the HUD at y=180+.
+* prev_frame_y = min(:dd_h, 180 - prev_ypos)
  lda #180
  ldy #32
  sec
  sbc (info_ptr),y     ; A = 180 - prev_ypos
- cmp #40
+ cmp :dd_h
  bcc :dd_use_capped
- lda #40
+ lda :dd_h
 :dd_use_capped
  ldy #38
  sta (info_ptr),y     ; prev_frame_y
@@ -8630,6 +8675,122 @@ update_anims
  iny
  sta (info_ptr),y
 :ne_not_bpickup
+* Burnov-grab end hook: anim_bngrab just finished (last frame
+* was BNBILLY3, the release pose). Clear the active flag,
+* re-mark Billy as needing draw, and start his fall_anim from
+* his pre-grab position (which billy_sprite still holds —
+* nothing modified it during the grab since input/walk were
+* gated off).
+ lda anim_ptr
+ cmp #<anim_bngrab
+ beq :ne_grab_chk_hi
+ jmp :ne_not_bngrab
+:ne_grab_chk_hi
+ lda anim_ptr+1
+ cmp #>anim_bngrab
+ beq :ne_grab_do
+ jmp :ne_not_bngrab
+:ne_grab_do
+ stz bn_grab_active
+* Save Burnov's info_ptr; switch to billy_sprite to start his
+* fall_anim. start_anim handles all of Billy's frame setup.
+ lda info_ptr
+ pha
+ lda info_ptr+1
+ pha
+ lda #<billy_sprite
+ sta info_ptr
+ lda #>billy_sprite
+ sta info_ptr+1
+* Mirror Billy so he faces Burnov (so the trajectory dx and
+* fall pose orient correctly). Burnov's mirror was already
+* loaded above (anim_bngrab's last frame).
+ lda IMAGE01_MIRROR
+ eor #$01
+ ldy #4
+ sta (info_ptr),y     ; opposite of Burnov's facing
+* Load Billy's globals for start_anim.
+ ldy #0
+ lda (info_ptr),y
+ sta IMAGE01_YPOS
+ ldy #2
+ lda (info_ptr),y
+ sta IMAGE01_XPOS
+ ldy #4
+ lda (info_ptr),y
+ sta IMAGE01_MIRROR
+ ldy #10
+ lda (info_ptr),y
+ sta FRAME_X
+ ldy #12
+ lda (info_ptr),y
+ sta FRAME_Y
+ ldy #14
+ lda (info_ptr),y
+ sta FRAME_ADDR
+ iny
+ lda (info_ptr),y
+ sta FRAME_ADDR+1
+ ldy #50
+ lda (info_ptr),y
+ pha
+ ldy #51
+ lda (info_ptr),y
+ tax
+ pla
+ jsr start_anim
+* Count this as one of Billy's 5 falls. Mirrors the cascade in
+* check_punch_hit :use_fall and knife_hit_billy: zero
+* punch_count, bump billy_fall_count, deplete one palette-02
+* slot. check_punch_hit's grab branch jumped to :done before
+* hitting :use_fall, so this is the only place the grab's
+* fall is accounted for.
+ lda #0
+ ldy #48
+ sta (info_ptr),y     ; reset Billy's punch_count
+ inc billy_fall_count
+ lda billy_fall_count
+ cmp #1
+ bne :ne_grab_dep_2
+ lda #0
+ stal $019E48
+ stal $019E49
+ jmp :ne_grab_dep_done
+:ne_grab_dep_2
+ cmp #2
+ bne :ne_grab_dep_3
+ lda #0
+ stal $019E46
+ stal $019E47
+ jmp :ne_grab_dep_done
+:ne_grab_dep_3
+ cmp #3
+ bne :ne_grab_dep_4
+ lda #0
+ stal $019E44
+ stal $019E45
+ jmp :ne_grab_dep_done
+:ne_grab_dep_4
+ cmp #4
+ bne :ne_grab_dep_5
+ lda #0
+ stal $019E42
+ stal $019E43
+ jmp :ne_grab_dep_done
+:ne_grab_dep_5
+ cmp #5
+ bne :ne_grab_dep_done
+ lda #0
+ stal $019E54
+ stal $019E55
+:ne_grab_dep_done
+* Restore Burnov's info_ptr so :normal_end's idle restore below
+* operates on him.
+ pla
+ sta info_ptr+1
+ pla
+ sta info_ptr
+:ne_not_bngrab
  ldy #50
  lda (info_ptr),y
  cmp anim_ptr
@@ -9051,6 +9212,25 @@ update_anims
  sta (info_ptr),y
 
 :lf_load_done
+* Burnov-grab BNBILLY2 hit sound. anim_bngrab's odd frames
+* (1, 3, 5) are BNBILLY2 — the moment Burnov's punch lands on
+* the held Billy. Fire SND_PUNCHLANDED on each of those frame
+* loads. Frame 6 (BNBILLY3) is the release pose, no sound.
+ lda anim_ptr
+ cmp #<anim_bngrab
+ bne :lf_no_bngrab_sfx
+ lda anim_ptr+1
+ cmp #>anim_bngrab
+ bne :lf_no_bngrab_sfx
+ ldy #26
+ lda (info_ptr),y
+ cmp #6
+ bcs :lf_no_bngrab_sfx       ; frame 6 (BNBILLY3) — no sound
+ lsr
+ bcc :lf_no_bngrab_sfx       ; even frame (BNBILLY1) — no sound
+ ldx #SND_PUNCHLANDED
+ jsr sound_trigger
+:lf_no_bngrab_sfx
 * Burnov helmet-Y offset. BDISS7 and BDISS8 are the small
 * helmet sprites — visually the helmet has fallen to the ground
 * while the body is gone. Without offset they paint at the body's
@@ -9147,9 +9327,17 @@ update_anims
 :try_lmace
  lda anim_ptr
  cmp #<anim_lmace
- bne :try_upr
+ bne :try_bnp
  lda anim_ptr+1
  cmp #>anim_lmace
+ bne :try_bnp
+ jmp :do_hit_now
+:try_bnp
+ lda anim_ptr
+ cmp #<anim_bnpunch
+ bne :try_upr
+ lda anim_ptr+1
+ cmp #>anim_bnpunch
  bne :try_upr
  jmp :do_hit_now
 :try_upr
@@ -9346,6 +9534,8 @@ update_anims
 :ne_rescue_xmax  dfb 0
 :ne_rescue_oldx  dfb 0
 :ne_rescue_dx    dfb 0
+:dd_w            dfb 0
+:dd_h            dfb 0
 
 *----------------------------------------------------------
 * Burnov boss-death state-machine helpers. Called from
@@ -12174,6 +12364,13 @@ spr_bnfallen ds 2
 spr_bnpunch1 ds 2
 spr_bnpunch2 ds 2
 
+* Burnov holds-and-pummels-Billy frames. Used by anim_bngrab,
+* triggered when Burnov's punch lands on Billy. Replaces both
+* sprites with BNBILLY1↔2 alternations + a final BNBILLY3 release.
+spr_bnbilly1 ds 2
+spr_bnbilly2 ds 2
+spr_bnbilly3 ds 2
+
 * Burnov "dissolving" animation frames (8 frames, body → helmet).
 * Played after each non-final fall as part of his teleport-and-
 * respawn boss death cycle. Played in reverse for the recon back.
@@ -12356,6 +12553,14 @@ grab_target       dw 0    ; sprite info ptr of currently-grabbed enemy
 grab_punch_timer  dfb 0   ; > 0 while showing BGRAB1/xHELD2 sub-anim
 last_key          dfb 0   ; scratch: most recent keypress, used by
                           ;   the grab-state interceptor
+
+* Burnov-grabs-Billy state. Set by check_punch_hit when Burnov's
+* anim_bnpunch lands on Billy; cleared by :normal_end when the
+* anim_bngrab sequence completes. While set:
+*   - draw_all skips Billy (his sprite is hidden — Burnov's
+*     BNBILLY1/2/3 frames are the "combined" pose).
+*   - process_input is a no-op (Billy can't defend the grab).
+bn_grab_active    dfb 0
 
 * NES-style A/B button input: J = button A, L = button B.
 * When either is strobed we record it in btn_pending_key with a
@@ -12553,8 +12758,19 @@ init_mission12
  lda [$F0],y
  sta spr_bnpunch2
 
-* BDISS frames — indices 49-56 in spr_addr_tbl ($62-$70). Skip
-* indices 46-48 (BNBILLY1-3, head-grab variants — not yet used).
+* BNBILLY frames — indices 46-48 ($5C-$60). Used by anim_bngrab
+* for the Burnov-grabs-Billy sequence.
+ ldy #$5C
+ lda [$F0],y
+ sta spr_bnbilly1
+ ldy #$5E
+ lda [$F0],y
+ sta spr_bnbilly2
+ ldy #$60
+ lda [$F0],y
+ sta spr_bnbilly3
+
+* BDISS frames — indices 49-56 in spr_addr_tbl ($62-$70).
  ldy #$62
  lda [$F0],y
  sta spr_bdiss1
@@ -12749,6 +12965,19 @@ init_mission12
  sta anim_bnpunch+3+3
  lda spr_bnpunch2
  sta anim_bnpunch+3+8
+
+* Patch anim_bngrab: 7 legacy frames at offsets 6/11/16/21/26/31/36
+* (BNBILLY1, 2, 1, 2, 1, 2, 3).
+ lda spr_bnbilly1
+ sta anim_bngrab+3+3
+ sta anim_bngrab+3+13
+ sta anim_bngrab+3+23
+ lda spr_bnbilly2
+ sta anim_bngrab+3+8
+ sta anim_bngrab+3+18
+ sta anim_bngrab+3+28
+ lda spr_bnbilly3
+ sta anim_bngrab+3+33
 
  lda spr_bnfall1
  sta anim_bnpunched+3+3      ; placeholder reaction = BNFALL1
@@ -16918,6 +17147,31 @@ anim_bnpunch
  dfb $17,$2E,6       ; BNPUNCH2: 23 wide, 46 tall
   hex 0000             ; patched
 
+* Burnov-holds-Billy grab sequence. Triggered when anim_bnpunch
+* lands on Billy (check_punch_hit Burnov-special). Plays
+* BNBILLY1↔2 three times (PUNCHLANDED on each BNBILLY2) then
+* BNBILLY3 as the release pose. Billy's sprite is suppressed
+* and his input ignored during the whole anim; on completion,
+* :normal_end clears bn_grab_active and starts his fall_anim.
+anim_bngrab
+ dfb 7
+ dfb $15             ; max_width (BNBILLY1/2 are 21)
+ dfb $20             ; flags: bit 5 = bank $19
+ dfb $15,$30,8       ; BNBILLY1
+  hex 0000             ; patched
+ dfb $15,$31,8       ; BNBILLY2
+  hex 0000             ; patched
+ dfb $15,$30,8       ; BNBILLY1
+  hex 0000             ; patched
+ dfb $15,$31,8       ; BNBILLY2
+  hex 0000             ; patched
+ dfb $15,$30,8       ; BNBILLY1
+  hex 0000             ; patched
+ dfb $15,$31,8       ; BNBILLY2
+  hex 0000             ; patched
+ dfb $15,$2F,12      ; BNBILLY3 (release)
+  hex 0000             ; patched
+
 * Burnov punched reaction. 1 frame placeholder using BNFALL1
 * — replace with a dedicated recoil frame if/when one ships.
 anim_bnpunched
@@ -17861,6 +18115,67 @@ check_punch_hit
  bcs :hit
  jmp :advance        ; target too far left
 :hit
+
+* Burnov-grabs-Billy special case. When anim_bnpunch lands on
+* Billy (controller=1), divert from the standard hit/fall logic
+* to the BNBILLY grab sequence: hide Billy, run anim_bngrab on
+* Burnov, ignore Billy's input until the anim ends. The grab
+* anim's :normal_end handler will reposition Billy and start
+* fall_anim on him.
+ lda :puncher_anim_lo
+ cmp #<anim_bnpunch
+ bne :hit_normal
+ lda :puncher_anim_hi
+ cmp #>anim_bnpunch
+ bne :hit_normal
+ ldy #22
+ lda (info_ptr),y     ; target controller
+ cmp #$01
+ bne :hit_normal      ; target isn't Billy — fall through
+* Set the active flag, mark Billy needing-erase (so this frame's
+* erase_all clears his last-drawn rect and draw_all skips him).
+ lda #$01
+ sta bn_grab_active
+ ldy #30
+ lda (info_ptr),y
+ ora #$02             ; force erase bit; clear draw bit
+ and #$FE
+ sta (info_ptr),y
+* Switch info_ptr back to the puncher (Burnov) and run start_anim
+* with anim_bngrab. start_anim handles frame_bank, info+10/+12/
+* +14, dirty, etc.
+ lda :self_lo
+ sta info_ptr
+ lda :self_hi
+ sta info_ptr+1
+* Re-load Burnov's globals so start_anim's :sa_write_block
+* operates on the right block.
+ ldy #0
+ lda (info_ptr),y
+ sta IMAGE01_YPOS
+ ldy #2
+ lda (info_ptr),y
+ sta IMAGE01_XPOS
+ ldy #4
+ lda (info_ptr),y
+ sta IMAGE01_MIRROR
+ ldy #10
+ lda (info_ptr),y
+ sta FRAME_X
+ ldy #12
+ lda (info_ptr),y
+ sta FRAME_Y
+ ldy #14
+ lda (info_ptr),y
+ sta FRAME_ADDR
+ iny
+ lda (info_ptr),y
+ sta FRAME_ADDR+1
+ lda #<anim_bngrab
+ ldx #>anim_bngrab
+ jsr start_anim
+ jmp :done
+:hit_normal
 
 * Hit! Damage = 3 if puncher is mid-uppercut, mid-pipeswing, or
 * mid-maceswing; else 1. All three are forced-fall attacks.
