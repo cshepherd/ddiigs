@@ -339,6 +339,8 @@ level_script
     db OP_WAITX
     dw 450
 
+    db OP_SCRLOCK
+
     db OP_NPC
     dw williams_knife_sprite
     db $58,$32,$01,BEHAV_KNIFER
@@ -1313,13 +1315,13 @@ bounds_scr6
  dfb 0,0
  --^
 
-* Screen 7: same as screen6
+* Screen 7: narrow walkability
 bounds_scr7
  LUP 42
  dfb 0,0
  --^
  LUP 30
- dfb 0,109
+ dfb 0,90
  --^
  LUP 128
  dfb 0,0
@@ -1355,7 +1357,7 @@ bounds_scr10
  dfb 0,0
  --^
  LUP 1
- dfb 0,109
+ dfb 0,80
  --^
  LUP 152
  dfb 0,0

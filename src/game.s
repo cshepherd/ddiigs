@@ -3491,7 +3491,11 @@ PLAYER_MAX_X = 98      ; rightmost xpos the player can walk to — ~22px inset
 UP_X_ANCHOR = 330       ; world byte position of upper-screen left edge
 UP_LEFT_FILL = 20       ; bytes to always fill from left neighbor on upper screen
 UP_LEFT_WIDTH = 52      ; screen 6's content width in bytes (104 pixels)
-FO_RANGE   = 4         ; pixels — engage punching at this distance
+FO_RANGE   = 2         ; bytes (= 6 px) — engage punching at this
+                        ; distance. Comment used to claim "pixels"
+                        ; but the math (player_x + player_w + FO_RANGE)
+                        ; is byte-based; pulled in from 4 → 3 so NPCs
+                        ; close the last 2 px before swinging.
 FO_CD_TIME = 90        ; cooldown frames after a punch
 
 behav_faceoff
@@ -4661,25 +4665,22 @@ start_grab_punch
  sec
  sbc #GRAB_Y_OFFSET
  sta (info_ptr),y
-* Trigger fall_anim on the enemy. We mimic check_punch_hit's
-* sequence at a minimum: copy fall_anim to anim_ptr (info+24),
-* anim_frame=$FF, anim_timer=1 so update_anims advances to
-* fall frame 0 next tick. Behavior_state goes to FO_APPROACH
-* so post-fall AI resumes normally.
+* Trigger fall_anim on the enemy via start_anim so frame_bank
+* (info+56) gets set from the descriptor's bank flag. The old
+* path patched anim_ptr/anim_frame/anim_timer directly and left
+* frame_bank stuck at the walk bank — a problem for cross-bank
+* NPCs (williams_pipe walks in bank $19 but anim_wfall lives in
+* bank $02), where the next render then read WFALL/WFALLEN
+* pixels from bank $19 → garbage. start_anim also writes
+* FRAME_X/Y/ADDR back to info+10/+12/+14 and sets dirty=$03.
  ldy #50
  lda (info_ptr),y
- ldy #24
- sta (info_ptr),y
+ pha                   ; fall_anim low → stack
  ldy #51
  lda (info_ptr),y
- ldy #25
- sta (info_ptr),y
- ldy #26
- lda #$FF
- sta (info_ptr),y
- ldy #28
- lda #1
- sta (info_ptr),y
+ tax                   ; X = fall_anim high
+ pla                   ; A = fall_anim low
+ jsr start_anim
  ldy #7
  lda #FO_APPROACH
  sta (info_ptr),y
@@ -7135,6 +7136,20 @@ btn_action_jump
  beq :do_left          ; 'a' → handle left below
  jmp :not_left         ; far jump (out of branch range after walk_x bounds added)
 :do_left
+* Climb lock — if scroll_up is enabled (an OP_UP is active) and
+* Billy's current column is on a ladder, treat him as mid-climb
+* and refuse horizontal movement so he stays centered on the
+* ladder until he reaches the top (snap_transition clears
+* scroll_up_enabled).
+ lda scroll_up_enabled
+ beq :dl_not_climb
+ lda IMAGE01_XPOS
+ sta chk_xpos
+ lda IMAGE01_YPOS
+ jsr check_ladder
+ bcs :dl_not_climb
+ rts
+:dl_not_climb
 * If at left scroll threshold AND scroll_left enabled AND
 * there's a screen to the left, scroll. Otherwise walk.
  lda scroll_left_enabled
@@ -7205,8 +7220,21 @@ btn_action_jump
  jsr save_sprite
  rts
 :not_left cmp #'d'
- bne :not_jump
+ beq :ai_do_right
+ jmp :not_jump
 :ai_do_right
+* Climb lock — same gate as :do_left. While Billy's mid-climb
+* (scroll_up_enabled set + on a ladder column), refuse horizontal
+* movement so he stays centered on the ladder.
+ lda scroll_up_enabled
+ beq :dr_not_climb
+ lda IMAGE01_XPOS
+ sta chk_xpos
+ lda IMAGE01_YPOS
+ jsr check_ladder
+ bcs :dr_not_climb
+ rts
+:dr_not_climb
 * If at scroll threshold AND scrolling enabled, scroll world.
 * If scroll disabled, walk normally up to the playfield edge.
  lda scroll_right_enabled
@@ -8899,9 +8927,17 @@ update_anims
 :try_lp
  lda anim_ptr
  cmp #<anim_lpunch
- bne :try_upr
+ bne :try_lmace
  lda anim_ptr+1
  cmp #>anim_lpunch
+ bne :try_lmace
+ jmp :do_hit_now
+:try_lmace
+ lda anim_ptr
+ cmp #<anim_lmace
+ bne :try_upr
+ lda anim_ptr+1
+ cmp #>anim_lmace
  bne :try_upr
  jmp :do_hit_now
 :try_upr
@@ -9903,22 +9939,26 @@ knife_hit_billy
 * Horizontal overlap: knife_right >= billy_x AND knife_x <= billy_right
  lda :kh_right
  cmp :bb_x
- bcc :kh_no_hit
+ bcs :kh_h2
+ jmp :kh_no_hit
+:kh_h2
  lda :kh_x
  cmp :bb_right
  beq :kh_vcheck
  bcc :kh_vcheck
- bra :kh_no_hit
+ jmp :kh_no_hit
 :kh_vcheck
 * Vertical overlap: knife_bottom >= billy_y AND knife_y <= billy_bottom
  lda :kh_bottom
  cmp :bb_y
- bcc :kh_no_hit
+ bcs :kh_v2
+ jmp :kh_no_hit
+:kh_v2
  lda :kh_y
  cmp :bb_bottom
  beq :kh_hit
  bcc :kh_hit
- bra :kh_no_hit
+ jmp :kh_no_hit
 
 :kh_hit
 * Tag the knife as dead.
@@ -9952,20 +9992,63 @@ knife_hit_billy
  bra :kh_restore       ; already falling — knife passes (logically)
 
 :kh_do_fall
+* Start Billy's fall_anim via start_anim so frame_bank (info+56),
+* frame data, mask, and dirty flag all get set correctly. Manual
+* patching of anim_ptr/anim_frame/anim_timer used to bypass
+* start_anim's bank-flag handling, leaving frame_bank=$02 while
+* anim_bfall's pixels live in bank $19 — next render pulled
+* "BFALL" bytes from the wrong bank and Billy showed up garbled.
  ldy #50
  lda (info_ptr),y
- ldy #24
- sta (info_ptr),y
+ pha                   ; fall_anim low → stack
  ldy #51
  lda (info_ptr),y
- ldy #25
+ tax                   ; X = fall_anim high
+ pla                   ; A = fall_anim low
+ jsr start_anim        ; sets info+24/+25/+26/+28, frame_bank,
+                       ; FRAME_X/Y/ADDR/MASK, dirty=$03
+* Weapon hit = automatic fall. Mirror the check_punch_hit
+* :use_fall accounting: zero punch_count so the next 3-hit
+* cycle starts fresh, then bump billy_fall_count and deplete
+* one palette-02 slot so the on-screen health bar shortens.
+ lda #0
+ ldy #48
  sta (info_ptr),y
- ldy #26
- lda #$FF
- sta (info_ptr),y      ; anim_frame = $FF (so update_anims rolls to 0)
- ldy #28
- lda #1
- sta (info_ptr),y      ; anim_timer = 1 (play next tick)
+ inc billy_fall_count
+ lda billy_fall_count
+ cmp #1
+ bne :kh_dep_2
+ lda #0
+ stal $019E48
+ stal $019E49
+ bra :kh_restore
+:kh_dep_2
+ cmp #2
+ bne :kh_dep_3
+ lda #0
+ stal $019E46
+ stal $019E47
+ bra :kh_restore
+:kh_dep_3
+ cmp #3
+ bne :kh_dep_4
+ lda #0
+ stal $019E44
+ stal $019E45
+ bra :kh_restore
+:kh_dep_4
+ cmp #4
+ bne :kh_dep_5
+ lda #0
+ stal $019E42
+ stal $019E43
+ bra :kh_restore
+:kh_dep_5
+ cmp #5
+ bne :kh_restore
+ lda #0
+ stal $019E54
+ stal $019E55
 
 :kh_restore
  pla
@@ -17594,9 +17677,18 @@ check_punch_hit
 :hit_chk_spin
  lda :puncher_anim_lo
  cmp #<anim_bspinkick
- bne :hit_dmg1
+ bne :hit_chk_lmace
  lda :puncher_anim_hi
  cmp #>anim_bspinkick
+ bne :hit_chk_lmace
+ lda #3
+ bra :hit_dmg_done
+:hit_chk_lmace
+ lda :puncher_anim_lo
+ cmp #<anim_lmace
+ bne :hit_dmg1
+ lda :puncher_anim_hi
+ cmp #>anim_lmace
  bne :hit_dmg1
  lda #3
  bra :hit_dmg_done
@@ -17657,9 +17749,17 @@ check_punch_hit
 :hit_chk2_spin
  lda :puncher_anim_lo
  cmp #<anim_bspinkick
- bne :hit_count_check
+ bne :hit_chk2_lmace
  lda :puncher_anim_hi
  cmp #>anim_bspinkick
+ bne :hit_chk2_lmace
+ jmp :use_fall
+:hit_chk2_lmace
+ lda :puncher_anim_lo
+ cmp #<anim_lmace
+ bne :hit_count_check
+ lda :puncher_anim_hi
+ cmp #>anim_lmace
  bne :hit_count_check
  jmp :use_fall
 :hit_count_check
