@@ -22,6 +22,12 @@ NTPstreamsound          =   NinjaTrackerPlus+24
                        ; READs, so 1 KB is plenty and frees 3 KB for game.s
                        ; growth. game.s code/data must end before $B700.
 
+* Conditional-assembly switch for the text-screen debug prints
+* sprinkled through the engine. Set to 1 to keep them in the
+* binary; 0 to strip them entirely (the dbg_print_* helpers
+* themselves still ship — only the call-site blocks vanish).
+DEBUG_PRINT equ 0
+
 * Clear text screen so diagnostic prints start on a fresh page.
  sec
  xce
@@ -70,6 +76,43 @@ NTPstreamsound          =   NinjaTrackerPlus+24
  pla
  sta $c022
 
+* Load MISSION12 first so loading_str_tbl_addr can be set up
+* before draw_loading_string fires below. (The full
+* init_mission12 still runs later — only the +$14 header read
+* is needed early.)
+ lda #<mission12_path
+ sta file_open+1
+ lda #>mission12_path
+ sta file_open+2
+ lda #$19
+ sta file_bank
+ stz file_dest
+ stz file_dest+1
+ jsr load_file
+
+* Read header.loading_str_off (+$14) → loading_str_tbl_addr.
+ clc
+ xce
+ rep $30
+ mx %00
+ lda #$0014
+ sta $F0
+ sep $20
+ lda #$19
+ sta $F2
+ rep $20
+ ldy #0
+ lda [$F0],y
+ sta loading_str_tbl_addr
+ sec
+ xce
+ sep $30
+ mx %11
+
+* Show first loading status.
+ ldx #0
+ jsr draw_loading_string
+
 * Load MISSION1 level data to bank $02
  lda #<mission1_path
  sta file_open+1
@@ -81,22 +124,9 @@ NTPstreamsound          =   NinjaTrackerPlus+24
  stz file_dest+1
  jsr load_file
 
-* Load MISSION12 (boss + weapons + character variants) to bank $11.
-* Same loader as MISSION1; the file just lives in a different bank.
-* Bank $19 sits past the playfield shadow at $18 — clear of every
-* other allocation (backgrounds $03-$10, sound scratch $11, NTPplayer
-* $12, music $13-$15, PAK scratch $17, shadow $18). Earlier attempts
-* with $06 (clobbered by background-3 unpack) and $11 (clobbered by
-* sound_install_all chaining SFX writes) both failed.
- lda #<mission12_path
- sta file_open+1
- lda #>mission12_path
- sta file_open+2
- lda #$19
- sta file_bank
- stz file_dest
- stz file_dest+1
- jsr load_file
+* MISSION12 was already loaded above (before the LOADING screen
+* status text), so loading_str_tbl_addr is set up. Skip a
+* second load here.
 
 * ntpplayer code is already in bank $12 — title.s loaded it once
 * at boot and bank $12 persists across SYS file loads (each SYS
@@ -716,6 +746,7 @@ run_script
 * (+15 pin / +7 ladder / +10 snap xpos) is calibrated for a
 * specific wo at this point; compare across runs to see whether
 * wo varies (which would confirm the compensation is fragile).
+ do DEBUG_PRINT
  lda #$D5              ; 'U'
  jsr dbg_print_char
  lda #$D0              ; 'P'
@@ -745,6 +776,7 @@ run_script
  lda abs_x
  jsr dbg_print_hex8
  jsr dbg_print_nl
+ fin
 * OP_UP: param1=target, param2=left-neighbor, param3=right-neighbor.
 * $FF in any neighbor slot = no fill on that side.
  ldy #1
@@ -1279,6 +1311,7 @@ run_script
  bcc :wx_wait_rts       ; low byte less
 :waitx_done
 * DEBUG: 'WX xxxx=tttt' — abs_x vs threshold at the moment the op fires.
+ do DEBUG_PRINT
  lda #$D7              ; 'W'
  jsr dbg_print_char
  lda #$D8              ; 'X'
@@ -1296,6 +1329,7 @@ run_script
  lda script_wait_val
  jsr dbg_print_hex8
  jsr dbg_print_nl
+ fin
  lda #SCRIPT_RUN
  sta script_state
  jmp :exec_loop         ; condition met, resume executing
@@ -1311,6 +1345,7 @@ run_script
  bcc :wx_wait_rts       ; threshold_lo < abs_lo → still greater
 :waitxrev_done
 * DEBUG: 'WR xxxx=tttt' — abs_x vs threshold at the moment the op fires.
+ do DEBUG_PRINT
  lda #$D7              ; 'W'
  jsr dbg_print_char
  lda #$D2              ; 'R'
@@ -1328,6 +1363,7 @@ run_script
  lda script_wait_val
  jsr dbg_print_hex8
  jsr dbg_print_nl
+ fin
  lda #SCRIPT_RUN
  sta script_state
  jmp :exec_loop
@@ -1637,6 +1673,7 @@ script_spawn_npc
 * DEBUG: print "BN!" when the Burnov dispatch fires, then dump
 * the actual bytes at $19/3DCB (BNWALK1 row 1) to verify mission12
 * data is in the bank we expect at the time of spawn.
+ do DEBUG_PRINT
  lda #$C2              ; 'B'
  jsr dbg_print_char
  lda #$CE              ; 'N'
@@ -1660,6 +1697,7 @@ script_spawn_npc
  ldal $193DCE
  jsr dbg_print_hex8
  jsr dbg_print_nl
+ fin
  lda spr_bnwalk1
  ldy #14
  sta (info_ptr),y      ; +14 frame_addr
@@ -1834,6 +1872,7 @@ script_spawn_npc
 * DEBUG: if this is a Burnov spawn (frame_bank=$19), dump the
 * buffer's frame_addr (+14), mask (+16), and frame_bank (+56).
 * Format: "SP <fa_hi><fa_lo> <mask> <bk_hi><bk_lo>"
+ do DEBUG_PRINT
  ldy #56
  lda (info_ptr),y
  cmp #$19
@@ -1865,6 +1904,7 @@ script_spawn_npc
  jsr dbg_print_hex8
  jsr dbg_print_nl
 :no_dbg_dump
+ fin
 * Advance NPC buffer pointer (60 bytes per block)
  lda npc_buf_next
  clc
@@ -2707,6 +2747,69 @@ draw_pause_text
  sec
  xce                    ; back to emulation
  rts
+
+*----------------------------------------------------------
+* draw_loading_string - Render the Nth loading-status string
+* from mission12's loading_string_table at (30, 104). Used to
+* break the monotony of the LOADING splash by changing the
+* caption a few times during init.
+*
+* On entry: X = 0-based index into the table.
+* loading_str_tbl_addr (set by init_mission12 from the +$14
+* header field) holds the bank-$19 address of the table.
+* Each table entry is 2 bytes — a bank-$19 address of a
+* C-string. Switches to native 16-bit, calls QuickDraw II
+* MoveTo + DrawCString, restores emulation 8-bit. Trashes
+* A, X, Y.
+*----------------------------------------------------------
+draw_loading_string
+* Compute byte offset (index * 2) in 8-bit before mode switch
+* so we don't have to mask X's high byte after rep #$30.
+ txa
+ asl
+ sta :ls_offset
+ clc
+ xce                    ; native mode
+ rep $30
+ mx %00
+* Form bank-$19 pointer to the table entry at offset:
+*   $F0/F1 = loading_str_tbl_addr + offset
+*   $F2    = $19
+ lda :ls_offset
+ and #$00FF
+ clc
+ adc loading_str_tbl_addr
+ sta $F0
+ sep $20
+ mx %10
+ lda #$19
+ sta $F2
+ rep $20
+ mx %00
+* Read 16-bit string address (bank-$19 offset of the C-string).
+ ldy #0
+ lda [$F0],y
+ sta :ls_str_addr
+* MoveTo(50, 104).
+ pea #50
+ pea #104
+ ldx #$3a04
+ jsl $E10000
+* DrawCString — push 24-bit pointer (bank in high word, offset
+* in low word). Bank is $19, offset is :ls_str_addr.
+ pea #$0019
+ lda :ls_str_addr
+ pha
+ ldx #$A604
+ jsl $E10000
+ sec
+ xce                    ; back to emulation
+ sep $30
+ mx %11
+ rts
+
+:ls_offset    dfb 0
+:ls_str_addr  ds 2
 
 *----------------------------------------------------------
 * erase_pause_text - Restore the rect under the PAUSED label by
@@ -4011,6 +4114,7 @@ saved_npc_mirror dfb 0
 *----------------------------------------------------------
 fo_start_punch
 * DEBUG: log fo_start_punch with info_ptr low (block identifier)
+ do DEBUG_PRINT
  lda #$C6              ; 'F'
  jsr dbg_print_char
  lda #$D0              ; 'P'
@@ -4020,6 +4124,7 @@ fo_start_punch
  lda info_ptr
  jsr dbg_print_hex8
  jsr dbg_print_nl
+ fin
 * Read per-NPC atk_anim from +54/+55 into anim_ptr ZP
  ldy #54
  lda (info_ptr),y
@@ -5512,6 +5617,7 @@ erase_all
  bne :not_dead
 * Death: erase at prev position, then remove from table.
 * DEBUG: log death-erase with prev rect.
+ do DEBUG_PRINT
  lda #$D2              ; 'R'
  jsr dbg_print_char
  lda #$CD              ; 'M'
@@ -5537,6 +5643,7 @@ erase_all
  lda (info_ptr),y
  jsr dbg_print_hex8
  jsr dbg_print_nl
+ fin
  ldy #32
  lda (info_ptr),y
  sta IMAGE01_YPOS
@@ -5642,6 +5749,7 @@ erase_all
  sta FRAME_Y
 * DEBUG: log erase rect ONLY if the erase bottom reaches y=180+
 * (where the HUD lives). This filters out normal gameplay erases.
+ do DEBUG_PRINT
  lda IMAGE01_YPOS
  clc
  adc FRAME_Y
@@ -5669,6 +5777,7 @@ erase_all
  jsr dbg_print_hex8
  jsr dbg_print_nl
 :skip_er_debug
+ fin
  jsr mark_overlapping    ; flag other sprites whose prev drawn rect
                           ; intersects the union we're about to erase
  jsr erase
@@ -7060,6 +7169,7 @@ btn_action_jump
  jmp :up_walk           ; not on ladder — normal walk
 :do_up_on_ladder
 * DEBUG: 'US' = up-scroll fired at current ypos
+ do DEBUG_PRINT
  lda #$D5              ; 'U'
  jsr dbg_print_char
  lda #$D3              ; 'S'
@@ -7069,6 +7179,7 @@ btn_action_jump
  lda IMAGE01_YPOS
  jsr dbg_print_hex8
  jsr dbg_print_nl
+ fin
 * Snap to ladder center for any climb. Scans ladder_buf for the
 * ladder Billy's currently on, computes its world-x center, and
 * pins world_offset = scroll_up_anchor while setting IMAGE01_XPOS
@@ -7262,6 +7373,7 @@ btn_action_jump
  beq :up_blocked_ladder
 :up_do_move
 * DEBUG: 'UC' = via-ladder climb allowed; 'UW' = normal walk up
+ do DEBUG_PRINT
  pha
  lda via_ladder
  beq :up_dbg_walk
@@ -7282,6 +7394,7 @@ btn_action_jump
  jsr dbg_print_hex8
  jsr dbg_print_nl
  pla
+ fin
  dec IMAGE01_YPOS
  lda via_ladder
  beq :up_walkframe
@@ -7295,6 +7408,7 @@ btn_action_jump
  rts
 :up_blocked_bounds
 * DEBUG: 'UX' = climb blocked by bounds (and not on ladder)
+ do DEBUG_PRINT
  lda #$D5
  jsr dbg_print_char
  lda #$D8              ; 'X'
@@ -7304,9 +7418,11 @@ btn_action_jump
  lda IMAGE01_YPOS
  jsr dbg_print_hex8
  jsr dbg_print_nl
+ fin
 :skip_up rts
 :up_blocked_ladder
 * DEBUG: 'UL' = climb on ladder but scroll_up disabled
+ do DEBUG_PRINT
  lda #$D5
  jsr dbg_print_char
  lda #$CC              ; 'L'
@@ -7316,6 +7432,7 @@ btn_action_jump
  lda IMAGE01_YPOS
  jsr dbg_print_hex8
  jsr dbg_print_nl
+ fin
  rts
 :not_up cmp #'s'
  bne :not_down
@@ -8650,6 +8767,7 @@ update_anims
 * prev_frame_y is also capped at (180 - prev_ypos) so the erase
 * never bleeds into the HUD.
 * DEBUG: log death entry with current ypos/xpos
+ do DEBUG_PRINT
  lda #$C4              ; 'D'
  jsr dbg_print_char
  lda #$C4              ; 'D'
@@ -8665,6 +8783,7 @@ update_anims
  lda (info_ptr),y
  jsr dbg_print_hex8
  jsr dbg_print_nl
+ fin
  ldy #0
  lda (info_ptr),y
  sec
@@ -8745,6 +8864,7 @@ update_anims
 * offset so the restored idle frame draws at the logical height.
 * anim_bfall is a 1-frame placeholder, so num_frames<2 skips.
 * DEBUG: log entry to :normal_end with anim_ptr low byte.
+ do DEBUG_PRINT
  lda #$CE              ; 'N'
  jsr dbg_print_char
  lda #$C5              ; 'E'
@@ -8759,6 +8879,7 @@ update_anims
  lda (info_ptr),y
  jsr dbg_print_hex8
  jsr dbg_print_nl
+ fin
 * williams_knife throw-end hook: if the anim that just ended is
 * anim_wkthrow, spawn the knife projectile and downgrade
 * williams_knife to a regular williams (BEHAV_FACEOFF). Only
@@ -8929,6 +9050,7 @@ update_anims
  cmp #2
  bcc :ne_no_unbump
 * DEBUG: log unbump with pre-unbump ypos
+ do DEBUG_PRINT
  lda #$D5              ; 'U'
  jsr dbg_print_char
  lda #$C2              ; 'B'
@@ -8939,6 +9061,7 @@ update_anims
  lda (info_ptr),y
  jsr dbg_print_hex8
  jsr dbg_print_nl
+ fin
  ldy #0
  lda (info_ptr),y     ; current ypos (bumped)
  ldy #32
@@ -9572,6 +9695,7 @@ update_anims
  cmp anim_ptr+1
  bne :no_fall_bump
 * DEBUG: log bump with pre-bump ypos
+ do DEBUG_PRINT
  lda #$C2              ; 'B'
  jsr dbg_print_char
  lda #$D0              ; 'P'
@@ -9582,6 +9706,7 @@ update_anims
  lda (info_ptr),y
  jsr dbg_print_hex8
  jsr dbg_print_nl
+ fin
  ldy #0
  lda (info_ptr),y
  clc
@@ -12579,6 +12704,12 @@ spr_bmace4   ds 2
 spr_bfall    ds 2
 spr_bfallen  ds 2
 
+* Bank-$19 address of mission12's loading_string_table. Read
+* from the mission12 header (+$14) by init_mission12. Used by
+* draw_loading_string to look up status strings shown during
+* the loading screen.
+loading_str_tbl_addr ds 2
+
 * Williams-with-pipe swing frames (WPIPE1-6). His attack uses
 * a 5-frame sequence: WPIPE1, WPIPE4, WPIPE2, WPIPE6, WPIPE3.
 * WPIPE5 isn't used by the swing but is loaded for completeness.
@@ -12836,6 +12967,20 @@ init_mission12
  xce                   ; native mode
  rep $30
  mx %00
+
+* Read header.loading_str_off (+$14) and stash the resulting
+* bank-$19 address — draw_loading_string uses it later. Done
+* first so we can re-use $F0/$F2 for the spr_addr_tbl lookup
+* below without juggling two pointers.
+ lda #$0014
+ sta $F0
+ sep $20
+ lda #$19
+ sta $F2
+ rep $20
+ ldy #0
+ lda [$F0],y
+ sta loading_str_tbl_addr
 
 * Set $F0/$F1/$F2 = $19/0012 (header.spr_addr_off field).
  lda #$0012
@@ -13283,6 +13428,7 @@ init_mission12
 * can verify the address-table read worked. Format:
 *   "BN <bnwalk1> <bnpunch1> <bnfall1>"
 * Each is 4 hex digits (high then low).
+ do DEBUG_PRINT
  lda #$C2              ; 'B'
  jsr dbg_print_char
  lda #$CE              ; 'N'
@@ -13328,6 +13474,7 @@ init_mission12
  ldal $193DCE
  jsr dbg_print_hex8
  jsr dbg_print_nl
+ fin
  rts
 
 *----------------------------------------------------------
@@ -15590,6 +15737,7 @@ scroll_up
 * with the 'UP' print to show (a) wo at OP_UP time, (b) wo at
 * snap time; they should be identical (no input during climb)
 * and they should match what the compensation constants assume.
+ do DEBUG_PRINT
  lda #$D3              ; 'S'
  jsr dbg_print_char
  lda #$CE              ; 'N'
@@ -15619,6 +15767,7 @@ scroll_up
  lda abs_x
  jsr dbg_print_hex8
  jsr dbg_print_nl
+ fin
  clc
  xce
  rep $30
@@ -15645,7 +15794,10 @@ scroll_up
 * DEBUG: one-line dump of world_offset / anchor / up_dst_start at
 * snap time so we can see whether the post-snap position drifts
 * run-to-run. Switch to emulation to use ROM COUT, then restore
-* native 16-bit mode for the rest of snap_transition.
+* native 16-bit mode for the rest of snap_transition. Whole
+* block is conditional on DEBUG_PRINT — including the mode
+* swaps, since they're only here for the print.
+ do DEBUG_PRINT
  sec
  xce
  mx %11
@@ -15688,6 +15840,7 @@ scroll_up
  xce
  rep $30
  mx %00
+ fin
 * Clear the left gap (cols 0..up_dst_start-1) at rows 0..snap_copy_rows-1
 * to zero, so stale shifted-down pre-climb content doesn't show through
 * in the area exposed by the nudge. Only when lbank=0 (no left neighbor)

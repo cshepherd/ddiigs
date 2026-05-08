@@ -25,6 +25,8 @@
 level_header
  ds $12                          ; +$00..+$11 reserved
 spr_addr_off   dw spr_addr_tbl   ; +$12 offset to sprite address table
+loading_str_off dw loading_string_table ; +$14 offset to loading-string table
+                                          ;     (read by init_mission12)
 
 *-------------------------------
 * Sprite pixel data address table (bank $06 addresses).
@@ -2907,3 +2909,13 @@ BFALL
  HEX 6666666666666666666666660222006666
  HEX 66666666666666666666666602F2220666
  HEX 6666666666666666666666660000000666
+
+loading_string_table
+    dw lstr1
+    dw lstr2
+    dw lstr3
+    dw lstr4
+lstr1   asc 'Polishing Burnov suit',00
+lstr2   asc 'Reticulating Splines',00
+lstr3   asc 'Cleaning the Mean Streets',00
+lstr4   asc 'Installing ladders and handrails',00
