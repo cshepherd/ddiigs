@@ -18399,22 +18399,28 @@ check_punch_hit
  jmp :advance        ; puncher_top > tgt_bottom → no overlap
 
 :h_check
-* Horizontal check: overlap or within 1 byte (was 2 — tightened
-* 2 px per side so glancing approaches don't register as hits).
-* punch_right - 1 >= tgt_x
+* Horizontal check: overlap or within 2 bytes. Tightened to 1
+* briefly to filter glancing "facing away" punches, but the
+* :not_immune NPC-mirror gate above already rejects those, and
+* tightening to 1 also broke Burnov-on-Billy: BNPUNCH2 is 23
+* wide, his bounds+pad max him out at xpos = bmax - 18, which
+* leaves a 2-byte gap between his left edge and Billy's right
+* edge. 2 bytes of slack restores that hit while the facing
+* check keeps the "back of head" filter.
+* punch_right - 2 >= tgt_x
  lda :punch_right
  sec
- sbc #1
+ sbc #2
  cmp :tgt_x
  bcs :h_check2
  jmp :advance        ; punch too far left
 :h_check2
-* tgt_right + 1 >= punch_x
+* tgt_right + 2 >= punch_x
  lda :tgt_x
  clc
  adc :tgt_w
  clc
- adc #1              ; tgt_right + 1
+ adc #2              ; tgt_right + 2
  cmp IMAGE01_XPOS
  bcs :hit
  jmp :advance        ; target too far left
