@@ -43,9 +43,14 @@ NTPstreamsound          =   NinjaTrackerPlus+24
   dex
   bpl ]cls
 
-; copy all of ccc.shr to SHR screen
-; except colors
-  ldx #$7e00
+; copy all of ccc.shr to SHR screen — pixels + SCBs only.
+; ldx #$7e00 used to overshoot by 2 bytes into the palette
+; area ($019E00..9E01), planting ccc's palette 0 slot 0 in
+; the otherwise-zeroed palette and producing horizontal-stripe
+; color flashes before fadeIn took over. $7DFE caps the loop
+; at the last SCB byte ($019DFF) so palette stays all-zero
+; until fadeIn writes its own ramp.
+  ldx #$7dfe
 ]cpy ldal $022000,x
   stal $012000,x
   dex
@@ -94,9 +99,13 @@ NTPstreamsound          =   NinjaTrackerPlus+24
   dex
   bpl ]dcls
 
-* Copy drugs.shr from $02/2000 → $01/2000 (full 32 KB,
-* including palette + SCBs at the end).
-  ldx #$7e00
+* Copy drugs.shr from $02/2000 → $01/2000 — pixels + SCBs
+* only. $7DFE (instead of $7E00) stops the loop at the last
+* SCB byte; the prior $7E00 cap walked one extra word into
+* the palette area, planting drugs' palette 0 slot 0 in an
+* otherwise-zeroed palette and producing a horizontal-stripe
+* color flash before fadeIn started its ramp.
+  ldx #$7dfe
 ]dcpy ldal $022000,x
   stal $012000,x
   dex
