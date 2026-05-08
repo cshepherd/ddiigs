@@ -120,6 +120,11 @@ $(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.sh
 	cp assets/drugs.shr out/DRUGS.SHR\#C10000
 	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/DRUGS.SHR\#C10000 --quiet
 	rm out/DRUGS.SHR\#C10000
+	# Packed full-screen LOADING image (palettes + SCBs included
+	# so it's standalone — no companion palette load needed).
+	python3 tools/packbytes.py pack assets/loading.shr out/LOADING.PAK\#C00000
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/LOADING.PAK\#C00000 --quiet
+	rm out/LOADING.PAK\#C00000
 	# Add NTP music assets. ntpplayer compresses ~58% (34672 → 14667
 	# bytes) so we ship it PackBytes-compressed and have title.s
 	# unpack it to bank $12 at boot via load_titlentp_pak.

@@ -44,6 +44,32 @@ NTPstreamsound          =   NinjaTrackerPlus+24
  sec
  xce                   ; back to emulation for ProDOS calls
 
+* Paint the LOADING splash to the SHR screen. SHR mode is
+* already on (inherited from DDII.SYSTEM), and unpack_bank=$01
+* with the default unpack_offset=$2000 lands the unpacked
+* image directly at $01/2000 — shadowed to $E1, visible
+* immediately. Stays on screen for the rest of the boot
+* sequence below; the first overwrite happens at over1 when
+* copy_50_to_01 paints scr0's background over it.
+ lda $c022
+ pha
+ stz $c022
+ lda #$41
+ sta $c029                  ; cut to black screen while loading Loading screen
+
+ lda #<loading_path
+ sta p_open+1
+ lda #>loading_path
+ sta p_open+2
+ lda #$01
+ sta unpack_bank
+ jsr load_and_unpack
+
+ lda #$C1                    ; what did you want me to do, add fade tables to bank $00? nope
+ sta $c029
+ pla
+ sta $c022
+
 * Load MISSION1 level data to bank $02
  lda #<mission1_path
  sta file_open+1
@@ -72,20 +98,9 @@ NTPstreamsound          =   NinjaTrackerPlus+24
  stz file_dest+1
  jsr load_file
 
-* Initialize level from bank $02 data, then mission12 from bank $11
- jsr init_level
- jsr init_mission12
-
-* Sound system: silence DOC, then install every sound from
-* the table (load each from disk via bank $11 scratch, upload
-* to its DOC RAM slot).
-; jsr init_doc
-; jsr sound_install_all
-
 * ntpplayer code is already in bank $12 — title.s loaded it once
 * at boot and bank $12 persists across SYS file loads (each SYS
 * file lands at bank $00/$2000, leaving the music banks alone).
-
 
 * NTP music data is pre-packed with PackBytes. Switch
 * unpack_offset to $0000 so each .PAK lands at bank/$0000
@@ -147,9 +162,13 @@ NTPstreamsound          =   NinjaTrackerPlus+24
  lda #$03
  sta unpack_bank
  jsr load_and_unpack
-* Copy $03/2000 -> $18/2000 (playfield shadow), then $18 -> $01
+* Copy $03/2000 -> $18/2000 (playfield shadow). The $18 -> $01
+* paint is deferred to after init_mission12 below so the LOADING
+* splash stays on screen through the heavy file/init phase.
+* Bank $18 still holds scr0 from this point on, which is what
+* the erase routines read — no functional dependency on $01
+* having scr0 yet.
  jsr copy_03_to_50
- jsr copy_50_to_01
 
 * Load MISSION12.PAK -> $04 (screen 1)
  lda #<path12
@@ -268,9 +287,19 @@ NTPstreamsound          =   NinjaTrackerPlus+24
  sta unpack_bank
  jsr load_and_unpack
 
-* Enable SHR mode
- lda #$c1
- sta $e0c029
+* Initialize level data now that MISSION1/MISSION12 binaries
+* and the SHR backgrounds are all loaded. Moved here from the
+* top of the boot sequence so the LOADING splash can stay on
+* screen during the heavy file loads above. SHR mode is
+* already enabled (inherited from DDII.SYSTEM), so no $C029
+* twiddle is needed here either.
+ jsr init_level
+ jsr init_mission12
+
+* Now paint scr0 ($18 -> $01, shadowed to $E1). This replaces
+* the LOADING splash with the playfield right before the HUD
+* and initial sprite draw below.
+ jsr copy_50_to_01
 
  clc
  xce
@@ -3629,6 +3658,12 @@ fo_approach
  jmp :no_action
 :have_player
  jsr npc_ensure_walking
+* Snapshot mirror BEFORE the routine touches it, so the
+* :commit-time dirty check can detect mirror flips. xpos and
+* ypos are snapshotted into prev_xpos/prev_ypos further down.
+ ldy #4
+ lda (info_ptr),y
+ sta saved_npc_mirror
 
 * Compute target X based on player's facing:
 *   If player faces right (mirror=0): target = player_x + player_w + FO_RANGE
@@ -3925,15 +3960,50 @@ fo_approach
 
 :still_moving
 :commit
-* Mark dirty (position changed)
- ldy #30
- lda #$03
- sta (info_ptr),y
+* Only dirty if anything actually changed this tick. Without
+* this, FACEOFF NPCs at target / blocked by bounds re-mark
+* dirty every frame, and erase_all/draw_all run on them every
+* frame — visible flicker even when nothing's moved.
+ jsr dirty_if_changed
 :no_action
  rts
 
 :yp_proposed dfb 0
 :yp_bottom   dfb 0
+
+*----------------------------------------------------------
+* dirty_if_changed - Set info+30 = $03 only if the sprite's
+* xpos / ypos / mirror differ from their pre-routine values
+* (prev_xpos at info+34, prev_ypos at info+32, mirror saved
+* in saved_npc_mirror). Used by FACEOFF / FLANK behaviors so
+* an NPC sitting at its target doesn't re-dirty every tick.
+* Caller must have stashed the entry-time mirror in
+* saved_npc_mirror, and have snapshotted prev_xpos/prev_ypos
+* before mutating xpos/ypos. Trashes A, Y. Preserves X.
+*----------------------------------------------------------
+dirty_if_changed
+ ldy #2
+ lda (info_ptr),y      ; current xpos
+ ldy #34
+ cmp (info_ptr),y
+ bne :dic_set
+ ldy #0
+ lda (info_ptr),y
+ ldy #32
+ cmp (info_ptr),y
+ bne :dic_set
+ ldy #4
+ lda (info_ptr),y
+ cmp saved_npc_mirror
+ beq :dic_done
+:dic_set
+ lda #$03
+ ldy #30
+ sta (info_ptr),y
+:dic_done
+ rts
+
+saved_npc_mirror dfb 0
 
 *----------------------------------------------------------
 * fo_start_punch - Trigger anim_wpunch on the NPC (William's
@@ -5183,6 +5253,11 @@ fl_arc
  jmp :no_action
 :have_player
  jsr npc_ensure_walking
+* Snapshot mirror so dirty_if_changed below can detect mirror
+* flips (fl_compute_target / fl_step_x will overwrite +4).
+ ldy #4
+ lda (info_ptr),y
+ sta saved_npc_mirror
 
  jsr fl_compute_target
 
@@ -5218,10 +5293,8 @@ fl_arc
  jsr fl_step_y_to
  sta fl_y_done
 
-* Mark dirty (position changed)
- ldy #30
- lda #$03
- sta (info_ptr),y
+* Dirty only if pos/mirror actually changed (saved at entry).
+ jsr dirty_if_changed
 
 * If both axes at corner, transition to FL_CLOSE
  lda fl_x_done
@@ -5247,6 +5320,10 @@ fl_close
  jmp :no_action
 :have_player
  jsr npc_ensure_walking
+* Snapshot mirror so dirty_if_changed below can detect flips.
+ ldy #4
+ lda (info_ptr),y
+ sta saved_npc_mirror
 
  jsr fl_compute_target
  jsr fl_snapshot_prev
@@ -5256,9 +5333,7 @@ fl_close
  jsr fl_step_y_to
  sta fl_y_done
 
- ldy #30
- lda #$03
- sta (info_ptr),y
+ jsr dirty_if_changed
 
  lda fl_x_done
  ora fl_y_done
@@ -5628,6 +5703,56 @@ erase_all
  ora #$01             ; set bit 0
  sta (info_ptr),y
 :skip_erase
+* Interleaved draw: paint this sprite at its current frame
+* immediately after erasing its prev rect. Shrinks the
+* "sprite invisible" window to a single sprite's erase+draw
+* (instead of all-sprites-erased then all-sprites-drawn),
+* dramatically cutting flicker at 2.8 MHz.
+*
+* The erase rect setup above clobbered IMAGE01_XPOS/YPOS and
+* FRAME_X/Y with the prev∪current union rect. Re-call
+* load_sprite to refresh the globals from info before drawing
+* — otherwise draw_sprite would paint at the union origin
+* with the union dimensions (= corrupted ghost trails).
+*
+* mark_overlapping above may set needs_draw on sprites we've
+* ALREADY iterated past. game_loop still calls draw_all after
+* this routine; that pass picks up any such "back-flagged"
+* sprites and draws them.
+ jsr load_sprite
+ ldy #30
+ lda (info_ptr),y
+ and #$01             ; bit 0 = needs_draw?
+ beq :ea_draw_done
+* Burnov-grab lock: skip Billy entirely while bn_grab_active
+* (his BNBILLY1/2/3 frames are the combined pose).
+ ldy #22
+ lda (info_ptr),y
+ cmp #$01
+ bne :ea_disp_check
+ lda bn_grab_active
+ beq :ea_disp_check
+ jmp :ea_clr_dirty    ; gated out — clear bit and continue
+:ea_disp_check
+* Compiled vs legacy dispatch: compiled (AND/ORA) only when
+* MASK_ADDR != 0 AND the sprite is the keyboard player.
+ ldy #22
+ lda (info_ptr),y
+ cmp #$01
+ bne :ea_legacy
+ lda MASK_ADDR
+ ora MASK_ADDR+1
+ beq :ea_legacy
+ jsr draw_sprite_compiled
+ bra :ea_clr_dirty
+:ea_legacy
+ jsr draw_sprite
+:ea_clr_dirty
+ ldy #30
+ lda (info_ptr),y
+ and #$FE             ; clear bit 0 (needs_draw)
+ sta (info_ptr),y
+:ea_draw_done
  lda spr_ptr
  clc
  adc #2
@@ -14067,6 +14192,9 @@ completentp_path dfb 23
 
 gameoverntp_path dfb 23
  asc '/DDIIGS/GAMEOVERNTP.PAK'
+
+loading_path dfb 19
+ asc '/DDIIGS/LOADING.PAK'
 
 
 *----------------------------------------------------------
