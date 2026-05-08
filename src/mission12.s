@@ -2915,7 +2915,11 @@ loading_string_table
     dw lstr2
     dw lstr3
     dw lstr4
-lstr1   asc 'Polishing Burnov suit',00
-lstr2   asc 'Reticulating Splines',00
-lstr3   asc 'Cleaning the Mean Streets',00
-lstr4   asc 'Installing ladders and handrails',00
+    dw lstr5
+    dw lstr6
+lstr1   asc '  Polishing Burnov suit ',00
+lstr2   asc '   Reticulating Splines ',00
+lstr3   asc '  Cleaning Mean Streets ',00
+lstr4   asc '    Installing ladders   ',00
+lstr5   asc '   Saluting Les Jeunes   ',00
+lstr6   asc '    Preparing to Play    ',00

@@ -157,6 +157,9 @@ DEBUG_PRINT equ 0
  sta unpack_bank
  jsr load_and_unpack
 
+ ldx #1
+ jsr draw_loading_string
+
 * Load COMPLETENTP.PAK -> $17, unpack to $15/0000
 * (level-completion fanfare; will get wired up to OP_END later).
  lda #<completentp_path
@@ -199,6 +202,9 @@ DEBUG_PRINT equ 0
 * the erase routines read — no functional dependency on $01
 * having scr0 yet.
  jsr copy_03_to_50
+
+ ldx #2
+ jsr draw_loading_string
 
 * Load MISSION12.PAK -> $04 (screen 1)
  lda #<path12
@@ -244,6 +250,9 @@ DEBUG_PRINT equ 0
  lda #$08
  sta unpack_bank
  jsr load_and_unpack
+
+ ldx #3
+ jsr draw_loading_string
 
 * Load MISSION17.PAK -> $09 (screen 6)
  lda #<path17
@@ -299,6 +308,9 @@ DEBUG_PRINT equ 0
  sta unpack_bank
  jsr load_and_unpack
 
+ ldx #4
+ jsr draw_loading_string
+
 * Load MISSION113.PAK -> $0F (screen 12)
  lda #<path113
  sta p_open+1
@@ -325,6 +337,9 @@ DEBUG_PRINT equ 0
 * twiddle is needed here either.
  jsr init_level
  jsr init_mission12
+
+ ldx #5
+ jsr draw_loading_string
 
 * Now paint scr0 ($18 -> $01, shadowed to $E1). This replaces
 * the LOADING splash with the playfield right before the HUD
@@ -2791,9 +2806,17 @@ draw_loading_string
  lda [$F0],y
  sta :ls_str_addr
 * MoveTo(50, 104).
- pea #50
+ pea #60
  pea #104
  ldx #$3a04
+ jsl $E10000
+* SetForeColor
+ pea #$0000
+ ldx #$A004
+ jsl $E10000
+* SetBackColor
+ pea #$0004
+ ldx #$A204
  jsl $E10000
 * DrawCString — push 24-bit pointer (bank in high word, offset
 * in low word). Bank is $19, offset is :ls_str_addr.
