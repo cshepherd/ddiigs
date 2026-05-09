@@ -1357,7 +1357,7 @@ bounds_scr10
  dfb 0,0
  --^
  LUP 1
- dfb 0,72
+ dfb 0,85
  --^
  LUP 152
  dfb 0,0

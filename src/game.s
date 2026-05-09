@@ -26,7 +26,7 @@ NTPstreamsound          =   NinjaTrackerPlus+24
 * sprinkled through the engine. Set to 1 to keep them in the
 * binary; 0 to strip them entirely (the dbg_print_* helpers
 * themselves still ship — only the call-site blocks vanish).
-DEBUG_PRINT equ 0
+DEBUG_PRINT equ 1
 
 * Clear text screen so diagnostic prints start on a fresh page.
  sec
@@ -18196,6 +18196,27 @@ mark_overlapping
 * Saves/restores spr_ptr and info_ptr.
 *----------------------------------------------------------
 check_punch_hit
+* DEBUG: 'CP <anim_lo><anim_hi> SP=<spr_ptr_lo> IP=<info_lo>'
+* — full puncher anim address + sprite_table cursor + puncher
+* info_ptr at entry. If iteration never produces a TG line,
+* we can sanity-check whether sprite_table is what we expect.
+ do DEBUG_PRINT
+ lda #$C3              ; 'C'
+ jsr dbg_print_char
+ lda #$D0              ; 'P'
+ jsr dbg_print_char
+ lda #$A0
+ jsr dbg_print_char
+ lda anim_ptr
+ jsr dbg_print_hex8
+ lda anim_ptr+1
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda info_ptr
+ jsr dbg_print_hex8
+ jsr dbg_print_nl
+ fin
 * Save caller's spr_ptr, info_ptr, and anim_ptr. The iteration
 * below overwrites anim_ptr ZP for each target it checks, so
 * returning without restoring leaves the puncher's update_anims
@@ -18264,6 +18285,24 @@ check_punch_hit
  bne :not_null
  jmp :done            ; null terminator
 :not_null
+* DEBUG: 'IT <info_lo> <self_lo>' — every iteration that has a
+* live entry. Confirms whether the loop is iterating at all and
+* what sprite_table pointers it's seeing vs the saved self.
+ do DEBUG_PRINT
+ lda #$C9              ; 'I'
+ jsr dbg_print_char
+ lda #$D4              ; 'T'
+ jsr dbg_print_char
+ lda #$A0
+ jsr dbg_print_char
+ lda info_ptr
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda :self_lo
+ jsr dbg_print_hex8
+ jsr dbg_print_nl
+ fin
 
 * Skip self
  lda info_ptr
@@ -18280,18 +18319,66 @@ check_punch_hit
 * Billy specifically; that branch stays.)
  ldy #22
  lda (info_ptr),y      ; controller
+* DEBUG: 'CT <ctrl> <info_lo> <god>' — fires after every controller
+* read (post not-self). If we don't see CT for info_lo=$C5 (Billy),
+* then info_ptr was clobbered between IT and here.
+ do DEBUG_PRINT
+ pha
+ lda #$C3              ; 'C'
+ jsr dbg_print_char
+ lda #$D4              ; 'T'
+ jsr dbg_print_char
+ lda #$A0
+ jsr dbg_print_char
+ pla
+ pha
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda info_ptr
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda god_mode
+ jsr dbg_print_hex8
+ jsr dbg_print_nl
+ pla
+ fin
  beq :is_npc           ; controller=0 → enemy NPC, hit-check
  cmp #$01
- bne :advance_jmp      ; controller >= $02 → item, skip
-* controller == 1 → Billy. Skip if god_mode is on, else fall
-* through to allow the hit (existing behavior).
- lda god_mode
- bne :advance_jmp
- bra :is_npc
-:advance_jmp
- jmp :advance
+ beq :is_npc           ; controller=1 → Billy, hit-check (god_mode
+*                      ;   gating now happens at :hit so diagnostics
+*                      ;   still fire for invincible Billy)
+ jmp :advance          ; controller >= $02 → item, skip
 :is_npc
 :not_god
+* DEBUG: 'TG <panim_lo> <panim_hi> <ctrl> <info_lo>' — every
+* target that survives the controller filter, plus the puncher's
+* anim bytes. Helps spot whether anim_bnpunch's HIGH byte is
+* actually matching the value the dispatch expects. Unconditional
+* (any puncher) so we can confirm the loop is iterating at all.
+ do DEBUG_PRINT
+ lda #$D4              ; 'T'
+ jsr dbg_print_char
+ lda #$C7              ; 'G'
+ jsr dbg_print_char
+ lda #$A0
+ jsr dbg_print_char
+ lda :puncher_anim_lo
+ jsr dbg_print_hex8
+ lda :puncher_anim_hi
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ ldy #22
+ lda (info_ptr),y
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda info_ptr
+ jsr dbg_print_hex8
+ jsr dbg_print_nl
+ fin
 * Check if target is immune. Three cases grant immunity:
 *   1) fall_anim is currently playing (any sprite)
 *   2) target is Burnov AND playing anim_bn_diss (dissolving)
@@ -18360,6 +18447,40 @@ check_punch_hit
  beq :face_skip       ; equal → on top of each other, allow
  jmp :advance         ; NPC turned away — skip
 :face_skip
+* DEBUG: 'FC P=<panim> M=<mirror> N=<npc_x> B=<billy_x>' — log
+* every Burnov→Billy punch that survives the facing gate so we
+* can see what bbox numbers the next checks see.
+ do DEBUG_PRINT
+ lda :puncher_anim_lo
+ cmp #<anim_bnpunch
+ bne :fc_dbg_skip
+ lda :puncher_anim_hi
+ cmp #>anim_bnpunch
+ bne :fc_dbg_skip
+ ldy #22
+ lda (info_ptr),y
+ cmp #$01
+ bne :fc_dbg_skip
+ lda #$C6              ; 'F'
+ jsr dbg_print_char
+ lda #$C3              ; 'C'
+ jsr dbg_print_char
+ lda #$A0
+ jsr dbg_print_char
+ lda IMAGE01_MIRROR
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda IMAGE01_XPOS
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ ldy #2
+ lda (info_ptr),y
+ jsr dbg_print_hex8
+ jsr dbg_print_nl
+:fc_dbg_skip
+ fin
 
 * Read target's ypos, xpos, frame_x, frame_y
  ldy #0
@@ -18425,6 +18546,41 @@ check_punch_hit
  bcs :hit
  jmp :advance        ; target too far left
 :hit
+* god_mode gate — moved here from the controller filter so all the
+* iteration / facing / bbox diagnostic prints (TG / FC / HT) still
+* fire even when Billy is invincible. Only the actual hit dispatch
+* below is short-circuited.
+ ldy #22
+ lda (info_ptr),y
+ cmp #$01
+ bne :god_skip          ; target isn't Billy — god_mode irrelevant
+ lda god_mode
+ beq :god_skip
+ jmp :advance           ; god_mode on + target=Billy → no hit
+:god_skip
+
+* DEBUG: 'HT' = bbox check passed, about to check special-case
+* Burnov-grab. If we see 'HT' but no BNBILLY visual, the grab
+* dispatch is the broken link. If no 'HT' for Burnov, bbox
+* itself is rejecting.
+ do DEBUG_PRINT
+ lda :puncher_anim_lo
+ cmp #<anim_bnpunch
+ bne :ht_dbg_skip
+ lda :puncher_anim_hi
+ cmp #>anim_bnpunch
+ bne :ht_dbg_skip
+ ldy #22
+ lda (info_ptr),y
+ cmp #$01
+ bne :ht_dbg_skip
+ lda #$C8              ; 'H'
+ jsr dbg_print_char
+ lda #$D4              ; 'T'
+ jsr dbg_print_char
+ jsr dbg_print_nl
+:ht_dbg_skip
+ fin
 
 * Burnov-grabs-Billy special case. When anim_bnpunch lands on
 * Billy (controller=1), divert from the standard hit/fall logic
