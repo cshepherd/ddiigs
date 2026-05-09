@@ -26,7 +26,7 @@ NTPstreamsound          =   NinjaTrackerPlus+24
 * sprinkled through the engine. Set to 1 to keep them in the
 * binary; 0 to strip them entirely (the dbg_print_* helpers
 * themselves still ship — only the call-site blocks vanish).
-DEBUG_PRINT equ 1
+DEBUG_PRINT equ 0
 
 * Clear text screen so diagnostic prints start on a fresh page.
  sec
