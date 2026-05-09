@@ -10344,7 +10344,10 @@ spawn_thrown_knife
  pha
  lda info_ptr+1
  pha
-* Capture williams' position + facing.
+* Capture thrower's position + facing + controller. Controller
+* drives the projectile's hit-target dispatch in update_projectile:
+* williams-thrown ($00) hits only Billy; Billy-thrown ($01) hits
+* only NPCs with an automatic fall.
  ldy #0
  lda (info_ptr),y
  clc
@@ -10356,6 +10359,9 @@ spawn_thrown_knife
  ldy #4
  lda (info_ptr),y
  sta :tk_dir           ; 0=right, 1=left
+ ldy #22
+ lda (info_ptr),y
+ sta :tk_thrower_ctrl  ; $00=NPC (williams), $01=Billy
 
 * Find first null sprite_table entry.
  lda #<sprite_table
@@ -10491,10 +10497,17 @@ spawn_thrown_knife
  ldy #20
  sta (info_ptr),y
 
-* controller = $03 (projectile — flies, hit-checks Billy, dies
-* on screen edge). update_npcs routes this to update_projectile.
+* controller = $03 (projectile — flies, dispatches in
+* update_projectile based on the +8 thrower marker below).
  lda #$03
  ldy #22
+ sta (info_ptr),y
+
+* Thrower marker at +8 (legacy "anim_count", unused by projectiles):
+* copy of the thrower's controller. update_projectile reads this
+* to choose knife_hit_billy vs knife_hit_npc.
+ lda :tk_thrower_ctrl
+ ldy #8
  sta (info_ptr),y
 
  lda #$01
@@ -10530,9 +10543,10 @@ spawn_thrown_knife
  pla
  sta info_ptr
  rts
-:tk_x_anchor dfb 0
-:tk_y        dfb 0
-:tk_dir      dfb 0
+:tk_x_anchor    dfb 0
+:tk_y           dfb 0
+:tk_dir         dfb 0
+:tk_thrower_ctrl dfb 0
 
 *----------------------------------------------------------
 * update_projectile - Advance a controller=$03 sprite by
@@ -10592,7 +10606,16 @@ update_projectile
  lda #$03
  sta (info_ptr),y      ; dirty
 
-* Hit-check against Billy.
+* Hit-check. Dispatch based on the thrower marker at +8:
+* $01 = Billy threw it → only hits NPCs (auto-fall).
+* anything else (today: $00 = williams threw it) → only hits Billy.
+ ldy #8
+ lda (info_ptr),y
+ cmp #$01
+ bne :up_hit_billy
+ jsr knife_hit_npc
+ rts
+:up_hit_billy
  jsr knife_hit_billy
  rts
 
@@ -10794,6 +10817,277 @@ knife_hit_billy
 :bb_h      dfb 0
 :bb_right  dfb 0
 :bb_bottom dfb 0
+
+*----------------------------------------------------------
+* knife_hit_npc - Bbox overlap test of caller's projectile
+* (info_ptr) against every NPC (controller=$00) in
+* sprite_table. On the first hit:
+*   - tag the projectile $FFFF in anim_ptr (death sentinel)
+*   - bump the NPC's punch_count by 3 (mirrors mace/uppercut
+*     "damage = 3" in check_punch_hit's dmg-table)
+*   - start the NPC's fall_anim, after staging IMAGE01_*
+*     globals so start_anim sets up correctly. The standard
+*     :ad_normal_flow path in update_anims handles the death
+*     transition once punch_count walks past 6.
+* NPCs already mid-fall_anim are skipped (knife passes through).
+* Caller's info_ptr / spr_ptr are restored on exit.
+*----------------------------------------------------------
+knife_hit_npc
+* Snapshot knife bbox while info_ptr still points at projectile.
+ ldy #0
+ lda (info_ptr),y
+ sta :kn_y
+ ldy #2
+ lda (info_ptr),y
+ sta :kn_x
+ ldy #10
+ lda (info_ptr),y
+ sta :kn_w
+ ldy #12
+ lda (info_ptr),y
+ sta :kn_h
+ lda :kn_x
+ clc
+ adc :kn_w
+ sta :kn_right
+ lda :kn_y
+ clc
+ adc :kn_h
+ sec
+ sbc #1
+ sta :kn_bottom
+
+* Save caller's info_ptr / spr_ptr; we clobber both during the
+* sprite_table iteration.
+ lda info_ptr
+ pha
+ lda info_ptr+1
+ pha
+ lda spr_ptr
+ pha
+ lda spr_ptr+1
+ pha
+
+ lda #<sprite_table
+ sta spr_ptr
+ lda #>sprite_table
+ sta spr_ptr+1
+:kn_loop
+ ldy #0
+ lda (spr_ptr),y
+ sta info_ptr
+ iny
+ lda (spr_ptr),y
+ sta info_ptr+1
+ ora info_ptr
+ bne :kn_not_null
+ jmp :kn_done           ; null terminator → no hit
+:kn_not_null
+* NPC filter: controller must be $00. Skip Billy, items,
+* projectiles (including this one).
+ ldy #22
+ lda (info_ptr),y
+ beq :kn_is_npc
+ jmp :kn_advance
+:kn_is_npc
+* Skip NPCs already tagged dead ($FFFF in anim_ptr).
+ ldy #24
+ lda (info_ptr),y
+ cmp #$FF
+ bne :kn_alive
+ ldy #25
+ lda (info_ptr),y
+ cmp #$FF
+ bne :kn_alive
+ jmp :kn_advance
+:kn_alive
+* Bbox snapshot for target.
+ ldy #0
+ lda (info_ptr),y
+ sta :kn_ty
+ ldy #2
+ lda (info_ptr),y
+ sta :kn_tx
+ ldy #10
+ lda (info_ptr),y
+ sta :kn_tw
+ ldy #12
+ lda (info_ptr),y
+ sta :kn_th
+ lda :kn_tx
+ clc
+ adc :kn_tw
+ sta :kn_tright
+ lda :kn_ty
+ clc
+ adc :kn_th
+ sec
+ sbc #1
+ sta :kn_tbottom
+* Horizontal: knife_right >= target_x AND knife_x <= target_right
+ lda :kn_right
+ cmp :kn_tx
+ bcs :kn_h2
+ jmp :kn_advance
+:kn_h2
+ lda :kn_x
+ cmp :kn_tright
+ beq :kn_v
+ bcc :kn_v
+ jmp :kn_advance
+:kn_v
+* Vertical: knife_bottom >= target_y AND knife_y <= target_bottom
+ lda :kn_bottom
+ cmp :kn_ty
+ bcs :kn_v2
+ jmp :kn_advance
+:kn_v2
+ lda :kn_y
+ cmp :kn_tbottom
+ beq :kn_hit
+ bcc :kn_hit
+ jmp :kn_advance
+:kn_hit
+* Skip if NPC is already in fall_anim — knife passes through.
+ ldy #50
+ lda (info_ptr),y
+ ldy #24
+ cmp (info_ptr),y
+ bne :kn_do_fall
+ ldy #51
+ lda (info_ptr),y
+ ldy #25
+ cmp (info_ptr),y
+ bne :kn_do_fall
+ jmp :kn_done
+:kn_do_fall
+* Resolve fall_anim. If the NPC has none, treat as no hit.
+ ldy #50
+ lda (info_ptr),y
+ sta anim_ptr
+ ldy #51
+ lda (info_ptr),y
+ sta anim_ptr+1
+ ora anim_ptr
+ bne :kn_have_fall
+ jmp :kn_done
+:kn_have_fall
+* damage = 3 (mirrors mace/uppercut). Adds toward the punch_count
+* >= 6 death threshold checked in update_anims :ad_check_pc.
+ ldy #48
+ lda (info_ptr),y
+ clc
+ adc #3
+ sta (info_ptr),y
+* Save IMAGE01_* globals — the projectile path doesn't render
+* via these, but downstream update_anims iterations might reuse
+* whatever start_anim leaves staged.
+ lda IMAGE01_YPOS
+ pha
+ lda IMAGE01_XPOS
+ pha
+ lda IMAGE01_MIRROR
+ pha
+ lda FRAME_X
+ pha
+ lda FRAME_Y
+ pha
+ lda FRAME_ADDR
+ pha
+ lda FRAME_ADDR+1
+ pha
+* Stage target's globals for start_anim.
+ ldy #0
+ lda (info_ptr),y
+ sta IMAGE01_YPOS
+ ldy #2
+ lda (info_ptr),y
+ sta IMAGE01_XPOS
+ ldy #4
+ lda (info_ptr),y
+ sta IMAGE01_MIRROR
+ ldy #10
+ lda (info_ptr),y
+ sta FRAME_X
+ ldy #12
+ lda (info_ptr),y
+ sta FRAME_Y
+ ldy #14
+ lda (info_ptr),y
+ sta FRAME_ADDR
+ ldy #15
+ lda (info_ptr),y
+ sta FRAME_ADDR+1
+ lda anim_ptr
+ ldx anim_ptr+1
+ jsr start_anim
+* Restore globals.
+ pla
+ sta FRAME_ADDR+1
+ pla
+ sta FRAME_ADDR
+ pla
+ sta FRAME_Y
+ pla
+ sta FRAME_X
+ pla
+ sta IMAGE01_MIRROR
+ pla
+ sta IMAGE01_XPOS
+ pla
+ sta IMAGE01_YPOS
+* Restore caller's spr_ptr / info_ptr, then tag the projectile
+* dead. info_ptr is currently the target — flip back before
+* the $FFFF write.
+ pla
+ sta spr_ptr+1
+ pla
+ sta spr_ptr
+ pla
+ sta info_ptr+1
+ pla
+ sta info_ptr
+ lda #$FF
+ ldy #24
+ sta (info_ptr),y
+ iny
+ sta (info_ptr),y
+ rts
+
+:kn_advance
+ lda spr_ptr
+ clc
+ adc #2
+ sta spr_ptr
+ bcc :kn_jloop
+ inc spr_ptr+1
+:kn_jloop jmp :kn_loop
+
+:kn_done
+* No hit (or skipped) — restore caller's spr_ptr / info_ptr,
+* leave projectile alive.
+ pla
+ sta spr_ptr+1
+ pla
+ sta spr_ptr
+ pla
+ sta info_ptr+1
+ pla
+ sta info_ptr
+ rts
+
+:kn_x       dfb 0
+:kn_y       dfb 0
+:kn_w       dfb 0
+:kn_h       dfb 0
+:kn_right   dfb 0
+:kn_bottom  dfb 0
+:kn_tx      dfb 0
+:kn_ty      dfb 0
+:kn_tw      dfb 0
+:kn_th      dfb 0
+:kn_tright  dfb 0
+:kn_tbottom dfb 0
 
 
 williams_knife_drop_and_transform
