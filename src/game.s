@@ -10204,7 +10204,7 @@ linda_flail_drop_and_transform
 *----------------------------------------------------------
 spawn_dropped_mace
 * Stash linda's info_ptr & capture her current pos. Mace
-* drops 16 px below linda's anchor so it sits on the
+* drops 21 px below linda's anchor so it sits on the
 * ground in front of her crumpled body, not at her head.
  lda info_ptr
  pha
@@ -10213,7 +10213,7 @@ spawn_dropped_mace
  ldy #0
  lda (info_ptr),y
  clc
- adc #16
+ adc #21
  sta :sm_y
  ldy #2
  lda (info_ptr),y
@@ -11281,7 +11281,7 @@ spawn_dropped_knife
  ldy #0
  lda (info_ptr),y
  clc
- adc #16
+ adc #21              ; +21 from williams' ypos: settles at feet
  sta :sk_y
  ldy #2
  lda (info_ptr),y
@@ -11495,7 +11495,7 @@ williams_pipe_drop_and_transform
 *----------------------------------------------------------
 * spawn_dropped_pipe - Allocate a sprite_table+npc_buffer slot
 * for a static PIPE1 item at the source sprite's xpos and
-* (ypos + 20). Mirrors spawn_dropped_mace's structure. PIPE1
+* (ypos + 25). Mirrors spawn_dropped_mace's structure. PIPE1
 * is 9×5 with mask color $1.
 *----------------------------------------------------------
 spawn_dropped_pipe
@@ -11506,7 +11506,7 @@ spawn_dropped_pipe
  ldy #0
  lda (info_ptr),y
  clc
- adc #20
+ adc #25              ; +25 from williams' ypos: settles at feet
  sta :sp_y
  ldy #2
  lda (info_ptr),y

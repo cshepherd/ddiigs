@@ -343,7 +343,7 @@ level_script
 
     db OP_NPC
     dw williams_knife_sprite
-    db $58,$32,$01,BEHAV_KNIFER
+    db $50,$32,$01,BEHAV_KNIFER
     db OP_WAITCLR
     db OP_KILLOBJ       ; clean up any dropped knives
 
