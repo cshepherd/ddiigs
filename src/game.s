@@ -6948,9 +6948,31 @@ btn_action_fire
  rts
 :baf_l_chk_mace
  lda billy_mace_armed
- beq :baf_l_pickup
+ beq :baf_l_chk_knife
  lda #<anim_bmaceswing
  ldx #>anim_bmaceswing
+ jsr start_anim
+ rts
+:baf_l_chk_knife
+ lda billy_knife_armed
+ beq :baf_l_pickup
+* Throw: spawn_thrown_knife reads info_ptr's xpos / ypos / mirror
+* the same way it does for a williams thrower; Billy's block uses
+* the same offsets. Spawn first (still using BKNIFE1 idle), then
+* disarm to restore the compiled-IMAGE01 idle path so anim_punch1's
+* :normal_end leaves Billy unarmed.
+ lda #<billy_sprite
+ sta info_ptr
+ lda #>billy_sprite
+ sta info_ptr+1
+ jsr spawn_thrown_knife
+ lda #<billy_sprite
+ sta info_ptr
+ lda #>billy_sprite
+ sta info_ptr+1
+ jsr billy_disarm_weapon
+ lda #<anim_punch1
+ ldx #>anim_punch1
  jsr start_anim
  rts
 :baf_l_pickup
@@ -7887,21 +7909,37 @@ advance_walk
  stz walk_step
  lda #0
 :ok tax
+* Armed-with-knife uses a per-frame X table (BKWALK1/3=11,
+* BKWALK2=9) but a uniform 40-line height. Patch FRAME_X from
+* knife_walk_x_tbl and FRAME_Y from a literal #$28 before the
+* asl that converts walk_step → 2-byte index. Pipe and mace
+* stay on the uniform 9×40 walk_x/y_tbl.
+ lda billy_knife_armed
+ beq :aw_norm_dims
+ lda knife_walk_x_tbl,x
+ sta FRAME_X
+ lda #$28
+ sta FRAME_Y
+ bra :aw_dims_done
+:aw_norm_dims
  lda walk_x_tbl,x
  sta FRAME_X
  lda walk_y_tbl,x
  sta FRAME_Y
+:aw_dims_done
  txa
  asl
  tax
-* Armed dispatch: if Billy is carrying a pipe or a mace, walk
-* uses the matching armed walk table (legacy renderer in bank
-* $19). Clear MASK_ADDR + set sprite_bank = $19 so the cross-
-* bank long-indirect reads land on the right pixels.
+* Armed dispatch: if Billy is carrying a pipe, mace, or knife,
+* walk uses the matching armed walk table (legacy renderer in
+* bank $19). Clear MASK_ADDR + set sprite_bank = $19 so the
+* cross-bank long-indirect reads land on the right pixels.
  lda billy_pipe_armed
  bne :aw_pipe
  lda billy_mace_armed
  bne :aw_mace
+ lda billy_knife_armed
+ bne :aw_knife
  bra :aw_unarmed
 :aw_pipe
  lda pipe_walk_addr_tbl,x
@@ -7913,6 +7951,12 @@ advance_walk
  lda mace_walk_addr_tbl,x
  sta FRAME_ADDR
  lda mace_walk_addr_tbl+1,x
+ sta FRAME_ADDR+1
+ bra :aw_armed_common
+:aw_knife
+ lda knife_walk_addr_tbl,x
+ sta FRAME_ADDR
+ lda knife_walk_addr_tbl+1,x
  sta FRAME_ADDR+1
 :aw_armed_common
  lda #0
@@ -9318,14 +9362,15 @@ update_anims
 * For Billy (controller=$01): pick compiled idle data + mask whose
 * orientation matches IMAGE01_MIRROR. Mirror is baked into the
 * pre-rotated arrays — draw_sprite_compiled has no mirror branch.
-* Skip entirely when Billy is armed (pipe or mace) — armed
-* renders through the legacy path (MASK_ADDR=0).
+* Skip entirely when Billy is armed (pipe, mace, or knife) — all
+* armed paths render through the legacy path (MASK_ADDR=0).
  ldy #22
  lda (info_ptr),y
  cmp #$01
  bne :ne_no_billy_mask
  lda billy_pipe_armed
  ora billy_mace_armed
+ ora billy_knife_armed
  bne :ne_no_billy_mask
  lda IMAGE01_MIRROR
  bne :ne_billy_mirror
@@ -11200,12 +11245,38 @@ billy_try_pickup_weapon
  ldy #14
  lda (info_ptr),y
  cmp spr_mace2
- bne :tp_advance
+ bne :tp_chk_knife
  ldy #15
  lda (info_ptr),y
  cmp spr_mace2+1
- bne :tp_advance
+ bne :tp_chk_knife
  lda #2                   ; weapon kind = mace
+ sta :tp_kind
+ bra :tp_have_kind
+:tp_chk_knife
+* Dropped knife (KNIFE2 right-facing or KNIFE4 left-facing). Same
+* sprite addrs that spawn_dropped_knife wrote into +14/+15.
+ ldy #14
+ lda (info_ptr),y
+ cmp spr_knife2
+ bne :tp_chk_knife4
+ ldy #15
+ lda (info_ptr),y
+ cmp spr_knife2+1
+ bne :tp_chk_knife4
+ lda #3                   ; weapon kind = knife
+ sta :tp_kind
+ bra :tp_have_kind
+:tp_chk_knife4
+ ldy #14
+ lda (info_ptr),y
+ cmp spr_knife4
+ bne :tp_advance
+ ldy #15
+ lda (info_ptr),y
+ cmp spr_knife4+1
+ bne :tp_advance
+ lda #3                   ; weapon kind = knife
  sta :tp_kind
 :tp_have_kind
 
@@ -11257,11 +11328,16 @@ billy_try_pickup_weapon
 * picks up the new BPIPEW1 / BMWALK1 idle frame automatically.
  lda :tp_kind
  cmp #1
- bne :tp_arm_mace
+ bne :tp_arm_chk_mace
  jsr billy_arm_pipe
  bra :tp_start_anim
-:tp_arm_mace
+:tp_arm_chk_mace
+ cmp #2
+ bne :tp_arm_knife
  jsr billy_arm_mace
+ bra :tp_start_anim
+:tp_arm_knife
+ jsr billy_arm_knife
 :tp_start_anim
  lda #<anim_bpickup
  ldx #>anim_bpickup
@@ -11326,7 +11402,38 @@ billy_arm_mace
  lda spr_bmwalk1+1
  ldy #43
  sta (info_ptr),y
- ; fall through to billy_arm_common
+ jmp billy_arm_common
+
+*----------------------------------------------------------
+* billy_arm_knife - Set billy_knife_armed and rewrite Billy's
+* idle pose to BKWALK1 (11×40, bank $19). advance_walk picks
+* up knife_walk_addr_tbl while the flag is set, and L throws
+* the knife (see btn_action_punch knife branch). Inlines the
+* idle dim/bank writes since BKWALK1 is 11 wide vs the 9 that
+* billy_arm_common assumes.
+*----------------------------------------------------------
+billy_arm_knife
+ lda #1
+ sta billy_knife_armed
+ lda spr_bkwalk1
+ ldy #42
+ sta (info_ptr),y
+ lda spr_bkwalk1+1
+ ldy #43
+ sta (info_ptr),y
+ lda #$0B               ; BKWALK1 width
+ ldy #44
+ sta (info_ptr),y
+ lda #$28               ; BKWALK1 height
+ ldy #46
+ sta (info_ptr),y
+ lda #$19
+ ldy #58
+ sta (info_ptr),y
+ lda #0
+ ldy #59
+ sta (info_ptr),y
+ rts
 
 *----------------------------------------------------------
 * billy_arm_common - Shared idle-state setup for armed Billy.
@@ -11357,6 +11464,7 @@ billy_arm_common
 billy_disarm_weapon
  stz billy_pipe_armed
  stz billy_mace_armed
+ stz billy_knife_armed
 * idle_addr / idle mask always point at the canonical forward
 * IMAGE01 — :normal_end's idle restore handles mirror selection
 * on the next anim end. But the LIVE frame_addr / MASK_ADDR
@@ -12705,6 +12813,13 @@ billy_pipe_armed dfb 0
 * one is set at a time. OP_KILLOBJ clears both.
 billy_mace_armed dfb 0
 
+* Set non-zero when Billy has picked up a knife (KNIFE2/KNIFE4
+* dropped by williams_knife). Unlike pipe/mace there's no armed
+* idle pose — Billy keeps the regular IMAGE01 compiled idle and
+* walk. L throws the knife as a controller=$03 projectile and
+* clears the flag.
+billy_knife_armed dfb 0
+
 * Walk-frame address tables for armed Billy. Patched by
 * init_mission12. advance_walk reads pipe_walk_addr_tbl when
 * billy_pipe_armed != 0 and mace_walk_addr_tbl when
@@ -12717,6 +12832,20 @@ mace_walk_addr_tbl ds 8
 spr_bmwalk1  ds 2
 spr_bmwalk2  ds 2
 spr_bmwalk3  ds 2
+
+* Billy-with-knife walk frames (BKWALK1/2/3). Heights are uniform
+* (40 lines), but widths differ — BKWALK1/3 are 11, BKWALK2 is 9.
+* advance_walk reads knife_walk_x_tbl for the per-frame width and
+* uses a hardcoded 40 for height. BKNIFE1/2/3 are reserved for
+* the throw animation (loaded but not yet used by the walk path).
+spr_bknife1  ds 2
+spr_bknife2  ds 2
+spr_bknife3  ds 2
+spr_bkwalk1  ds 2
+spr_bkwalk2  ds 2
+spr_bkwalk3  ds 2
+knife_walk_addr_tbl ds 8
+knife_walk_x_tbl    ds 4
 spr_bmace1   ds 2
 spr_bmace2   ds 2
 spr_bmace3   ds 2
@@ -13199,6 +13328,32 @@ init_mission12
  lda [$F0],y
  sta spr_bmwalk3
 
+* Billy-throws-knife frames (BKNIFE1/2/3) at indices 27-29
+* ($36-$3A). Reserved for the throw animation (cached but
+* unused by the walk path; the walk uses BKWALK1/2/3 below).
+ ldy #$36
+ lda [$F0],y
+ sta spr_bknife1
+ ldy #$38
+ lda [$F0],y
+ sta spr_bknife2
+ ldy #$3A
+ lda [$F0],y
+ sta spr_bknife3
+
+* Billy-with-knife walk frames (BKWALK1/2/3) at the tail of
+* spr_addr_tbl ($88/$8A/$8C). Used by advance_walk when
+* billy_knife_armed is set.
+ ldy #$88
+ lda [$F0],y
+ sta spr_bkwalk1
+ ldy #$8A
+ lda [$F0],y
+ sta spr_bkwalk2
+ ldy #$8C
+ lda [$F0],y
+ sta spr_bkwalk3
+
 * Billy fall sprites at indices 66-67 ($84/$86). BFALL is the
 * in-air pose, BFALLEN is the grounded pose; used by anim_bfall.
  ldy #$84
@@ -13443,6 +13598,31 @@ init_mission12
  sta mace_walk_addr_tbl+4
  lda spr_bmwalk2
  sta mace_walk_addr_tbl+6
+
+* Patch knife_walk_addr_tbl with BKWALK1, 2, 3, 2 and the
+* per-frame widths (11 / 9 / 11 / 9). Heights are uniform 40
+* across all three frames so we don't need a Y table — the
+* knife branch in advance_walk hardcodes the FRAME_Y store.
+ lda spr_bkwalk1
+ sta knife_walk_addr_tbl
+ lda spr_bkwalk2
+ sta knife_walk_addr_tbl+2
+ lda spr_bkwalk3
+ sta knife_walk_addr_tbl+4
+ lda spr_bkwalk2
+ sta knife_walk_addr_tbl+6
+ sep $20
+ mx %10
+ lda #$0B               ; BKWALK1 width
+ sta knife_walk_x_tbl
+ lda #$09               ; BKWALK2 width
+ sta knife_walk_x_tbl+1
+ lda #$0B               ; BKWALK3 width
+ sta knife_walk_x_tbl+2
+ lda #$09               ; BKWALK2 width (cycle frame)
+ sta knife_walk_x_tbl+3
+ rep $20
+ mx %00
 
  sec
  xce                   ; back to emulation
