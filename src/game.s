@@ -3341,6 +3341,11 @@ draw_overlay
 * pixel reads. Without saving/restoring it, bank-$19 NPCs (mace,
 * boss, armed enemies) leave sprite_bank at $19 and the overlay's
 * bank-$02 sprite gets read from the wrong bank → corruption.
+* Also reset frame_x_off — Billy's last draw may have left it at
+* a non-zero value (e.g. -9 mirrored punch lunge), and
+* draw_sprite_compiled would otherwise apply it to the overlay's
+* xpos, drawing the finger N bytes off while erase_overlay clears
+* at the original xpos → ghost fingers accumulate on every scroll.
  lda IMAGE01_YPOS
  pha
  lda IMAGE01_XPOS
@@ -3361,6 +3366,9 @@ draw_overlay
  pha
  lda sprite_bank+1
  pha
+ lda frame_x_off
+ pha
+ stz frame_x_off
 * Set overlay globals from cached state
  lda overlay_y
  sta IMAGE01_YPOS
@@ -3385,7 +3393,9 @@ draw_overlay
  lda #$00
  sta sprite_bank+1
  jsr draw_sprite_compiled
-* Restore globals
+* Restore globals (reverse order of save above)
+ pla
+ sta frame_x_off
  pla
  sta sprite_bank+1
  pla
@@ -5704,31 +5714,54 @@ erase_all
 * flagged neighboring sprites (e.g. ones adjacent on the side
 * the sprite is moving toward) and left visible artifacts.
 *
-* left = min(prev_xpos, xpos)
+* For Billy only, apply signed render-x offsets so the rect
+* covers the actual drawn pixels: prev_xpos + billy_prev_x_off
+* for the prev edge, xpos + billy_cur_x_off for the current edge.
+* NPCs use offset=0 (their info+7..+9 hold behavior state, not
+* render offsets — putting offsets there would corrupt NPC AI).
+ ldy #22
+ lda (info_ptr),y
+ cmp #$01
+ bne :ea_no_off
+ lda billy_prev_x_off
+ sta :ea_prev_xeff
+ lda billy_cur_x_off
+ sta :ea_cur_xeff
+ bra :ea_off_done
+:ea_no_off
+ stz :ea_prev_xeff
+ stz :ea_cur_xeff
+:ea_off_done
  ldy #34
  lda (info_ptr),y     ; prev_xpos
+ clc
+ adc :ea_prev_xeff    ; signed-byte ADC (offsets are small)
+ sta :ea_prev_xeff
  ldy #2
- cmp (info_ptr),y
+ lda (info_ptr),y     ; xpos
+ clc
+ adc :ea_cur_xeff
+ sta :ea_cur_xeff
+* left = min(prev_xeff, cur_xeff)
+ lda :ea_prev_xeff
+ cmp :ea_cur_xeff
  bcc :left_prev
- lda (info_ptr),y
+ lda :ea_cur_xeff
  bra :left_set
 :left_prev
- ldy #34
- lda (info_ptr),y
+ lda :ea_prev_xeff
 :left_set
  sta IMAGE01_XPOS
-* right = max(prev_xpos + prev_frame_x, xpos + frame_x)
- ldy #34
- lda (info_ptr),y
+* right = max(prev_xeff + prev_frame_x, cur_xeff + frame_x)
+ lda :ea_prev_xeff
  ldy #36
  clc
- adc (info_ptr),y
+ adc (info_ptr),y     ; prev_xeff + prev_frame_x
  sta :ea_tmp
- ldy #2
- lda (info_ptr),y
+ lda :ea_cur_xeff
  ldy #10
  clc
- adc (info_ptr),y
+ adc (info_ptr),y     ; cur_xeff + frame_x
  cmp :ea_tmp
  bcc :rkeep
  sta :ea_tmp
@@ -5866,6 +5899,19 @@ erase_all
  beq :ea_disp_check
  jmp :ea_clr_dirty    ; gated out — clear bit and continue
 :ea_disp_check
+* Stage frame_x_off for this draw — same gating as draw_all. Only
+* Billy (controller=1) gets billy_cur_x_off; everything else
+* clears frame_x_off so the offset doesn't bleed into NPC draws.
+ ldy #22
+ lda (info_ptr),y
+ cmp #$01
+ bne :ea_draw_no_off
+ lda billy_cur_x_off
+ sta frame_x_off
+ bra :ea_draw_off_done
+:ea_draw_no_off
+ stz frame_x_off
+:ea_draw_off_done
 * Compiled vs legacy dispatch: compiled (AND/ORA) only when
 * MASK_ADDR != 0 AND the sprite is the keyboard player.
  ldy #22
@@ -5876,9 +5922,19 @@ erase_all
  ora MASK_ADDR+1
  beq :ea_legacy
  jsr draw_sprite_compiled
- bra :ea_clr_dirty
+ bra :ea_post_draw
 :ea_legacy
  jsr draw_sprite
+:ea_post_draw
+* Latch billy_cur_x_off → billy_prev_x_off after Billy's draw so
+* erase_all next frame clears the rect we just drew at the
+* shifted column.
+ ldy #22
+ lda (info_ptr),y
+ cmp #$01
+ bne :ea_clr_dirty
+ lda billy_cur_x_off
+ sta billy_prev_x_off
 :ea_clr_dirty
  ldy #30
  lda (info_ptr),y
@@ -5895,6 +5951,8 @@ erase_all
 :done rts
 
 :ea_tmp dfb 0
+:ea_prev_xeff dfb 0
+:ea_cur_xeff  dfb 0
 
 *----------------------------------------------------------
 * draw_all - Iterate sprite_table, load each sprite, draw.
@@ -5922,6 +5980,19 @@ draw_all
  beq :da_grab_chk_done
  jmp :da_drawn        ; clear dirty bit, skip draw
 :da_grab_chk_done
+* Stage frame_x_off for this draw. Only Billy uses an offset today
+* (punch lunge frames); NPCs and projectiles must see frame_x_off=0
+* so draw_sprite/draw_sprite_compiled don't shift them.
+ ldy #22
+ lda (info_ptr),y
+ cmp #$01
+ bne :da_no_off
+ lda billy_cur_x_off
+ sta frame_x_off
+ bra :da_off_done
+:da_no_off
+ stz frame_x_off
+:da_off_done
 * Dispatch: compiled (AND/ORA) path when MASK_ADDR != 0 and the
 * sprite is the keyboard player (Billy). MASK_ADDR is the live
 * signal "current FRAME_ADDR points at compiled DATA"; advance_walk
@@ -5940,6 +6011,16 @@ draw_all
 :da_legacy
  jsr draw_sprite
 :da_drawn
+* Latch billy_cur_x_off → billy_prev_x_off after the Billy draw so
+* next frame's erase_all clears the rect we just drew at the
+* shifted column. NPC draws don't touch the latch.
+ ldy #22
+ lda (info_ptr),y
+ cmp #$01
+ bne :da_skip_latch
+ lda billy_cur_x_off
+ sta billy_prev_x_off
+:da_skip_latch
 * Clear bit 0 (needs_draw)
  ldy #30
  lda (info_ptr),y
@@ -8417,7 +8498,83 @@ start_anim
  ldy #30
  lda #$03
  sta (info_ptr),y
+* Set per-anim render-x offset at info+9 (cur_x_off, signed byte).
+* Read by draw_all to populate frame_x_off before each draw call;
+* latched into info+8 (prev_x_off) right after the draw so erase_all
+* next frame can clear the rect at the correct screen column.
+* Punch frames lunge wider than the idle (PUNCH12/22 = 16 vs 9), so
+* the body shifts within the sprite — we shift the screen position
+* the other way to keep the body anchored: +1 right-facing, -5
+* mirrored. All other anims get 0.
+ jsr set_anim_x_off
  rts
+
+*----------------------------------------------------------
+* set_anim_x_off - Compute billy_cur_x_off from anim_ptr +
+* anim_frame (info+26) + IMAGE01_MIRROR. Gated on controller==1
+* so NPC anims don't poke Billy's offset state. Called by
+* start_anim (frame 0) and update_anims at every frame advance,
+* so per-frame offsets shift with the anim.
+*
+* Today only anim_punch1/anim_punch2 carry offsets:
+*   frame 0 (PUNCH11/PUNCH21, narrow wind-up):  0 / 0
+*   frame 1 (PUNCH12/PUNCH22, wide lunge):     +1 / -2
+* Tune these in the per-frame tables below.
+* On entry: anim_ptr = animation, info_ptr = sprite info block.
+*----------------------------------------------------------
+set_anim_x_off
+ ldy #22
+ lda (info_ptr),y
+ cmp #$01
+ bne :sx_done           ; not Billy — leave globals alone
+ lda anim_ptr
+ cmp #<anim_punch1
+ bne :sx_chk_p2
+ lda anim_ptr+1
+ cmp #>anim_punch1
+ beq :sx_punch
+:sx_chk_p2
+ lda anim_ptr
+ cmp #<anim_punch2
+ bne :sx_no_off
+ lda anim_ptr+1
+ cmp #>anim_punch2
+ bne :sx_no_off
+:sx_punch
+* Index per-frame offset by anim_frame (info+26). punch1/punch2
+* both have the same wind-up→lunge shape, so they share tables.
+ ldy #26
+ lda (info_ptr),y
+ tax
+ cpx #2                 ; clamp out-of-range frame indices to 0
+ bcc :sx_idx_ok
+ ldx #0
+:sx_idx_ok
+ lda IMAGE01_MIRROR
+ bne :sx_punch_mir
+ lda :sx_punch_off_right,x
+ bra :sx_store
+:sx_punch_mir
+ lda :sx_punch_off_mirror,x
+ bra :sx_store
+:sx_no_off
+ lda #0
+:sx_store
+ sta billy_cur_x_off
+:sx_done
+ rts
+
+* Per-frame render-x offsets for the punch anims, indexed by
+* anim_frame (0 = wind-up, 1 = lunge). Signed bytes.
+* Mirror frames need negative offsets because the mirrored
+* sprite data tucks the body into the right half of the wider
+* frame, so drawing at the same xpos shifts the body right vs
+* the IMAGE01 mirrored idle. Wind-up sprites (PUNCH11/21) are
+* only ~2 bytes wider → 1-byte natural shift, fixed by $FF (-1).
+* Lunge sprites (PUNCH12/22) are ~7 bytes wider → 9-byte
+* natural shift, fixed by $F7 (-9).
+:sx_punch_off_right  dfb $00,$00
+:sx_punch_off_mirror dfb $ff,$F9
 
 * Fallen-pose vertical offset. The frame 1 ("fallen") pose of
 * the enemy fall animations is much shorter than their standing
@@ -9333,6 +9490,17 @@ update_anims
  sta (info_ptr),y     ; clear anim_ptr high
  ldy #26
  sta (info_ptr),y     ; clear anim_frame
+* Clear billy_cur_x_off when Billy's anim ends (idle has no
+* render-x offset). Skip for NPCs — they don't use the offset.
+* billy_prev_x_off stays at the punch's offset until draw_all
+* runs, which is correct: erase_all this same frame still needs
+* to clear the punch's drawn rect.
+ ldy #22
+ lda (info_ptr),y
+ cmp #$01
+ bne :ne_no_xoff_clear
+ stz billy_cur_x_off
+:ne_no_xoff_clear
 * Restore idle frame from sprite block
  ldy #42
  lda (info_ptr),y     ; idle_addr low
@@ -9528,6 +9696,11 @@ update_anims
  sta (info_ptr),y
 
 :lf_load_done
+* Recompute billy_cur_x_off for the freshly loaded frame so a
+* per-frame offset (PUNCH11 vs PUNCH12 etc.) takes effect on the
+* very frame that frame is shown. set_anim_x_off no-ops for
+* anything that isn't Billy on a known offset-bearing anim.
+ jsr set_anim_x_off
 * Burnov-grab BNBILLY2 hit sound. anim_bngrab's odd frames
 * (1, 3, 5) are BNBILLY2 — the moment Burnov's punch lands on
 * the held Billy. Fire SND_PUNCHLANDED on each of those frame
@@ -19619,7 +19792,22 @@ draw_sprite PHB
  LDAL $E0C029
  ORA #%01000000
  STAL $E0C029
+* Apply signed frame_x_off to IMAGE01_XPOS for this draw. load_sprite
+* reloads IMAGE01_XPOS from info+2 next iteration, so we can write
+* over it without restoring.
+ LDA frame_x_off
+ BPL :ds_off_pos
  REP $20
+ AND #$00FF
+ ORA #$FF00            ; sign-extend negative
+ BRA :ds_off_apply
+:ds_off_pos
+ REP $20
+ AND #$00FF
+:ds_off_apply
+ CLC
+ ADC IMAGE01_XPOS
+ STA IMAGE01_XPOS
  LDA #$0001            ; destination bank $01 (shadowed to $E1)
  STA 2
  lda IMAGE01_YPOS  ; do our own multiplication by $a0 because address won't always be hardcoded
@@ -19796,6 +19984,17 @@ SKIP REP $20
 * (animation, climb, etc.) and we use legacy draw_sprite.
 *----------------------------------------------------------
 draw_active_sprite
+* draw_active_sprite is always drawing Billy, so frame_x_off must
+* match billy_cur_x_off — otherwise scroll-time composites inherit
+* whatever the last sprite's frame_x_off was (e.g. an old stale
+* value from a previous Billy punch frame, or zero from an NPC
+* draw inside the iteration loop). Without this, scroll routines
+* that call draw_active_sprite outside draw_all/erase_all (right-
+* scroll fast path, ladder transitions, etc.) leave Billy drawn
+* at the wrong column and the next frame's erase_all clears the
+* expected column → ghost trail.
+ lda billy_cur_x_off
+ sta frame_x_off
  lda MASK_ADDR
  ora MASK_ADDR+1
  bne :das_compiled
@@ -19857,6 +20056,25 @@ draw_sprite_compiled
 
  REP $20
 
+* Apply signed frame_x_off to IMAGE01_XPOS for this draw. load_sprite
+* reloads IMAGE01_XPOS from info+2 next iteration, so we can write
+* over it without restoring. frame_x_off is a signed 8-bit byte
+* (e.g. +1 right-facing punch, -5 mirrored punch); sign-extend so a
+* negative offset doesn't pollute the high byte.
+ SEP $20
+ LDA frame_x_off
+ BPL :dsc_off_pos
+ REP $20
+ AND #$00FF
+ ORA #$FF00            ; sign-extend negative
+ BRA :dsc_off_apply
+:dsc_off_pos
+ REP $20
+ AND #$00FF
+:dsc_off_apply
+ CLC
+ ADC IMAGE01_XPOS
+ STA IMAGE01_XPOS
 * DP 0-1 = ypos * $A0 + $2000 + IMAGE01_XPOS
 * (Pre-adding IMAGE01_XPOS lets the inner loop use Y as a sprite-byte
 *  index from 0..FRAME_X-1 against all three pointers in lockstep.)
@@ -19874,9 +20092,7 @@ draw_sprite_compiled
  CLC
  ADC #$2000
  CLC
- ADC IMAGE01_XPOS      ; 16-bit add of IMAGE01_XPOS (low byte = column,
-                       ; high byte must be 0 — IMAGE01_XPOS is stored as
-                       ; HEX nn00 so the 16-bit load gives that)
+ ADC IMAGE01_XPOS
  STA 0
 
  LDA FRAME_ADDR
@@ -20099,6 +20315,24 @@ FRAME_Y  HEX 2800         ; current frame height
 FRAME_ADDR ds 2            ; current frame data address (set at runtime)
 MASK_ADDR  ds 2            ; companion inverse-mask address for compiled
                            ; AND/ORA draw path; consumed by draw_sprite_compiled
+frame_x_off dfb 0          ; signed render-x offset for the current draw.
+                           ; Set per-sprite by draw_all/erase_all (today
+                           ; only when drawing Billy); draw_sprite and
+                           ; draw_sprite_compiled add it to IMAGE01_XPOS
+                           ; at the screen-address calculation. Cleared
+                           ; for non-Billy sprites so NPC draws aren't
+                           ; affected.
+billy_cur_x_off dfb 0      ; signed byte. Set by set_anim_x_off when an
+                           ; anim with a render offset starts/runs (today
+                           ; only anim_punch1/anim_punch2: +1 right-facing,
+                           ; -5 mirrored). Read by draw_all when drawing
+                           ; Billy. Cleared at :normal_end. Lives in a
+                           ; global instead of an info+ slot because NPC
+                           ; behaviors already pack state into info+7..+9.
+billy_prev_x_off dfb 0     ; signed byte latched from billy_cur_x_off
+                           ; right after each Billy draw. Read by
+                           ; erase_all next frame so the union erase rect
+                           ; covers the offset-shifted prev draw.
 
 *-------------------------------
 * Sprite state
