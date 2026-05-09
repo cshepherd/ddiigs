@@ -9833,8 +9833,9 @@ update_anims
 * For Billy (controller=$01): pick compiled idle data + mask whose
 * orientation matches IMAGE01_MIRROR. Mirror is baked into the
 * pre-rotated arrays — draw_sprite_compiled has no mirror branch.
-* Skip entirely when Billy is armed (pipe, mace, or knife) — all
-* armed paths render through the legacy path (MASK_ADDR=0).
+* Skip the compiled mask restore when Billy is armed (pipe, mace,
+* or knife) — armed paths render through the legacy bank-$19 path
+* with MASK_ADDR=0.
  ldy #22
  lda (info_ptr),y
  cmp #$01
@@ -9842,7 +9843,24 @@ update_anims
  lda billy_pipe_armed
  ora billy_mace_armed
  ora billy_knife_armed
- bne :ne_no_billy_mask
+ beq :ne_billy_mask_chk_mirror
+* Armed Billy: clear MASK_ADDR + info+52/53 so dispatch routes
+* through legacy (armed) draw next frame. Without this, info+52
+* still holds the just-ended anim's compiled mask (e.g.
+* BPUNCHED_MASK at a bank-$02 address) — load_sprite next frame
+* copies it back to MASK_ADDR, the dispatch fires the compiled
+* path with armed bank-$19 frame data, and reading the bank-$02
+* mask address from bank $19 yields garbage AND/ORA bytes →
+* corrupted-looking BPUNCH sprite + ghost rect afterward.
+ lda #0
+ sta MASK_ADDR
+ sta MASK_ADDR+1
+ ldy #52
+ sta (info_ptr),y
+ iny
+ sta (info_ptr),y
+ bra :ne_no_billy_mask
+:ne_billy_mask_chk_mirror
  lda IMAGE01_MIRROR
  bne :ne_billy_mirror
 * mirror=0: FRAME_ADDR is already idle_addr = IMAGE01_DATA. Just set MASK.
