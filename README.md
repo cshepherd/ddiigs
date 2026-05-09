@@ -18,7 +18,10 @@ You should check out camera_drift_problem.md if you want to know about the major
 
 We have a solid game engine with a great graphics pipeline; Make no mistake, the hard part is done and Mission 1 will likely ship in under a month! But boy-oh-boy there's plenty more stuff to do:
 - Perfectly scripted encounters
-- Characters with weapons
+- Fix jumps
+- Fix headlocks
+- Fix NPC behaviors including Burnov
+- Sprite alignment issues like billy appearing to move backwards during a punch
 
 Please understand this my philosophy here was to sprint to completion first, and follow along with quality later. I'm aware of all the bugs, the unoptimized code paths, the unnecessary instructions, all of it. And it won't get better until I'm satisfied that every asset, every encounter, and every behavior, is a good port.
 
