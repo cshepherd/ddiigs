@@ -4713,17 +4713,121 @@ try_enter_grab
 * Billy faces right -> 'd' is toward
  lda :key
  cmp #'d'
- bne :no_trigger
- bra :ok
+ beq :ok
+ jmp :no_trigger
 :facing_left
  lda :key
  cmp #'a'
- bne :no_trigger
+ beq :ok
+ jmp :no_trigger
 :ok
 * Validate that last_hit_target is still in the table.
  lda last_hit_target
  ora last_hit_target+1
- beq :no_trigger
+ bne :tg_have_target
+ jmp :no_trigger
+:tg_have_target
+
+* Distance gate: only trigger the grab when the enemy is close
+* enough that a hold pose looks natural. Without this, a fresh
+* punch-window can engage a target that's drifted yards away —
+* "remote-control grab" / sprites teleporting into the hold.
+*   Y: |billy_ypos - enemy_ypos| <= GRAB_Y_TOLERANCE (2)
+*   X: enemy's near edge within GRAB_X_TOLERANCE (2) of Billy's
+*      far edge. Facing right: compare billy_x+billy_w to
+*      enemy_x. Facing left: compare billy_x to enemy_x+enemy_w.
+* On either miss → :no_trigger (eat the keypress without entering
+* the grab). Snapshot Billy's edge fields BEFORE switching
+* info_ptr so we can compare after pointing at the enemy.
+ ldy #0
+ lda (info_ptr),y
+ sta :tg_by
+ ldy #2
+ lda (info_ptr),y
+ sta :tg_bx
+ ldy #10
+ lda (info_ptr),y
+ sta :tg_bw
+ ldy #4
+ lda (info_ptr),y
+ sta :tg_bmir
+* Read enemy fields via last_hit_target.
+ lda info_ptr
+ pha
+ lda info_ptr+1
+ pha
+ lda last_hit_target
+ sta info_ptr
+ lda last_hit_target+1
+ sta info_ptr+1
+ ldy #0
+ lda (info_ptr),y
+ sta :tg_ey
+ ldy #2
+ lda (info_ptr),y
+ sta :tg_ex
+ ldy #10
+ lda (info_ptr),y
+ sta :tg_ew
+ ldy #4
+ lda (info_ptr),y
+ sta :tg_emir
+ pla
+ sta info_ptr+1
+ pla
+ sta info_ptr
+* Facing gate: a headlock only works if the enemy is looking at
+* Billy. Enemy must face the OPPOSITE direction from Billy
+* (Billy mirror=0 / enemy on the right → enemy mirror=1; Billy
+* mirror=1 / enemy on the left → enemy mirror=0). Equal mirrors
+* mean the enemy is turned away — bail.
+ lda :tg_emir
+ cmp :tg_bmir
+ beq :tg_no_grab
+ bra :tg_face_ok
+:tg_no_grab
+ jmp :no_trigger
+:tg_face_ok
+* Y distance: |billy_y - enemy_y| <= 2
+ lda :tg_by
+ sec
+ sbc :tg_ey
+ bcs :tg_y_abs
+ eor #$FF
+ clc
+ adc #1
+:tg_y_abs
+ cmp #3
+ bcs :no_trigger
+* X distance: enemy near edge vs Billy far edge
+ lda :tg_bmir
+ bne :tg_x_left
+* Facing right: A = (billy_x + billy_w) - enemy_x
+ lda :tg_bx
+ clc
+ adc :tg_bw
+ sec
+ sbc :tg_ex
+ bcs :tg_x_abs
+ eor #$FF
+ clc
+ adc #1
+ bra :tg_x_abs
+:tg_x_left
+* Facing left: A = (enemy_x + enemy_w) - billy_x
+ lda :tg_ex
+ clc
+ adc :tg_ew
+ sec
+ sbc :tg_bx
+ bcs :tg_x_abs
+ eor #$FF
+ clc
+ adc #1
+:tg_x_abs
+ cmp #3
+ bcs :no_trigger
+
 * Set up the enemy.
  lda info_ptr
  pha
@@ -4769,7 +4873,15 @@ try_enter_grab
 :no_trigger
  lda :key
  rts
-:key dfb 0
+:key  dfb 0
+:tg_by   dfb 0
+:tg_bx   dfb 0
+:tg_bw   dfb 0
+:tg_bmir dfb 0
+:tg_ey   dfb 0
+:tg_ex   dfb 0
+:tg_ew   dfb 0
+:tg_emir dfb 0
 
 *----------------------------------------------------------
 * handle_grab_input - On entry: info_ptr = Billy, A = key,
@@ -5089,6 +5201,26 @@ behav_flank
 *   info+9 = ladder y_bottom (cached)
 *----------------------------------------------------------
 behav_ladder
+* Suspend the ladder state machine while fall_anim is playing.
+* Without this, behav_ladder keeps incrementing ypos / climb_tog
+* in lockstep with fall_anim's ypos arc — Linda gets punched off
+* the ladder, "falls" mid-air, and the ladder code yanks her
+* back into climb frames at a now-misaligned ypos. The end-of-
+* fall disengage in :ad_check_pc converts her to FACEOFF and
+* snaps ypos to the ladder bottom; we just have to keep the
+* ladder behavior off-air until then.
+ ldy #24
+ lda (info_ptr),y       ; anim_ptr lo
+ ldy #50
+ cmp (info_ptr),y       ; cmp fall_anim lo
+ bne :bld_run
+ ldy #25
+ lda (info_ptr),y       ; anim_ptr hi
+ ldy #51
+ cmp (info_ptr),y       ; cmp fall_anim hi
+ bne :bld_run
+ rts                    ; falling — let fall_anim drive ypos
+:bld_run
  ldy #7
  lda (info_ptr),y
  cmp #LD_DESCEND
@@ -9120,6 +9252,27 @@ update_anims
  lda (info_ptr),y     ; punch_count
  cmp #6
  bcs :ad_do_death
+* Fall ended without death. If the NPC was on a ladder when
+* hit (BEHAV_LADDER), they should disengage from climbing and
+* land at the bottom of the ladder rather than rebounding into
+* mid-air climb frames at a now-misaligned ypos. behav_ladder
+* cached the descent target (ladder y_bottom + 1) at info+9
+* during LD_INIT, so we snap to that and convert to FACEOFF.
+ ldy #6
+ lda (info_ptr),y
+ cmp #BEHAV_LADDER
+ bne :ad_no_ladder_disengage
+ ldy #9
+ lda (info_ptr),y     ; cached descent target Y
+ ldy #0
+ sta (info_ptr),y     ; ypos = ladder bottom + 1
+ ldy #6
+ lda #BEHAV_FACEOFF
+ sta (info_ptr),y     ; behavior → FACEOFF
+ lda #FO_APPROACH
+ ldy #7
+ sta (info_ptr),y     ; sub-state → APPROACH
+:ad_no_ladder_disengage
  jmp :normal_end
 :ad_do_death
 * Death: set $FFFF sentinel, mark dirty for erase+removal.
