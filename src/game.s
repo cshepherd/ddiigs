@@ -8232,6 +8232,10 @@ advance_walk
 
 walk_step dfb 0
 walk_toggle dfb 0
+jump_x_toggle dfb 0    ; flips each VBL during anim_jump's bit-0
+                       ; X-advance step. Halves the horizontal jump
+                       ; distance: xpos / abs_x advance only on the
+                       ; ticks where the toggle flips to 0.
 
 *----------------------------------------------------------
 * advance_climb - Set climbing frame (BCLIMB1/BCLIMB2),
@@ -8939,6 +8943,15 @@ update_anims
  lda (info_ptr),y
  ldy #38
  sta (info_ptr),y     ; prev_frame_y <- current frame_y
+* Halve the horizontal component of the jump: only step xpos on
+* every other VBL by toggling jump_x_toggle. The previous-rect
+* snapshots above still run unconditionally so erase_all unions
+* correctly when xpos doesn't change. abs_x stays in sync because
+* it's only inc/dec'd inside the same gated block below.
+ lda jump_x_toggle
+ eor #$01
+ sta jump_x_toggle
+ beq :adv_skip_x
  lda IMAGE01_MIRROR
  bne :adv_left
 * Jumping right — clamp at PLAYER_MAX_X so Billy's feet stay
@@ -8976,6 +8989,7 @@ update_anims
 :adv_absx_lo
  dec abs_x
 :adv_done
+:adv_skip_x
  ldy #2
  lda IMAGE01_XPOS
  sta (info_ptr),y     ; save xpos back
