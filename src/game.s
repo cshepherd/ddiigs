@@ -446,6 +446,7 @@ game_loop
  jsr run_script
  jsr update_npcs       ; runs behavior state machines
  jsr update_anims
+ jsr update_billy_y_off ; ramp Billy's parabolic jump arc
 * Invariant check: abs_x must equal world_offset + IMAGE01_XPOS.
 * Placed after every position-mutating pass (process_input walks
 * and scrolls; update_anims advances xpos per VBL for jumps).
@@ -5677,19 +5678,43 @@ erase_all
  jsr dbg_print_hex8
  jsr dbg_print_nl
  fin
- ldy #32
- lda (info_ptr),y
- sta IMAGE01_YPOS
+* Death erase: clamp prev rect to playfield bounds. A FALLEN
+* sprite shoved past PLAYFIELD_EDGE during the fall arc (or below
+* row 182) would otherwise have erase write past the row end and
+* into the next row's pixels, leaving the sprite stuck on screen
+* AND corrupting the row beneath it.
  ldy #34
- lda (info_ptr),y
+ lda (info_ptr),y       ; prev_xpos
+ cmp #PLAYFIELD_EDGE
+ bcs :de_skip_erase     ; left edge already off the playfield → skip
  sta IMAGE01_XPOS
  ldy #36
- lda (info_ptr),y
+ clc
+ adc (info_ptr),y       ; prev_xpos + prev_frame_x = right edge
+ cmp #PLAYFIELD_EDGE+1
+ bcc :de_fx_ok
+ lda #PLAYFIELD_EDGE+1  ; clamp right edge to playfield boundary
+:de_fx_ok
+ sec
+ sbc IMAGE01_XPOS
  sta FRAME_X
+ ldy #32
+ lda (info_ptr),y       ; prev_ypos
+ cmp #183
+ bcs :de_skip_erase     ; top already below playfield → skip
+ sta IMAGE01_YPOS
  ldy #38
- lda (info_ptr),y
+ clc
+ adc (info_ptr),y       ; prev_ypos + prev_frame_y = bottom edge
+ cmp #184
+ bcc :de_fy_ok
+ lda #183               ; clamp bottom to last playfield row
+:de_fy_ok
+ sec
+ sbc IMAGE01_YPOS
  sta FRAME_Y
  jsr erase
+:de_skip_erase
 * Mark any still-living sprites whose drawn area overlaps the
 * just-erased rect as needs_draw — otherwise if the dying
 * enemy was drawn on top of (later Y than) the player, the
@@ -8507,6 +8532,7 @@ start_anim
 * the other way to keep the body anchored: +1 right-facing, -5
 * mirrored. All other anims get 0.
  jsr set_anim_x_off
+ jsr set_billy_y_target
  rts
 
 *----------------------------------------------------------
@@ -8575,6 +8601,130 @@ set_anim_x_off
 * natural shift, fixed by $F7 (-9).
 :sx_punch_off_right  dfb $00,$00
 :sx_punch_off_mirror dfb $ff,$F9
+
+*----------------------------------------------------------
+* set_billy_y_target - Set billy_y_target based on the new
+* anim. Jump-arc anims (anim_jump, anim_bspinkick) drive
+* Billy's ypos toward -20 (airborne); anything else clears
+* the target so update_billy_y_off ramps him back to ground
+* (covers normal anim transitions plus mid-air punched
+* interruptions).
+* Gated on controller==1 so NPC anims don't poke Billy's
+* trajectory. On entry: anim_ptr = animation, info_ptr =
+* sprite info block.
+*----------------------------------------------------------
+JUMP_PEAK_Y_OFF = $EC      ; -20 (signed) — default peak rise vs ground
+JUMP_MIN_Y      = 5        ; minimum allowed peak ypos — prevents Billy
+                           ; from underflowing the playfield when jumping
+                           ; off elevated ground (rooftops, ladder tops)
+
+set_billy_y_target
+ ldy #22
+ lda (info_ptr),y
+ cmp #$01
+ bne :sy_done
+ lda anim_ptr
+ cmp #<anim_jump
+ bne :sy_chk_spinkick
+ lda anim_ptr+1
+ cmp #>anim_jump
+ beq :sy_jump
+:sy_chk_spinkick
+ lda anim_ptr
+ cmp #<anim_bspinkick
+ bne :sy_descend
+ lda anim_ptr+1
+ cmp #>anim_bspinkick
+ bne :sy_descend
+:sy_jump
+* If we're already mid-jump (billy_y_target non-zero, i.e. an
+* anim_jump → anim_bspinkick chain or another start_anim during
+* the rise), keep the existing target. Re-computing from the
+* current (already-lifted) ypos would clamp the peak too low.
+ lda billy_y_target
+ bne :sy_done
+* Cap the peak so Billy can't go above the playfield top. Normal
+* peak is JUMP_PEAK_Y_OFF (-20), but if Billy is jumping from
+* high ground (rooftop, top of ladder) where ypos is small, that
+* would underflow ypos through 0. We need peak ypos >= JUMP_MIN_Y;
+* available rise = current ypos - JUMP_MIN_Y. Cap target at
+* -available_rise when that's smaller than 20.
+ lda billy_sprite       ; current (grounded) ypos
+ cmp #25                ; JUMP_MIN_Y(5) + 20 — if ypos >= 25, normal peak fits
+ bcc :sy_jump_clamp
+ lda #JUMP_PEAK_Y_OFF
+ sta billy_y_target
+ bra :sy_done
+:sy_jump_clamp
+* Available rise = ypos - JUMP_MIN_Y; target = -(available_rise)
+* expressed as (JUMP_MIN_Y - ypos) which is naturally negative.
+ lda #JUMP_MIN_Y
+ sec
+ sbc billy_sprite
+ sta billy_y_target
+ bra :sy_done
+:sy_descend
+ stz billy_y_target
+:sy_done
+ rts
+
+*----------------------------------------------------------
+* update_billy_y_off - Ramp billy_y_off toward billy_y_target
+* by 2 per call, applying the same delta to Billy's ypos
+* (info+0) and IMAGE01_YPOS. Snapshots prev_ypos / prev_frame_y
+* BEFORE mutating ypos so erase_all next frame clears the row
+* Billy was at. Marks Billy dirty so the union erase+redraw
+* fires for the new position.
+* Called once per game-loop tick (after update_anims).
+*----------------------------------------------------------
+update_billy_y_off
+ lda billy_y_off
+ cmp billy_y_target
+ beq :uby_done
+* Snapshot prev_ypos so erase_all's union covers both the old
+* and new Y rects when we step ypos by 2. Don't touch
+* prev_frame_y — save_anim_state already set it to the
+* previously-drawn frame's height when update_anims advanced.
+* Overwriting it here would replace e.g. JUMP2's 30 with
+* JUMP3's 32, leaving the bottom 2 px of the prior frame's
+* feet unerased.
+ lda billy_sprite       ; current ypos
+ sta billy_sprite+32    ; prev_ypos
+* Dispatch on billy_y_target — only ever 0 (descend toward
+* ground) or JUMP_PEAK_Y_OFF = $EC = -20 (rise toward peak).
+* Signed cmp via SBC + N flag would also work, but a direct
+* dispatch is clearer and avoids the unsigned-cmp trap that
+* treats $00 as < $EC.
+ lda billy_y_target
+ beq :uby_descend       ; target = 0 → Billy on the ground side, increase off+ypos
+* target = -20 ($EC): rise. y_off and ypos both decrease by 2 (Billy moves UP).
+ lda billy_y_off
+ sec
+ sbc #2
+ sta billy_y_off
+ lda billy_sprite
+ sec
+ sbc #2
+ sta billy_sprite
+ sta IMAGE01_YPOS
+ bra :uby_dirty
+:uby_descend
+* target = 0: descend. y_off and ypos both increase by 2 (Billy moves DOWN).
+ lda billy_y_off
+ clc
+ adc #2
+ sta billy_y_off
+ lda billy_sprite
+ clc
+ adc #2
+ sta billy_sprite
+ sta IMAGE01_YPOS
+:uby_dirty
+ lda billy_sprite+30
+ ora #$03               ; needs_draw | needs_erase
+ sta billy_sprite+30
+:uby_done
+ rts
 
 * Fallen-pose vertical offset. The frame 1 ("fallen") pose of
 * the enemy fall animations is much shorter than their standing
@@ -9701,6 +9851,41 @@ update_anims
 * very frame that frame is shown. set_anim_x_off no-ops for
 * anything that isn't Billy on a known offset-bearing anim.
  jsr set_anim_x_off
+* Last-frame descent trigger for jump-arc anims (anim_jump or
+* anim_bspinkick). When the final frame loads we set
+* billy_y_target = 0 so update_billy_y_off ramps Billy back down
+* to ground over the last frame's VBLs (and beyond, into idle).
+* Gated on controller==1 so an NPC ending a coincidentally-named
+* anim couldn't poke Billy's trajectory.
+ ldy #22
+ lda (info_ptr),y
+ cmp #$01
+ bne :lf_no_jump_descent
+ lda anim_ptr
+ cmp #<anim_jump
+ bne :lf_chk_spin_last
+ lda anim_ptr+1
+ cmp #>anim_jump
+ beq :lf_check_last_idx
+:lf_chk_spin_last
+ lda anim_ptr
+ cmp #<anim_bspinkick
+ bne :lf_no_jump_descent
+ lda anim_ptr+1
+ cmp #>anim_bspinkick
+ bne :lf_no_jump_descent
+:lf_check_last_idx
+ ldy #0
+ lda (anim_ptr),y       ; num_frames
+ sec
+ sbc #1                 ; last frame index
+ sta :lf_lastfrm
+ ldy #26
+ lda (info_ptr),y       ; anim_frame
+ cmp :lf_lastfrm
+ bne :lf_no_jump_descent
+ stz billy_y_target
+:lf_no_jump_descent
 * Burnov-grab BNBILLY2 hit sound. anim_bngrab's odd frames
 * (1, 3, 5) are BNBILLY2 — the moment Burnov's punch lands on
 * the held Billy. Fire SND_PUNCHLANDED on each of those frame
@@ -9926,15 +10111,21 @@ update_anims
  ldy #26
  lda (info_ptr),y
  cmp #1
- bne :no_fall_bump
+ beq :nfb_chk_anim
+ jmp :no_fall_bump
+:nfb_chk_anim
  ldy #50
  lda (info_ptr),y
  cmp anim_ptr
- bne :no_fall_bump
+ beq :nfb_chk_anim_hi
+ jmp :no_fall_bump
+:nfb_chk_anim_hi
  ldy #51
  lda (info_ptr),y
  cmp anim_ptr+1
- bne :no_fall_bump
+ beq :nfb_do_bump
+ jmp :no_fall_bump
+:nfb_do_bump
 * DEBUG: log bump with pre-bump ypos
  do DEBUG_PRINT
  lda #$C2              ; 'B'
@@ -9998,6 +10189,29 @@ update_anims
  ldy #34
  sta (info_ptr),y     ; prev_xpos = clamped (erase anchor)
 :nfb_x_ok
+* Y clamp: ypos + FALL_Y_OFFSET was just applied above. If
+* the resulting ypos+frame_y exceeds the playfield bottom (row
+* 182), the FALLEN sprite draws into the HUD/below-playfield
+* area and erase_all can't restore those pixels (bank $18 only
+* mirrors the playfield). Snap ypos so the body's bottom row
+* lands at row 182, and sync prev_ypos so erase clears the
+* right rect on the redraw.
+ ldy #0
+ lda (info_ptr),y       ; current ypos (post FALL_Y_OFFSET bump)
+ ldy #12
+ clc
+ adc (info_ptr),y       ; ypos + frame_y = bottom row
+ cmp #184               ; playfield ends at row 182, so bottom must be < 184
+ bcc :nfb_y_ok
+ lda #183
+ ldy #12
+ sec
+ sbc (info_ptr),y       ; new ypos = 183 - frame_y
+ ldy #0
+ sta (info_ptr),y       ; ypos
+ ldy #32
+ sta (info_ptr),y       ; prev_ypos = clamped (erase anchor)
+:nfb_y_ok
 * Body just landed — fire SND_FALLEN.
  ldx #SND_FALLEN
  jsr sound_trigger
@@ -10016,6 +10230,7 @@ update_anims
 :frm dfb 0
 :ne_tmp dfb 0
 :lf_tmp dfb 0
+:lf_lastfrm dfb 0
 :kick_saved_xpos dfb 0
 :kick_saved_fx   dfb 0
 :kick_saved_fy   dfb 0
@@ -20333,6 +20548,22 @@ billy_prev_x_off dfb 0     ; signed byte latched from billy_cur_x_off
                            ; right after each Billy draw. Read by
                            ; erase_all next frame so the union erase rect
                            ; covers the offset-shifted prev draw.
+billy_y_off    dfb 0       ; signed byte: Billy's current ypos offset
+                           ; from grounded position. Drives the parabolic
+                           ; jump arc — negative = airborne. Modified
+                           ; in 2px steps by update_billy_y_off as it
+                           ; ramps toward billy_y_target each game-loop
+                           ; tick. The same delta is applied to Billy's
+                           ; ypos at info+0 / IMAGE01_YPOS so erase_all
+                           ; and draw_all see the on-screen Y directly
+                           ; (no separate prev_y_off bookkeeping needed).
+billy_y_target dfb 0       ; signed byte: target ypos offset. Set to
+                           ; -20 ($EC) by set_billy_y_target when an
+                           ; anim_jump or anim_bspinkick starts so Billy
+                           ; rises. Set to 0 when the last frame of a
+                           ; jump-arc anim loads OR any non-jump-arc
+                           ; anim starts (e.g. punched mid-air) so
+                           ; Billy descends and lands.
 
 *-------------------------------
 * Sprite state
