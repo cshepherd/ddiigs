@@ -196,7 +196,7 @@ spr_bnwalk3c_mask        dw BNWALK3_MASK
 spr_bnwalk3c_data_mir    dw BNWALK3_DATA_MIRROR
 spr_bnwalk3c_mask_mir    dw BNWALK3_MASK_MIRROR
 
-* WSOMER1 — Williams somersault (sub-frames 0, 4 mirrored) (20×24)
+* WSOMER1 — Williams somersault (sub-frames 0, 4) (20×24)
 spr_wsomer1c_data        dw WSOMER1_DATA
 spr_wsomer1c_mask        dw WSOMER1_MASK
 spr_wsomer1c_data_mir    dw WSOMER1_DATA_MIRROR
@@ -208,12 +208,11 @@ spr_wsomer2c_mask        dw WSOMER2_MASK
 spr_wsomer2c_data_mir    dw WSOMER2_DATA_MIRROR
 spr_wsomer2c_mask_mir    dw WSOMER2_MASK_MIRROR
 
-* WSOMER3 — somersault (sub-frames 1, 3 mirrored) (21×44)
+* WSOMER3 — somersault (sub-frames 1, 3) (21×44)
 spr_wsomer3c_data        dw WSOMER3_DATA
 spr_wsomer3c_mask        dw WSOMER3_MASK
 spr_wsomer3c_data_mir    dw WSOMER3_DATA_MIRROR
 spr_wsomer3c_mask_mir    dw WSOMER3_MASK_MIRROR
-
 
 *==========================================================
 * Sprite pixel data (compiled AND/ORA arrays)
@@ -4495,8 +4494,9 @@ BNWALK3_MASK_MIRROR
  HEX F0000000FFFFFFFFFF000000FF
  HEX F000000FFFFFFFFFFF00000FFF
 
+
 *==========================================================
-* WSOMER1 — Williams somersault (sub-frames 0, 4)
+* WSOMER1
 *==========================================================
 WSOMER1_Y HEX 1800
 WSOMER1_X HEX 1400
@@ -4606,7 +4606,7 @@ WSOMER1_MASK_MIRROR
  HEX FFFFFFFFFFFFFFFF0000000FFFFFFFFFFFFFFFFF
 
 *==========================================================
-* WSOMER2 — somersault apex (sub-frame 2)
+* WSOMER2
 *==========================================================
 WSOMER2_Y HEX 2D00
 WSOMER2_X HEX 0D00
@@ -4800,7 +4800,7 @@ WSOMER2_MASK_MIRROR
  HEX 00000000FFFFFFFFF00000000F
 
 *==========================================================
-* WSOMER3 — somersault (sub-frames 1, 3)
+* WSOMER3
 *==========================================================
 WSOMER3_Y HEX 2C00
 WSOMER3_X HEX 1500

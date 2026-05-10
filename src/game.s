@@ -15,17 +15,21 @@ NTPgetsongpos           =   NinjaTrackerPlus+18
 NTPsetplayvolume        =   NinjaTrackerPlus+21
 NTPstreamsound          =   NinjaTrackerPlus+24
 
-]IOBUF = $BB00        ; 1024-byte ProDOS I/O buffer (page-aligned), $BB00-$BEFF
-                       ; (ends just below ProDOS Global Page at $BF00)
+]IOBUF = $0C00        ; 1024-byte ProDOS I/O buffer (page-aligned),
+                       ; $0C00-$0FFF. Moved from $BB00 to $0C00 to free
+                       ; $BB00-$BEFF (1KB) for game.s growth as more
+                       ; compiled-sprite cache vars + dispatch logic
+                       ; gets added. New ceiling: $BEFF (just below
+                       ; ProDOS Global Page at $BF00).
 ]RDBUF = $0800         ; 1024-byte read buffer (= 2 disk blocks), $0800-$0BFF.
                        ; Moved from $B700 to free that range for game.s
-                       ; growth as more compiled-sprite cache vars are
-                       ; added. $0800 is the standard ProDOS 8 user-buffer
-                       ; range — text page 1 ($0400-$07FF) is used by
-                       ; firmware debug prints, text page 2 ($0800-$0BFF)
-                       ; isn't read by the engine, and QuickDraw II's DP
-                       ; sits at $1D00-$1FFF. game.s code/data is now
-                       ; free to grow up through $BAFF.
+                       ; growth. $0800 is the standard ProDOS 8 user-
+                       ; buffer range — text page 1 ($0400-$07FF) is
+                       ; used by firmware debug prints, text page 2
+                       ; ($0800-$0BFF) isn't read by the engine. IOBUF
+                       ; sits right above us at $0C00, QuickDraw II's
+                       ; DP at $1D00-$1FFF. game.s now grows up through
+                       ; $BEFF.
 
 * Conditional-assembly switch for the text-screen debug prints
 * sprinkled through the engine. Set to 1 to keep them in the
@@ -4585,7 +4589,9 @@ fo_somersault
  sec
  sbc #1
  sta (info_ptr),y
- bne :step             ; not yet expired -> just step
+ beq :ws_expired
+ jmp :step             ; not yet expired -> just step
+:ws_expired
 
 * Timer expired -> advance sub-frame.
  ldy #8
@@ -4614,52 +4620,81 @@ fo_somersault
  sta (info_ptr),y
 :no_flip
 
-* Look up frame_addr from somersault_addr_tbl[sub-frame*2]
-* (legacy bank-$02 frames, populated by init_level). The
-* compiled WSOMER migration was attempted but reverted —
-* somersault_data_tbl etc. still get populated but go unread.
+* Compiled WSOMER frame load. Read sub_frame*2, then dispatch
+* on mirror flag to pick data+mask vs data_mir+mask_mir.
+* IMPORTANT: dimensions live ONLY before the non-mirror DATA
+* label (compile_sprite.py emits NAME_Y / NAME_X exactly once,
+* at the start). So always remember the NON-MIRROR data addr
+* in :tmp_dlo/:tmp_dhi for the dim-read below — even when
+* loading mirror arrays.
  ldy #8
  lda (info_ptr),y
  asl
- tay
- lda somersault_addr_tbl,y
+ sta :tmp_idx
+ ldy :tmp_idx
+* Always cache the non-mirror data addr for the dim read.
+ lda somersault_data_tbl,y
+ sta :tmp_dlo
+ lda somersault_data_tbl+1,y
+ sta :tmp_dhi
+ ldy #4
+ lda (info_ptr),y       ; A = mirror flag
+ ldy :tmp_idx           ; Y = sub_frame*2
+ cmp #1
+ beq :ws_mirror_load
+:ws_normal_load
+ lda somersault_data_tbl,y
  sta :tmp_lo
- lda somersault_addr_tbl+1,y
+ lda somersault_data_tbl+1,y
  sta :tmp_hi
- ldy #14
+ lda somersault_mask_tbl,y
+ sta :tmp_mlo
+ lda somersault_mask_tbl+1,y
+ sta :tmp_mhi
+ bra :ws_load_done
+:ws_mirror_load
+ lda somersault_data_mir_tbl,y
+ sta :tmp_lo
+ lda somersault_data_mir_tbl+1,y
+ sta :tmp_hi
+ lda somersault_mask_mir_tbl,y
+ sta :tmp_mlo
+ lda somersault_mask_mir_tbl+1,y
+ sta :tmp_mhi
+:ws_load_done
+* Write FRAME_ADDR (info+14/+15) and MASK_ADDR (info+60/+61).
  lda :tmp_lo
- sta (info_ptr),y      ; frame_addr low
- iny
+ ldy #14
+ sta (info_ptr),y
  lda :tmp_hi
- sta (info_ptr),y      ; frame_addr high
-* Force legacy bank ($02) and zero the active compiled mask so
-* the dispatch routes through draw_sprite. fo_somersault drives
-* frame_addr manually with anim_ptr held at 0, so update_anims's
-* :load_frame bit-N bank reset NEVER runs for these frames —
-* for a compiled NPC (Williams w/ idle bank $1B and idle_mask
-* in info+62) the WSOMERn legacy bytes would otherwise render
-* through the compiled path with bank $1B → scrambled garbage.
- lda #$02
+ ldy #15
+ sta (info_ptr),y
+ lda :tmp_mlo
+ ldy #60
+ sta (info_ptr),y
+ lda :tmp_mhi
+ ldy #61
+ sta (info_ptr),y
+* Force compiled bank ($1B) — set BOTH info+56 and info+57.
+ lda #$1B
  ldy #56
  sta (info_ptr),y
  lda #0
- ldy #60
- sta (info_ptr),y
- ldy #61
+ ldy #57
  sta (info_ptr),y
 
-* Read frame_x (addr-2) and frame_y (addr-4) from bank $02.
-* Each is stored as a 2-byte little-endian word but only the
-* low byte is the actual pixel count.
- lda :tmp_lo
+* Read frame_x (addr-2) and frame_y (addr-4) from bank $1B,
+* always relative to the NON-MIRROR data address (compile_sprite
+* only emits _Y / _X before the original DATA label).
+ lda :tmp_dlo
  sec
  sbc #4
  sta $F0
- lda :tmp_hi
+ lda :tmp_dhi
  sbc #0
  sta $F1
- lda #$02
- sta $F2               ; bank $02
+ lda #$1B
+ sta $F2               ; bank $1B (compiled mission13)
  ldy #0
  lda [$F0],y           ; frame_y_word low byte
  ldy #12
@@ -4766,6 +4801,8 @@ fo_somersault
 :tmp_mlo dfb 0
 :tmp_mhi dfb 0
 :tmp_idx dfb 0
+:tmp_dlo dfb 0
+:tmp_dhi dfb 0
 
 *==========================================================
 * Grab system helpers
@@ -4798,13 +4835,26 @@ enemy_set_held
  ldy #43
  lda (info_ptr),y
  sta :eh_id_hi
-* William?
+* William? Match either the legacy spr_william1 (bank $02) idle
+* address OR the compiled spr_william1c_data (bank $1B) version
+* — script_spawn_npc rewrites info+42 to the compiled addr for
+* William NPCs, so the legacy compare alone misses every live
+* William and falls through to the Linda branch (= corrupted
+* held pose, wrong sprite type).
  lda :eh_id_lo
  cmp spr_william1
- bne :try_roper
+ bne :try_w_compiled
  lda :eh_id_hi
  cmp spr_william1+1
+ beq :is_william
+:try_w_compiled
+ lda :eh_id_lo
+ cmp spr_william1c_data
  bne :try_roper
+ lda :eh_id_hi
+ cmp spr_william1c_data+1
+ bne :try_roper
+:is_william
  lda :which
  bne :w_h2
  lda spr_wheld1
@@ -4829,10 +4879,18 @@ enemy_set_held
 :try_roper
  lda :eh_id_lo
  cmp spr_roper1
- bne :try_linda
+ bne :try_r_compiled
  lda :eh_id_hi
  cmp spr_roper1+1
+ beq :is_roper
+:try_r_compiled
+ lda :eh_id_lo
+ cmp spr_roper1c_data
  bne :try_linda
+ lda :eh_id_hi
+ cmp spr_roper1c_data+1
+ bne :try_linda
+:is_roper
  lda :which
  bne :r_h2
  lda spr_rheld1
@@ -4906,6 +4964,24 @@ enemy_set_held
  sta (info_ptr),y
  iny
  lda :addr_hi
+ sta (info_ptr),y
+* Force legacy bank ($02) and clear compiled mask: WHELDn /
+* RHELDn / LHELDn frames are bank-$02 sprites (in mission1's
+* sprite block, populated by init_level), but compiled-NPC
+* spawn left info+56=$1B and info+60=non-zero. Without this,
+* dispatch routes draw_sprite_compiled with the held frame_addr
+* offset read from the wrong bank → big black rectangles.
+* info+58 (idle_bank) and info+62 (idle_mask_addr) are
+* untouched so the post-grab fo_approach → anim_wwalk install
+* restores compiled rendering naturally via load_frame's bit-3/6
+* dispatch.
+ lda #$02
+ ldy #56
+ sta (info_ptr),y
+ lda #0
+ ldy #60
+ sta (info_ptr),y
+ ldy #61
  sta (info_ptr),y
  ldy #30
  lda #$03
@@ -9620,8 +9696,10 @@ update_anims
  sta landing_window
 :ad_not_jump
 * === Burnov boss-death state machine ===
-* Triggered for any sprite whose frame_bank == $19 (currently
-* only Burnov). Three transitions:
+* Triggered for any sprite whose frame_bank == $19 (legacy
+* Burnov dissolve/recon + linda_flail's anim_lffall) OR $1C
+* (Burnov's now-compiled combat anims: bnpunch/bngrab/bnfall).
+* Three transitions:
 *   anim_bnfall ended  →  start anim_bn_diss (BURNGONE) OR permadeath
 *   anim_bn_diss ended →  teleport + start anim_bn_recon (BURNBACK)
 *   anim_bn_recon ended →  reset punch_count, increment death_count,
@@ -9629,7 +9707,11 @@ update_anims
  ldy #56
  lda (info_ptr),y      ; frame_bank
  cmp #$19
- bne :ad_normal_flow   ; not bank-$19 (Burnov/linda_flail), take existing path
+ beq :ad_bn_check_fall ; bank-$19 → check Burnov/linda_flail anims
+ cmp #$1C
+ beq :ad_bn_check_fall ; bank-$1C → compiled-Burnov combat anim ended
+ jmp :ad_normal_flow   ; other banks: take normal-death path
+:ad_bn_check_fall
 * Was the just-ended anim specifically anim_bnfall? Compare
 * against the descriptor address directly rather than against
 * the sprite's +50 field — linda_flail also lives in bank $19
@@ -14173,6 +14255,18 @@ spr_bnwalk3c_data      ds 2
 spr_bnwalk3c_mask      ds 2
 spr_bnwalk3c_data_mir  ds 2
 spr_bnwalk3c_mask_mir  ds 2
+spr_wsomer1c_data      ds 2
+spr_wsomer1c_mask      ds 2
+spr_wsomer1c_data_mir  ds 2
+spr_wsomer1c_mask_mir  ds 2
+spr_wsomer2c_data      ds 2
+spr_wsomer2c_mask      ds 2
+spr_wsomer2c_data_mir  ds 2
+spr_wsomer2c_mask_mir  ds 2
+spr_wsomer3c_data      ds 2
+spr_wsomer3c_mask      ds 2
+spr_wsomer3c_data_mir  ds 2
+spr_wsomer3c_mask_mir  ds 2
 spr_lfwalk1c_data      ds 2
 spr_lfwalk1c_mask      ds 2
 spr_lfwalk1c_data_mir  ds 2
@@ -14237,6 +14331,34 @@ spr_wknife2c_data      ds 2
 spr_wknife2c_mask      ds 2
 spr_wknife2c_data_mir  ds 2
 spr_wknife2c_mask_mir  ds 2
+spr_bnpunch1c_data     ds 2
+spr_bnpunch1c_mask     ds 2
+spr_bnpunch1c_data_mir ds 2
+spr_bnpunch1c_mask_mir ds 2
+spr_bnpunch2c_data     ds 2
+spr_bnpunch2c_mask     ds 2
+spr_bnpunch2c_data_mir ds 2
+spr_bnpunch2c_mask_mir ds 2
+spr_bnbilly1c_data     ds 2
+spr_bnbilly1c_mask     ds 2
+spr_bnbilly1c_data_mir ds 2
+spr_bnbilly1c_mask_mir ds 2
+spr_bnbilly2c_data     ds 2
+spr_bnbilly2c_mask     ds 2
+spr_bnbilly2c_data_mir ds 2
+spr_bnbilly2c_mask_mir ds 2
+spr_bnbilly3c_data     ds 2
+spr_bnbilly3c_mask     ds 2
+spr_bnbilly3c_data_mir ds 2
+spr_bnbilly3c_mask_mir ds 2
+spr_bnfall1c_data      ds 2
+spr_bnfall1c_mask      ds 2
+spr_bnfall1c_data_mir  ds 2
+spr_bnfall1c_mask_mir  ds 2
+spr_bnfallenc_data     ds 2
+spr_bnfallenc_mask     ds 2
+spr_bnfallenc_data_mir ds 2
+spr_bnfallenc_mask_mir ds 2
 
 * Burnov (boss) — bank-$06 sprite addresses, populated by
 * init_mission12 from mission12's spr_addr_tbl.
@@ -14411,9 +14533,21 @@ spr_bspin1   ds 2
 spr_bspin2   ds 2
 spr_bspin3   ds 2
 
-* Sub-frame -> WSOMER frame address. Filled in by init_level
-* once spr_wsomer{1,2,3} are patched. Indexed by sub-frame×2.
+* Sub-frame -> WSOMER frame address (legacy bank-$02 addrs).
+* Kept populated by init_level for backwards compat / fallback;
+* fo_somersault reads the compiled tables below.
 somersault_addr_tbl ds 10
+
+* Compiled WSOMER lookup tables (5 sub-frames × 2 bytes each).
+* Filled by init_williams_compiled. Sub-frame map:
+*   0: WSOMER1   1: WSOMER3   2: WSOMER2   3: WSOMER3   4: WSOMER1
+* fo_somersault picks data+mask vs data_mir+mask_mir based on
+* info+4 (mirror flag) — the compiled draw doesn't mirror at
+* draw time, so the caller selects pre-rotated arrays.
+somersault_data_tbl     ds 10
+somersault_mask_tbl     ds 10
+somersault_data_mir_tbl ds 10
+somersault_mask_mir_tbl ds 10
 
 * Uppercut input window. Counts down from UPPERCUT_WINDOW after
 * anim_jump ends (i.e., Billy lands). While > 0, a Punch press
@@ -14911,31 +15045,16 @@ init_mission12
 * post-:do_patch compiled-Burnov detector keys on that match
 * before repointing to compiled.
 
- lda spr_bnpunch1
- sta anim_bnpunch+3+3
- lda spr_bnpunch2
- sta anim_bnpunch+3+8
+* anim_bnpunch is now compiled (bank $1C) — patched in
+* init_burnov_combat_compiled (called from init_mission14).
+* spr_bnpunch1/2 cache vars stay because init_mission12 still
+* populates them; they're just unread.
 
-* Patch anim_bngrab: 7 legacy frames at offsets 6/11/16/21/26/31/36
-* (BNBILLY1, 2, 1, 2, 1, 2, 3).
- lda spr_bnbilly1
- sta anim_bngrab+3+3
- sta anim_bngrab+3+13
- sta anim_bngrab+3+23
- lda spr_bnbilly2
- sta anim_bngrab+3+8
- sta anim_bngrab+3+18
- sta anim_bngrab+3+28
- lda spr_bnbilly3
- sta anim_bngrab+3+33
+* anim_bngrab is now compiled (bank $1C) — patched in
+* init_burnov_combat_compiled.
 
- lda spr_bnfall1
- sta anim_bnpunched+3+3      ; placeholder reaction = BNFALL1
-
- lda spr_bnfall1
- sta anim_bnfall+3+3
- lda spr_bnfallen
- sta anim_bnfall+3+8
+* anim_bnpunched and anim_bnfall are now compiled (bank $1C) —
+* patched in init_burnov_combat_compiled.
 
 * Patch anim_bn_diss (BDISS1→8) — 8 frames at +3+3, +3+8, ...
 * +3+3, +3+8, +3+13, +3+18, +3+23, +3+28, +3+33, +3+38
@@ -15496,6 +15615,43 @@ init_mission13
  ldy #214
  lda [$F0],y
  sta spr_bnwalk3c_mask_mir
+* WSOMER1/2/3 (offsets 216-238) — Williams cartwheel frames.
+ ldy #216
+ lda [$F0],y
+ sta spr_wsomer1c_data
+ ldy #218
+ lda [$F0],y
+ sta spr_wsomer1c_mask
+ ldy #220
+ lda [$F0],y
+ sta spr_wsomer1c_data_mir
+ ldy #222
+ lda [$F0],y
+ sta spr_wsomer1c_mask_mir
+ ldy #224
+ lda [$F0],y
+ sta spr_wsomer2c_data
+ ldy #226
+ lda [$F0],y
+ sta spr_wsomer2c_mask
+ ldy #228
+ lda [$F0],y
+ sta spr_wsomer2c_data_mir
+ ldy #230
+ lda [$F0],y
+ sta spr_wsomer2c_mask_mir
+ ldy #232
+ lda [$F0],y
+ sta spr_wsomer3c_data
+ ldy #234
+ lda [$F0],y
+ sta spr_wsomer3c_mask
+ ldy #236
+ lda [$F0],y
+ sta spr_wsomer3c_data_mir
+ ldy #238
+ lda [$F0],y
+ sta spr_wsomer3c_mask_mir
  sec
  xce
  mx %11
@@ -15656,9 +15812,44 @@ init_williams_compiled
  lda spr_wfallenc_mask_mir
  sta anim_wfall+23
 
-* WSOMER table population removed pending re-investigation —
-* fo_somersault is back to legacy bank-$02 path so the tables
-* aren't read.
+* Populate the 4 WSOMER sub-frame tables. fo_somersault reads
+* one of these per sub-frame (data+mask for mirror=0, _mir
+* variants for mirror=1). Sub-frame → sprite map:
+*   0,4 → WSOMER1  (offsets 0, 8)
+*   1,3 → WSOMER3  (offsets 2, 6)
+*   2   → WSOMER2  (offset  4)
+ lda spr_wsomer1c_data
+ sta somersault_data_tbl
+ sta somersault_data_tbl+8
+ lda spr_wsomer3c_data
+ sta somersault_data_tbl+2
+ sta somersault_data_tbl+6
+ lda spr_wsomer2c_data
+ sta somersault_data_tbl+4
+ lda spr_wsomer1c_mask
+ sta somersault_mask_tbl
+ sta somersault_mask_tbl+8
+ lda spr_wsomer3c_mask
+ sta somersault_mask_tbl+2
+ sta somersault_mask_tbl+6
+ lda spr_wsomer2c_mask
+ sta somersault_mask_tbl+4
+ lda spr_wsomer1c_data_mir
+ sta somersault_data_mir_tbl
+ sta somersault_data_mir_tbl+8
+ lda spr_wsomer3c_data_mir
+ sta somersault_data_mir_tbl+2
+ sta somersault_data_mir_tbl+6
+ lda spr_wsomer2c_data_mir
+ sta somersault_data_mir_tbl+4
+ lda spr_wsomer1c_mask_mir
+ sta somersault_mask_mir_tbl
+ sta somersault_mask_mir_tbl+8
+ lda spr_wsomer3c_mask_mir
+ sta somersault_mask_mir_tbl+2
+ sta somersault_mask_mir_tbl+6
+ lda spr_wsomer2c_mask_mir
+ sta somersault_mask_mir_tbl+4
 
  sec
  xce
@@ -16147,10 +16338,208 @@ init_mission14
  ldy #126
  lda [$F0],y
  sta spr_wknife2c_mask_mir
+* Burnov combat sprites (BNPUNCH1/2, BNBILLY1/2/3, BNFALL1,
+* BNFALLEN) — offsets 128-182. Order matches mission14.s
+* spr_addr_tbl after WKNIFE2.
+ ldy #128
+ lda [$F0],y
+ sta spr_bnpunch1c_data
+ ldy #130
+ lda [$F0],y
+ sta spr_bnpunch1c_mask
+ ldy #132
+ lda [$F0],y
+ sta spr_bnpunch1c_data_mir
+ ldy #134
+ lda [$F0],y
+ sta spr_bnpunch1c_mask_mir
+ ldy #136
+ lda [$F0],y
+ sta spr_bnpunch2c_data
+ ldy #138
+ lda [$F0],y
+ sta spr_bnpunch2c_mask
+ ldy #140
+ lda [$F0],y
+ sta spr_bnpunch2c_data_mir
+ ldy #142
+ lda [$F0],y
+ sta spr_bnpunch2c_mask_mir
+ ldy #144
+ lda [$F0],y
+ sta spr_bnbilly1c_data
+ ldy #146
+ lda [$F0],y
+ sta spr_bnbilly1c_mask
+ ldy #148
+ lda [$F0],y
+ sta spr_bnbilly1c_data_mir
+ ldy #150
+ lda [$F0],y
+ sta spr_bnbilly1c_mask_mir
+ ldy #152
+ lda [$F0],y
+ sta spr_bnbilly2c_data
+ ldy #154
+ lda [$F0],y
+ sta spr_bnbilly2c_mask
+ ldy #156
+ lda [$F0],y
+ sta spr_bnbilly2c_data_mir
+ ldy #158
+ lda [$F0],y
+ sta spr_bnbilly2c_mask_mir
+ ldy #160
+ lda [$F0],y
+ sta spr_bnbilly3c_data
+ ldy #162
+ lda [$F0],y
+ sta spr_bnbilly3c_mask
+ ldy #164
+ lda [$F0],y
+ sta spr_bnbilly3c_data_mir
+ ldy #166
+ lda [$F0],y
+ sta spr_bnbilly3c_mask_mir
+ ldy #168
+ lda [$F0],y
+ sta spr_bnfall1c_data
+ ldy #170
+ lda [$F0],y
+ sta spr_bnfall1c_mask
+ ldy #172
+ lda [$F0],y
+ sta spr_bnfall1c_data_mir
+ ldy #174
+ lda [$F0],y
+ sta spr_bnfall1c_mask_mir
+ ldy #176
+ lda [$F0],y
+ sta spr_bnfallenc_data
+ ldy #178
+ lda [$F0],y
+ sta spr_bnfallenc_mask
+ ldy #180
+ lda [$F0],y
+ sta spr_bnfallenc_data_mir
+ ldy #182
+ lda [$F0],y
+ sta spr_bnfallenc_mask_mir
  sec
  xce
  mx %11
  jsr init_armed_compiled
+ jsr init_burnov_combat_compiled
+ rts
+
+*----------------------------------------------------------
+* init_burnov_combat_compiled - Patch the compiled-form Burnov
+* combat anim descriptors (anim_bnpunch, anim_bngrab,
+* anim_bnpunched, anim_bnfall) with the bank-$1C BN*_DATA /
+* _MASK / _MIRROR addresses populated by init_mission14.
+* anim_bnwalk is patched separately by init_burnov_compiled
+* (in mission13 / bank $1B).
+*----------------------------------------------------------
+ mx %11
+init_burnov_combat_compiled
+ clc
+ xce
+ rep $30
+ mx %00
+
+* anim_bnpunch frame 0 = BNPUNCH1
+ lda spr_bnpunch1c_data
+ sta anim_bnpunch+6
+ lda spr_bnpunch1c_mask
+ sta anim_bnpunch+8
+ lda spr_bnpunch1c_data_mir
+ sta anim_bnpunch+10
+ lda spr_bnpunch1c_mask_mir
+ sta anim_bnpunch+12
+* anim_bnpunch frame 1 = BNPUNCH2
+ lda spr_bnpunch2c_data
+ sta anim_bnpunch+17
+ lda spr_bnpunch2c_mask
+ sta anim_bnpunch+19
+ lda spr_bnpunch2c_data_mir
+ sta anim_bnpunch+21
+ lda spr_bnpunch2c_mask_mir
+ sta anim_bnpunch+23
+
+* anim_bngrab: BNBILLY1, 2, 1, 2, 1, 2, 3 (7 frames).
+* Frame N data offset = 6 + N*11; same +2/+4/+6 for mask/dmir/mmir.
+ lda spr_bnbilly1c_data
+ sta anim_bngrab+6
+ sta anim_bngrab+28      ; frame 2 = BNBILLY1
+ sta anim_bngrab+50      ; frame 4 = BNBILLY1
+ lda spr_bnbilly1c_mask
+ sta anim_bngrab+8
+ sta anim_bngrab+30
+ sta anim_bngrab+52
+ lda spr_bnbilly1c_data_mir
+ sta anim_bngrab+10
+ sta anim_bngrab+32
+ sta anim_bngrab+54
+ lda spr_bnbilly1c_mask_mir
+ sta anim_bngrab+12
+ sta anim_bngrab+34
+ sta anim_bngrab+56
+ lda spr_bnbilly2c_data
+ sta anim_bngrab+17      ; frame 1
+ sta anim_bngrab+39      ; frame 3
+ sta anim_bngrab+61      ; frame 5
+ lda spr_bnbilly2c_mask
+ sta anim_bngrab+19
+ sta anim_bngrab+41
+ sta anim_bngrab+63
+ lda spr_bnbilly2c_data_mir
+ sta anim_bngrab+21
+ sta anim_bngrab+43
+ sta anim_bngrab+65
+ lda spr_bnbilly2c_mask_mir
+ sta anim_bngrab+23
+ sta anim_bngrab+45
+ sta anim_bngrab+67
+ lda spr_bnbilly3c_data
+ sta anim_bngrab+72      ; frame 6 = BNBILLY3
+ lda spr_bnbilly3c_mask
+ sta anim_bngrab+74
+ lda spr_bnbilly3c_data_mir
+ sta anim_bngrab+76
+ lda spr_bnbilly3c_mask_mir
+ sta anim_bngrab+78
+
+* anim_bnpunched: 1 frame BNFALL1 (placeholder reaction).
+ lda spr_bnfall1c_data
+ sta anim_bnpunched+6
+ lda spr_bnfall1c_mask
+ sta anim_bnpunched+8
+ lda spr_bnfall1c_data_mir
+ sta anim_bnpunched+10
+ lda spr_bnfall1c_mask_mir
+ sta anim_bnpunched+12
+
+* anim_bnfall frame 0 = BNFALL1 (arc), frame 1 = BNFALLEN.
+ lda spr_bnfall1c_data
+ sta anim_bnfall+6
+ lda spr_bnfall1c_mask
+ sta anim_bnfall+8
+ lda spr_bnfall1c_data_mir
+ sta anim_bnfall+10
+ lda spr_bnfall1c_mask_mir
+ sta anim_bnfall+12
+ lda spr_bnfallenc_data
+ sta anim_bnfall+17
+ lda spr_bnfallenc_mask
+ sta anim_bnfall+19
+ lda spr_bnfallenc_data_mir
+ sta anim_bnfall+21
+ lda spr_bnfallenc_mask_mir
+ sta anim_bnfall+23
+
+ sec
+ xce
+ mx %11
  rts
 
 *----------------------------------------------------------
@@ -20393,14 +20782,21 @@ anim_bnwalk
   hex 0000             ; patched: BNWALK2_MASK_MIRROR
 
 * Burnov punch. 2 frames, one-shot.
+* Compiled bank-$1C — patched by init_burnov_combat_compiled.
 anim_bnpunch
  dfb 2
  dfb $17             ; max_width (BNPUNCH2)
- dfb $20             ; flags: bit 5 = bank $19
- dfb $11,$30,6       ; BNPUNCH1: 17 wide, 48 tall
-  hex 0000             ; patched
- dfb $17,$2E,6       ; BNPUNCH2: 23 wide, 46 tall
-  hex 0000             ; patched
+ dfb $88             ; flags: bit 7 = compiled, bit 3 = bank $1C
+ dfb $11,$30,6       ; BNPUNCH1: 17 wide, 48 tall, 6 VBLs
+  hex 0000             ; patched: BNPUNCH1_DATA
+  hex 0000             ; patched: BNPUNCH1_MASK
+  hex 0000             ; patched: BNPUNCH1_DATA_MIRROR
+  hex 0000             ; patched: BNPUNCH1_MASK_MIRROR
+ dfb $17,$2E,6       ; BNPUNCH2: 23 wide, 46 tall, 6 VBLs
+  hex 0000             ; patched: BNPUNCH2_DATA
+  hex 0000             ; patched: BNPUNCH2_MASK
+  hex 0000             ; patched: BNPUNCH2_DATA_MIRROR
+  hex 0000             ; patched: BNPUNCH2_MASK_MIRROR
 
 * Burnov-holds-Billy grab sequence. Triggered when anim_bnpunch
 * lands on Billy (check_punch_hit Burnov-special). Plays
@@ -20408,44 +20804,78 @@ anim_bnpunch
 * BNBILLY3 as the release pose. Billy's sprite is suppressed
 * and his input ignored during the whole anim; on completion,
 * :normal_end clears bn_grab_active and starts his fall_anim.
+* Compiled bank-$1C — patched by init_burnov_combat_compiled.
 anim_bngrab
  dfb 7
  dfb $15             ; max_width (BNBILLY1/2 are 21)
- dfb $20             ; flags: bit 5 = bank $19
+ dfb $88             ; flags: bit 7 = compiled, bit 3 = bank $1C
  dfb $15,$30,8       ; BNBILLY1
-  hex 0000             ; patched
+  hex 0000             ; patched: BNBILLY1_DATA
+  hex 0000             ; patched: BNBILLY1_MASK
+  hex 0000             ; patched: BNBILLY1_DATA_MIRROR
+  hex 0000             ; patched: BNBILLY1_MASK_MIRROR
  dfb $15,$31,8       ; BNBILLY2
-  hex 0000             ; patched
+  hex 0000             ; patched: BNBILLY2_DATA
+  hex 0000             ; patched: BNBILLY2_MASK
+  hex 0000             ; patched: BNBILLY2_DATA_MIRROR
+  hex 0000             ; patched: BNBILLY2_MASK_MIRROR
  dfb $15,$30,8       ; BNBILLY1
-  hex 0000             ; patched
+  hex 0000             ; patched: BNBILLY1_DATA
+  hex 0000             ; patched: BNBILLY1_MASK
+  hex 0000             ; patched: BNBILLY1_DATA_MIRROR
+  hex 0000             ; patched: BNBILLY1_MASK_MIRROR
  dfb $15,$31,8       ; BNBILLY2
-  hex 0000             ; patched
+  hex 0000             ; patched: BNBILLY2_DATA
+  hex 0000             ; patched: BNBILLY2_MASK
+  hex 0000             ; patched: BNBILLY2_DATA_MIRROR
+  hex 0000             ; patched: BNBILLY2_MASK_MIRROR
  dfb $15,$30,8       ; BNBILLY1
-  hex 0000             ; patched
+  hex 0000             ; patched: BNBILLY1_DATA
+  hex 0000             ; patched: BNBILLY1_MASK
+  hex 0000             ; patched: BNBILLY1_DATA_MIRROR
+  hex 0000             ; patched: BNBILLY1_MASK_MIRROR
  dfb $15,$31,8       ; BNBILLY2
-  hex 0000             ; patched
+  hex 0000             ; patched: BNBILLY2_DATA
+  hex 0000             ; patched: BNBILLY2_MASK
+  hex 0000             ; patched: BNBILLY2_DATA_MIRROR
+  hex 0000             ; patched: BNBILLY2_MASK_MIRROR
  dfb $15,$2F,12      ; BNBILLY3 (release)
-  hex 0000             ; patched
+  hex 0000             ; patched: BNBILLY3_DATA
+  hex 0000             ; patched: BNBILLY3_MASK
+  hex 0000             ; patched: BNBILLY3_DATA_MIRROR
+  hex 0000             ; patched: BNBILLY3_MASK_MIRROR
 
 * Burnov punched reaction. 1 frame placeholder using BNFALL1
 * — replace with a dedicated recoil frame if/when one ships.
+* Compiled bank-$1C — patched by init_burnov_combat_compiled.
 anim_bnpunched
  dfb 1
  dfb $0D
- dfb $20             ; flags: bit 5 = bank $19
+ dfb $88             ; flags: bit 7 = compiled, bit 3 = bank $1C
  dfb $0D,$2E,5       ; BNFALL1
-  hex 0000             ; patched
+  hex 0000             ; patched: BNFALL1_DATA
+  hex 0000             ; patched: BNFALL1_MASK
+  hex 0000             ; patched: BNFALL1_DATA_MIRROR
+  hex 0000             ; patched: BNFALL1_MASK_MIRROR
 
 * Burnov fall. 2 frames, one-shot, parabolic arc on frame 0.
 * BNFALL2/3 are unused for now — could be a 3-frame arc later.
+* Compiled bank-$1C — patched by init_burnov_combat_compiled.
 anim_bnfall
  dfb 2
  dfb $17             ; max_width (BNFALLEN)
- dfb $30             ; flags: bit 4 = fall trajectory, bit 5 = bank $19
+ dfb $98             ; flags: bit 7 = compiled, bit 4 = fall trajectory,
+                     ;        bit 3 = bank $1C
  dfb $0D,$2E,FALL_ARC_FRAMES ; BNFALL1: arc duration
-  hex 0000             ; patched
+  hex 0000             ; patched: BNFALL1_DATA
+  hex 0000             ; patched: BNFALL1_MASK
+  hex 0000             ; patched: BNFALL1_DATA_MIRROR
+  hex 0000             ; patched: BNFALL1_MASK_MIRROR
  dfb $17,$17,60      ; BNFALLEN: 23 wide, 23 tall
-  hex 0000             ; patched
+  hex 0000             ; patched: BNFALLEN_DATA
+  hex 0000             ; patched: BNFALLEN_MASK
+  hex 0000             ; patched: BNFALLEN_DATA_MIRROR
+  hex 0000             ; patched: BNFALLEN_MASK_MIRROR
 
 * Burnov dissolve (BDISS1 → BDISS8). BDISS1-7 play at 7 VBLs
 * each (~0.8 sec body→helmet); BDISS8 (the sideways helmet on
@@ -21993,6 +22423,23 @@ check_punch_hit
  sta spr_ptr+1
  pla
  sta spr_ptr
+* Re-read MASK_ADDR from the puncher's info+60. The push/pop
+* above restores the value MASK_ADDR held at entry — but if a
+* hit triggered start_anim ON the puncher itself (e.g., Burnov
+* starting anim_bngrab when his anim_bnpunch lands on Billy),
+* start_anim's :sa_legacy_load / :sa_compiled_persist updated
+* puncher's info+60 to match the NEW anim. Without this re-read,
+* save_anim_state (which runs immediately after we return)
+* persists the stale entry-time MASK_ADDR back into info+60 —
+* and the next frame draws the new anim's frame_addr through
+* the wrong dispatch (e.g., compiled draw on a legacy bank-$19
+* frame_addr → garbage / black background).
+ ldy #60
+ lda (info_ptr),y
+ sta MASK_ADDR
+ iny
+ lda (info_ptr),y
+ sta MASK_ADDR+1
  rts
 
 :self_lo dfb 0

@@ -115,11 +115,12 @@ open_ref     dfb 0
 read_pblock  dfb 4
 read_ref     dfb 0
 read_buf     dw $2000        ; load address for the SYS file
-read_count   dw $9700        ; max bytes ($2000-$B700 ≈ 46 KB) —
-                              ; $B700 = ProDOS RDBUF inside game.s, so
-                              ; growth past here would clobber it. If
-                              ; game.s ever needs more, move RDBUF/IOBUF
-                              ; and bump this in lockstep.
+read_count   dw $9F00        ; max bytes ($2000-$BF00 ≈ 54 KB) —
+                              ; $BF00 = ProDOS Global Page (top of
+                              ; available bank-$00 user RAM). ]IOBUF
+                              ; moved to $0C00 (and ]RDBUF to $0800)
+                              ; so game.s can grow through $BEFF.
+                              ; Bump in lockstep with IOBUF/RDBUF moves.
 read_xfer    dw 0            ; bytes actually read
 
 close_pblock dfb 1
