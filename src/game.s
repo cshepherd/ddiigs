@@ -9786,11 +9786,10 @@ update_anims
  lda anim_ptr+1
  cmp #>anim_bnfall
  bne :ad_bn_check_diss
-* anim_bnfall ended. Permadeath on the 3rd kill, dissolve on
-* the 1st and 2nd.
- lda boss_death_count
- cmp #2
- bcs :ad_do_death      ; >= 2: real death, level ends
+* anim_bnfall ended. ALWAYS play the dissolve animation — on
+* kills 1 and 2 it precedes the teleport+recon, on kill 3 it
+* runs as the final visual (the post-diss handler below detects
+* count==2 and routes to :ad_do_death instead of recon).
  jsr start_burnov_dissolve
  jmp :next
 :ad_bn_check_diss
@@ -9800,6 +9799,12 @@ update_anims
  lda anim_ptr+1
  cmp #>anim_bn_diss
  bne :ad_bn_check_recon
+* Dissolve done. On the 3rd kill (count==2) skip recon and let
+* the death sentinel mark Burnov for removal so the level script
+* (OP_WAITCLR + OP_END) can roll the COMPLETE.NTP end-music.
+ lda boss_death_count
+ cmp #2
+ bcs :ad_do_death
  jsr start_burnov_recon
  jmp :next
 :ad_bn_check_recon
@@ -9899,11 +9904,17 @@ update_anims
  lda (info_ptr),y
  ldy #34
  sta (info_ptr),y     ; prev_xpos <- current xpos
-* Pick rect dims based on frame_bank. $19 = Burnov (taller +
-* wider sprite set); anything else = William-class.
- ldy #56
+* Pick rect dims based on walk_anim. Detect Burnov via his
+* walk_anim pointer (anim_bnwalk) since bank no longer
+* uniquely identifies him — he renders in $1B (compiled
+* walk), $1C (compiled combat), or $19 (legacy dissolve).
+ ldy #52
  lda (info_ptr),y
- cmp #$19
+ cmp #<anim_bnwalk
+ bne :dd_normal_dims
+ ldy #53
+ lda (info_ptr),y
+ cmp #>anim_bnwalk
  bne :dd_normal_dims
  lda #24
  sta :dd_w            ; Burnov width — pad past BNFALLEN's 23
