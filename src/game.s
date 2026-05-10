@@ -5730,39 +5730,48 @@ ld_set_frame
  ldy #12
  lda #$27               ; frame_y
  sta (info_ptr),y
-* Force legacy bank $02 + clear compiled mask: LCLIMB1/2 are
-* legacy bank-$02 sprites, but compiled-Linda spawn left
-* info+56=$1B and info+60=LINDA1_MASK. Without this, the
-* dispatch routes through draw_sprite_compiled with bank $1B
-* + a bank-$02 frame_addr → scrambled garbage. info+62 stays
-* untouched so :normal_end's :ne_npc_mask_restore (e.g. after
-* a ladder-fall) can revive compiled idle.
- lda #$02
+* Compiled bank $1B — write FRAME_ADDR (info+14/+15), MASK_ADDR
+* (info+60/+61), and bank ($1B → info+56). LCLIMB1/2 don't need
+* a mirror branch: Linda climbs facing the screen, the same pose
+* regardless of her info+4 mirror. Always use the non-mirror
+* DATA + MASK pair. info+58 / info+62 stay untouched so
+* :normal_end's :ne_npc_mask_restore (after a ladder fall) can
+* revive compiled LINDA1 idle.
+ lda #$1B
  ldy #56
- sta (info_ptr),y
- lda #$00
- ldy #60
- sta (info_ptr),y
- ldy #61
  sta (info_ptr),y
 * Frame select: bit 2 of step counter (info+8)
  ldy #8
  lda (info_ptr),y
  and #$04
  beq :use_l1
- lda spr_lclimb2
+* LCLIMB2 frame
+ lda spr_lclimb2c_data
  ldy #14
  sta (info_ptr),y
- lda spr_lclimb2+1
+ lda spr_lclimb2c_data+1
  ldy #15
+ sta (info_ptr),y
+ lda spr_lclimb2c_mask
+ ldy #60
+ sta (info_ptr),y
+ lda spr_lclimb2c_mask+1
+ ldy #61
  sta (info_ptr),y
  rts
 :use_l1
- lda spr_lclimb1
+* LCLIMB1 frame
+ lda spr_lclimb1c_data
  ldy #14
  sta (info_ptr),y
- lda spr_lclimb1+1
+ lda spr_lclimb1c_data+1
  ldy #15
+ sta (info_ptr),y
+ lda spr_lclimb1c_mask
+ ldy #60
+ sta (info_ptr),y
+ lda spr_lclimb1c_mask+1
+ ldy #61
  sta (info_ptr),y
  rts
 
@@ -14267,6 +14276,14 @@ spr_wsomer3c_data      ds 2
 spr_wsomer3c_mask      ds 2
 spr_wsomer3c_data_mir  ds 2
 spr_wsomer3c_mask_mir  ds 2
+spr_lclimb1c_data      ds 2
+spr_lclimb1c_mask      ds 2
+spr_lclimb1c_data_mir  ds 2
+spr_lclimb1c_mask_mir  ds 2
+spr_lclimb2c_data      ds 2
+spr_lclimb2c_mask      ds 2
+spr_lclimb2c_data_mir  ds 2
+spr_lclimb2c_mask_mir  ds 2
 spr_lfwalk1c_data      ds 2
 spr_lfwalk1c_mask      ds 2
 spr_lfwalk1c_data_mir  ds 2
@@ -15652,6 +15669,31 @@ init_mission13
  ldy #238
  lda [$F0],y
  sta spr_wsomer3c_mask_mir
+* LCLIMB1/2 (offsets 240-270) — Linda's ladder-climb frames.
+ ldy #240
+ lda [$F0],y
+ sta spr_lclimb1c_data
+ ldy #242
+ lda [$F0],y
+ sta spr_lclimb1c_mask
+ ldy #244
+ lda [$F0],y
+ sta spr_lclimb1c_data_mir
+ ldy #246
+ lda [$F0],y
+ sta spr_lclimb1c_mask_mir
+ ldy #248
+ lda [$F0],y
+ sta spr_lclimb2c_data
+ ldy #250
+ lda [$F0],y
+ sta spr_lclimb2c_mask
+ ldy #252
+ lda [$F0],y
+ sta spr_lclimb2c_data_mir
+ ldy #254
+ lda [$F0],y
+ sta spr_lclimb2c_mask_mir
  sec
  xce
  mx %11
