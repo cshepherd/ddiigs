@@ -17,10 +17,15 @@ NTPstreamsound          =   NinjaTrackerPlus+24
 
 ]IOBUF = $BB00        ; 1024-byte ProDOS I/O buffer (page-aligned), $BB00-$BEFF
                        ; (ends just below ProDOS Global Page at $BF00)
-]RDBUF = $B700         ; 1024-byte read buffer (= 2 disk blocks), $B700-$BAFF.
-                       ; Was 4 KB, but the loaders only ever issue 512-byte
-                       ; READs, so 1 KB is plenty and frees 3 KB for game.s
-                       ; growth. game.s code/data must end before $B700.
+]RDBUF = $0800         ; 1024-byte read buffer (= 2 disk blocks), $0800-$0BFF.
+                       ; Moved from $B700 to free that range for game.s
+                       ; growth as more compiled-sprite cache vars are
+                       ; added. $0800 is the standard ProDOS 8 user-buffer
+                       ; range — text page 1 ($0400-$07FF) is used by
+                       ; firmware debug prints, text page 2 ($0800-$0BFF)
+                       ; isn't read by the engine, and QuickDraw II's DP
+                       ; sits at $1D00-$1FFF. game.s code/data is now
+                       ; free to grow up through $BAFF.
 
 * Conditional-assembly switch for the text-screen debug prints
 * sprinkled through the engine. Set to 1 to keep them in the
@@ -119,6 +124,39 @@ DEBUG_PRINT equ 0
  lda #>mission1_path
  sta file_open+2
  lda #$02
+ sta file_bank
+ stz file_dest
+ stz file_dest+1
+ jsr load_file
+
+* Load MISSION13 (compiled mission1 sprites) to bank $1B. NPCs
+* whose anim has been migrated to compiled form pull DATA/MASK
+* /DATA_MIRROR/MASK_MIRROR pointers from this bank via the
+* spr_addr_tbl in mission13's header. init_mission13 runs after
+* MISSION1's init below to populate the spr_w*_data / _mask /
+* _mirror cache vars. Bank $1A is reserved for boss SFX
+* samples (BURNGONE + BURNBACK), so compiled sprites moved
+* one bank up.
+ lda #<mission13_path
+ sta file_open+1
+ lda #>mission13_path
+ sta file_open+2
+ lda #$1B
+ sta file_bank
+ stz file_dest
+ stz file_dest+1
+ jsr load_file
+
+* Load MISSION14 (compiled armed-NPC sprites: armed Linda + armed
+* Williams) to bank $1C. mission13 ($1B) overflowed when the armed
+* sprite set was added to the regular set, so the armed cohort
+* lives in its own bank. Anim flag bit 3 routes to $1C in
+* start_anim / load_frame.
+ lda #<mission14_path
+ sta file_open+1
+ lda #>mission14_path
+ sta file_open+2
+ lda #$1C
  sta file_bank
  stz file_dest
  stz file_dest+1
@@ -337,6 +375,8 @@ DEBUG_PRINT equ 0
 * twiddle is needed here either.
  jsr init_level
  jsr init_mission12
+ jsr init_mission13
+ jsr init_mission14
 
  ldx #5
  jsr draw_loading_string
@@ -1865,6 +1905,251 @@ script_spawn_npc
  sta (info_ptr),y      ; +57 frame_bank high
  ldy #59
  sta (info_ptr),y      ; +59 idle_bank high
+* Compiled-William upgrade: if the template's idle_addr matches
+* spr_william1 (the legacy bank-$02 idle), repoint the sprite to
+* the bank-$1B AND/ORA-pipeline version. info+14/+42 → compiled
+* DATA, info+60/+62 → compiled MASK + persistent idle mask,
+* info+56/+58 → $1B. Mid-anim legacy frames (anim_wwalk etc.)
+* clear info+60 to drop back to draw_sprite; :normal_end's
+* :ne_npc_mask_restore reads info+62 to revive compiled idle.
+ lda :id_lo
+ cmp spr_william1
+ bne :no_compiled_william
+ lda :id_hi
+ cmp spr_william1+1
+ bne :no_compiled_william
+* Repoint frame/idle data to compiled WILLIAM1.
+ lda spr_william1c_data
+ ldy #14
+ sta (info_ptr),y
+ ldy #42
+ sta (info_ptr),y
+ lda spr_william1c_data+1
+ ldy #15
+ sta (info_ptr),y
+ ldy #43
+ sta (info_ptr),y
+* Active + idle mask addresses → compiled WILLIAM1_MASK.
+ lda spr_william1c_mask
+ ldy #60
+ sta (info_ptr),y
+ ldy #62
+ sta (info_ptr),y
+ lda spr_william1c_mask+1
+ ldy #61
+ sta (info_ptr),y
+ ldy #63
+ sta (info_ptr),y
+* Bank → $1B (overrides the $02 default just written).
+ lda #$1B
+ ldy #56
+ sta (info_ptr),y
+ ldy #58
+ sta (info_ptr),y
+:no_compiled_william
+* Compiled-Roper upgrade: if the template's idle_addr matches
+* spr_roper1 (the legacy bank-$02 idle), repoint to the bank-$1B
+* compiled version. Mirrors the Williams upgrade above.
+ lda :id_lo
+ cmp spr_roper1
+ bne :no_compiled_roper
+ lda :id_hi
+ cmp spr_roper1+1
+ bne :no_compiled_roper
+* Repoint frame/idle data to compiled ROPER1.
+ lda spr_roper1c_data
+ ldy #14
+ sta (info_ptr),y
+ ldy #42
+ sta (info_ptr),y
+ lda spr_roper1c_data+1
+ ldy #15
+ sta (info_ptr),y
+ ldy #43
+ sta (info_ptr),y
+* Active + idle mask addresses → compiled ROPER1_MASK.
+ lda spr_roper1c_mask
+ ldy #60
+ sta (info_ptr),y
+ ldy #62
+ sta (info_ptr),y
+ lda spr_roper1c_mask+1
+ ldy #61
+ sta (info_ptr),y
+ ldy #63
+ sta (info_ptr),y
+* Bank → $1B (overrides the $02 default just written).
+ lda #$1B
+ ldy #56
+ sta (info_ptr),y
+ ldy #58
+ sta (info_ptr),y
+:no_compiled_roper
+* Compiled-Linda upgrade: if the template's idle_addr matches
+* spr_linda1 (the legacy bank-$02 idle), repoint to bank-$1B
+* compiled. Mirrors the Williams/Roper upgrades above.
+* Linda's ladder-climbing path (ld_set_frame writes LCLIMB1/2)
+* still uses bank $02 — ld_set_frame is responsible for clearing
+* info+60 + setting info+56=$02 when entering climb.
+ lda :id_lo
+ cmp spr_linda1
+ bne :no_compiled_linda
+ lda :id_hi
+ cmp spr_linda1+1
+ bne :no_compiled_linda
+* Repoint frame/idle data to compiled LINDA1.
+ lda spr_linda1c_data
+ ldy #14
+ sta (info_ptr),y
+ ldy #42
+ sta (info_ptr),y
+ lda spr_linda1c_data+1
+ ldy #15
+ sta (info_ptr),y
+ ldy #43
+ sta (info_ptr),y
+* Active + idle mask addresses → compiled LINDA1_MASK.
+ lda spr_linda1c_mask
+ ldy #60
+ sta (info_ptr),y
+ ldy #62
+ sta (info_ptr),y
+ lda spr_linda1c_mask+1
+ ldy #61
+ sta (info_ptr),y
+ ldy #63
+ sta (info_ptr),y
+* Bank → $1B (overrides the $02 default just written).
+ lda #$1B
+ ldy #56
+ sta (info_ptr),y
+ ldy #58
+ sta (info_ptr),y
+:no_compiled_linda
+* Compiled-Linda-flail upgrade: if the template's idle_addr
+* matches spr_lfwalk1 (the bank-$19 walk frame written by
+* :is_linda_flail above), repoint to bank-$1C compiled. Match
+* on info+14 since :is_linda_flail just wrote it; the template
+* itself uses sentinel $0001 so :id_lo/:id_hi don't compare.
+ ldy #14
+ lda (info_ptr),y
+ cmp spr_lfwalk1
+ bne :no_compiled_lflail
+ ldy #15
+ lda (info_ptr),y
+ cmp spr_lfwalk1+1
+ bne :no_compiled_lflail
+* Repoint frame/idle data to compiled LFWALK1.
+ lda spr_lfwalk1c_data
+ ldy #14
+ sta (info_ptr),y
+ ldy #42
+ sta (info_ptr),y
+ lda spr_lfwalk1c_data+1
+ ldy #15
+ sta (info_ptr),y
+ ldy #43
+ sta (info_ptr),y
+* Active + idle mask addresses → compiled LFWALK1_MASK.
+ lda spr_lfwalk1c_mask
+ ldy #60
+ sta (info_ptr),y
+ ldy #62
+ sta (info_ptr),y
+ lda spr_lfwalk1c_mask+1
+ ldy #61
+ sta (info_ptr),y
+ ldy #63
+ sta (info_ptr),y
+* Bank → $1C (overrides the $19 default just written).
+ lda #$1C
+ ldy #56
+ sta (info_ptr),y
+ ldy #58
+ sta (info_ptr),y
+:no_compiled_lflail
+* Compiled-Williams-pipe upgrade: matches spr_wpipewalk1 written
+* by :is_williams_pipe above.
+ ldy #14
+ lda (info_ptr),y
+ cmp spr_wpipewalk1
+ bne :no_compiled_wpipe
+ ldy #15
+ lda (info_ptr),y
+ cmp spr_wpipewalk1+1
+ bne :no_compiled_wpipe
+* Repoint frame/idle data to compiled WPIPEWALK1.
+ lda spr_wpipewalk1c_data
+ ldy #14
+ sta (info_ptr),y
+ ldy #42
+ sta (info_ptr),y
+ lda spr_wpipewalk1c_data+1
+ ldy #15
+ sta (info_ptr),y
+ ldy #43
+ sta (info_ptr),y
+* Active + idle mask addresses → compiled WPIPEWALK1_MASK.
+ lda spr_wpipewalk1c_mask
+ ldy #60
+ sta (info_ptr),y
+ ldy #62
+ sta (info_ptr),y
+ lda spr_wpipewalk1c_mask+1
+ ldy #61
+ sta (info_ptr),y
+ ldy #63
+ sta (info_ptr),y
+* Bank → $1C (overrides the $19 default just written).
+ lda #$1C
+ ldy #56
+ sta (info_ptr),y
+ ldy #58
+ sta (info_ptr),y
+:no_compiled_wpipe
+* Compiled-Burnov upgrade: matches spr_bnwalk1 written by
+* :is_burnov above. Repoints idle to bank-$1B compiled BNWALK1
+* so Burnov's ambient/idle frames render compiled. His other
+* anims (punch, grab, fall, dissolve, recon) stay legacy
+* bank-$19, and start_anim flips info+56 to $19 while they
+* play; :normal_end restores info+56 from info+58 ($1B).
+ ldy #14
+ lda (info_ptr),y
+ cmp spr_bnwalk1
+ bne :no_compiled_burnov
+ ldy #15
+ lda (info_ptr),y
+ cmp spr_bnwalk1+1
+ bne :no_compiled_burnov
+* Repoint frame/idle data to compiled BNWALK1.
+ lda spr_bnwalk1c_data
+ ldy #14
+ sta (info_ptr),y
+ ldy #42
+ sta (info_ptr),y
+ lda spr_bnwalk1c_data+1
+ ldy #15
+ sta (info_ptr),y
+ ldy #43
+ sta (info_ptr),y
+* Active + idle mask addresses → compiled BNWALK1_MASK.
+ lda spr_bnwalk1c_mask
+ ldy #60
+ sta (info_ptr),y
+ ldy #62
+ sta (info_ptr),y
+ lda spr_bnwalk1c_mask+1
+ ldy #61
+ sta (info_ptr),y
+ ldy #63
+ sta (info_ptr),y
+* Bank → $1B (overrides the $19 default just written).
+ lda #$1B
+ ldy #56
+ sta (info_ptr),y
+ ldy #58
+ sta (info_ptr),y
+:no_compiled_burnov
 * Set dirty = draw only (bit 0)
  ldy #30
  lda #$01
@@ -1924,7 +2209,7 @@ script_spawn_npc
 * Advance NPC buffer pointer (60 bytes per block)
  lda npc_buf_next
  clc
- adc #60
+ adc #64
  sta npc_buf_next
  lda npc_buf_next+1
  adc #0
@@ -3574,11 +3859,28 @@ draw_ladder_debug
 * level's lifetime (not just concurrent), since npc_buf_next
 * only advances, never reuses slots of defeated NPCs.
 NPC_BUFFER_SLOTS = 24
-* 60 bytes/slot: 0..51 copied from the bank-$02 template; 52/54
+* 64 bytes/slot: 0..51 copied from the bank-$02 template; 52/54
 * (walk_anim/atk_anim), 56 (frame_bank), and 58 (idle_bank — bank
 * of the idle frame, restored on anim end) patched by
-* script_spawn_npc post-copy.
-npc_buffers ds NPC_BUFFER_SLOTS*60
+* script_spawn_npc post-copy. 60/62 added for the AND/ORA
+* compiled-sprite pipeline:
+*   +60/+61 active_mask_addr — read by load_sprite into MASK_ADDR
+*                              every frame; non-zero routes the
+*                              dispatch to draw_sprite_compiled.
+*                              start_anim/load_frame zero this
+*                              for legacy frames so the mask test
+*                              cleanly drops to draw_sprite.
+*   +62/+63 idle_mask_addr   — persistent compiled-mask address for
+*                              the NPC's idle pose. :normal_end
+*                              copies it back into +60 when an
+*                              anim ends, so a compiled NPC reverts
+*                              to compiled idle after a legacy
+*                              attack/punched/fall plays. Billy
+*                              uses spr_image01_mask globals
+*                              instead of +62 because his idle
+*                              data depends on facing.
+NPC_INFO_SIZE = 64
+npc_buffers ds NPC_BUFFER_SLOTS*NPC_INFO_SIZE
 npc_buffers_end
 
 *----------------------------------------------------------
@@ -4159,46 +4461,23 @@ fo_start_punch
  jsr dbg_print_hex8
  jsr dbg_print_nl
  fin
-* Read per-NPC atk_anim from +54/+55 into anim_ptr ZP
+* Read per-NPC atk_anim from +54/+55 and call start_anim so the
+* full bank/mask bookkeeping fires. Manually loading frame 0 the
+* old way (write info+24/+26/+28/+10/+12/+14 directly) leaves
+* info+56 (frame_bank) and info+60 (active_mask_addr) at their
+* idle-pose values — for compiled-NPC Williams that's bank $1B
+* and the WILLIAM1 mask address — so the very first frame of
+* the punch renders compiled bank-$1B with a bank-$02 frame
+* offset → scrambled garbage. start_anim handles the bank flip,
+* mask clear, and the FRAME_X/Y/ADDR globals atomically.
  ldy #54
- lda (info_ptr),y
- sta anim_ptr
+ lda (info_ptr),y      ; atk_anim low
+ pha
  ldy #55
- lda (info_ptr),y
- sta anim_ptr+1
-* Install into sprite block
- ldy #24
- lda anim_ptr
- sta (info_ptr),y
- iny
- lda anim_ptr+1
- sta (info_ptr),y
- ldy #26
- lda #0
- sta (info_ptr),y      ; anim_frame = 0
-* Load frame 0's data from the descriptor so it shows now.
-* Descriptor header = 3 bytes, then frame_x(1), frame_y(1),
-* dur(1), addr(2). Frame 0 data at offsets +3..+7.
- ldy #5
- lda (anim_ptr),y      ; duration
- ldy #28
- sta (info_ptr),y      ; anim_timer
- ldy #3
- lda (anim_ptr),y      ; frame_x
- ldy #10
- sta (info_ptr),y
- ldy #4
- lda (anim_ptr),y      ; frame_y
- ldy #12
- sta (info_ptr),y
- ldy #6
- lda (anim_ptr),y      ; frame_addr low
- ldy #14
- sta (info_ptr),y
- ldy #7
- lda (anim_ptr),y      ; frame_addr high
- ldy #15
- sta (info_ptr),y
+ lda (info_ptr),y      ; atk_anim high
+ tax
+ pla
+ jsr start_anim
  rts
 
 *----------------------------------------------------------
@@ -4335,7 +4614,10 @@ fo_somersault
  sta (info_ptr),y
 :no_flip
 
-* Look up frame_addr from somersault_addr_tbl[sub-frame*2].
+* Look up frame_addr from somersault_addr_tbl[sub-frame*2]
+* (legacy bank-$02 frames, populated by init_level). The
+* compiled WSOMER migration was attempted but reverted —
+* somersault_data_tbl etc. still get populated but go unread.
  ldy #8
  lda (info_ptr),y
  asl
@@ -4350,6 +4632,21 @@ fo_somersault
  iny
  lda :tmp_hi
  sta (info_ptr),y      ; frame_addr high
+* Force legacy bank ($02) and zero the active compiled mask so
+* the dispatch routes through draw_sprite. fo_somersault drives
+* frame_addr manually with anim_ptr held at 0, so update_anims's
+* :load_frame bit-N bank reset NEVER runs for these frames —
+* for a compiled NPC (Williams w/ idle bank $1B and idle_mask
+* in info+62) the WSOMERn legacy bytes would otherwise render
+* through the compiled path with bank $1B → scrambled garbage.
+ lda #$02
+ ldy #56
+ sta (info_ptr),y
+ lda #0
+ ldy #60
+ sta (info_ptr),y
+ ldy #61
+ sta (info_ptr),y
 
 * Read frame_x (addr-2) and frame_y (addr-4) from bank $02.
 * Each is stored as a 2-byte little-endian word but only the
@@ -4466,6 +4763,9 @@ fo_somersault
 :ap_tmp dfb 0
 :tmp_lo dfb 0
 :tmp_hi dfb 0
+:tmp_mlo dfb 0
+:tmp_mhi dfb 0
+:tmp_idx dfb 0
 
 *==========================================================
 * Grab system helpers
@@ -4675,15 +4975,15 @@ billy_set_grab_frame
  iny
  lda :addr_hi
  sta (info_ptr),y
-* Force legacy draw path: anim_ptr = 0, info+52 = 0.
+* Force legacy draw path: anim_ptr = 0, info+60 = 0.
  lda #0
  ldy #24
  sta (info_ptr),y
  ldy #25
  sta (info_ptr),y
- ldy #52
+ ldy #60
  sta (info_ptr),y
- ldy #53
+ ldy #61
  sta (info_ptr),y
  sta MASK_ADDR
  sta MASK_ADDR+1
@@ -5354,6 +5654,21 @@ ld_set_frame
  ldy #12
  lda #$27               ; frame_y
  sta (info_ptr),y
+* Force legacy bank $02 + clear compiled mask: LCLIMB1/2 are
+* legacy bank-$02 sprites, but compiled-Linda spawn left
+* info+56=$1B and info+60=LINDA1_MASK. Without this, the
+* dispatch routes through draw_sprite_compiled with bank $1B
+* + a bank-$02 frame_addr → scrambled garbage. info+62 stays
+* untouched so :normal_end's :ne_npc_mask_restore (e.g. after
+* a ladder-fall) can revive compiled idle.
+ lda #$02
+ ldy #56
+ sta (info_ptr),y
+ lda #$00
+ ldy #60
+ sta (info_ptr),y
+ ldy #61
+ sta (info_ptr),y
 * Frame select: bit 2 of step counter (info+8)
  ldy #8
  lda (info_ptr),y
@@ -5776,11 +6091,15 @@ erase_all
  ldy #24
  lda (info_ptr),y     ; anim_ptr low
  cmp #$FF
- bne :not_dead
+ beq :nd_chk_hi
+ jmp :not_dead
+:nd_chk_hi
  iny
  lda (info_ptr),y     ; anim_ptr high
  cmp #$FF
- bne :not_dead
+ beq :nd_dead
+ jmp :not_dead
+:nd_dead
 * Death: erase at prev position, then remove from table.
 * DEBUG: log death-erase with prev rect.
  do DEBUG_PRINT
@@ -5853,7 +6172,7 @@ erase_all
 * erase wipes part of the player and no one redraws it.
  jsr mark_overlapping
  jsr remove_from_sprite_table
- bra :loop            ; don't advance spr_ptr — entries shifted down
+ jmp :loop            ; don't advance spr_ptr — entries shifted down
 :not_dead
 * Erase if bit 1 set (needs_erase)
  ldy #30
@@ -6045,7 +6364,9 @@ erase_all
  ldy #30
  lda (info_ptr),y
  and #$01             ; bit 0 = needs_draw?
- beq :ea_draw_done
+ bne :ea_draw_check
+ jmp :ea_draw_done
+:ea_draw_check
 * Burnov-grab lock: skip Billy entirely while bn_grab_active
 * (his BNBILLY1/2/3 frames are the combined pose).
  ldy #22
@@ -6069,15 +6390,109 @@ erase_all
 :ea_draw_no_off
  stz frame_x_off
 :ea_draw_off_done
-* Compiled vs legacy dispatch: compiled (AND/ORA) only when
-* MASK_ADDR != 0 AND the sprite is the keyboard player.
+* Compiled vs legacy dispatch: compiled (AND/ORA) when
+* MASK_ADDR != 0. (Was also gated on controller==1 because
+* NPCs' info+52 doubled as walk_anim and would have routed
+* every NPC compiled by accident; +60 is now dedicated to
+* the active mask address so the rule simplifies.)
+ lda MASK_ADDR
+ ora MASK_ADDR+1
+ bne :ea_do_compiled
+ jmp :ea_legacy
+:ea_do_compiled
+* DEBUG: log every compiled NPC draw so we can verify the live
+* state (sprite_bank + MASK_ADDR + FRAME_ADDR) at draw time.
+* Format: 'EC <info_lo> b<bank> m<mask_hi><mask_lo> f<frame_hi><frame_lo>
+*           x<frame_x>y<frame_y> R<byte0><byte1><byte2><byte3>'.
+* The "R" is the first 4 bytes from sprite_bank:FRAME_ADDR — should
+* match WILLIAM1_DATA row 0 ($00 $00 $00 $00). If garbage, something
+* in the indirect-long read is wrong.
+ do DEBUG_PRINT
  ldy #22
  lda (info_ptr),y
  cmp #$01
- bne :ea_legacy
+ bne :ea_dbg_emit
+ jmp :ea_dbg_skip
+:ea_dbg_emit
+ lda #$C5              ; 'E'
+ jsr dbg_print_char
+ lda #$C3              ; 'C'
+ jsr dbg_print_char
+ lda #$A0
+ jsr dbg_print_char
+ lda info_ptr
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda #$E2              ; 'b'
+ jsr dbg_print_char
+ lda sprite_bank
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda #$ED              ; 'm'
+ jsr dbg_print_char
+ lda MASK_ADDR+1
+ jsr dbg_print_hex8
  lda MASK_ADDR
- ora MASK_ADDR+1
- beq :ea_legacy
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda #$E6              ; 'f'
+ jsr dbg_print_char
+ lda FRAME_ADDR+1
+ jsr dbg_print_hex8
+ lda FRAME_ADDR
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda #$F8              ; 'x'
+ jsr dbg_print_char
+ lda FRAME_X
+ jsr dbg_print_hex8
+ lda #$F9              ; 'y'
+ jsr dbg_print_char
+ lda FRAME_Y
+ jsr dbg_print_hex8
+* Read first mask byte AND first data byte via long-indirect
+* using the same (sprite_bank:MASK_ADDR / sprite_bank:FRAME_ADDR)
+* the AND/ORA inner loop will use. If "rm" is $FF (WILLIAM1_MASK
+* row 0 byte 0) and "rd" is $00 (WILLIAM1_DATA row 0 byte 0), the
+* indirect-long resolves correctly and the bug is elsewhere.
+* Otherwise we know DP[7..9] doesn't point where the global says.
+ lda #$A0
+ jsr dbg_print_char
+ lda #$F2              ; 'r'
+ jsr dbg_print_char
+ lda #$ED              ; 'm'
+ jsr dbg_print_char
+ lda MASK_ADDR
+ sta $F0
+ lda MASK_ADDR+1
+ sta $F1
+ lda sprite_bank
+ sta $F2
+ ldy #0
+ lda [$F0],y
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda #$F2              ; 'r'
+ jsr dbg_print_char
+ lda #$E4              ; 'd'
+ jsr dbg_print_char
+ lda FRAME_ADDR
+ sta $F0
+ lda FRAME_ADDR+1
+ sta $F1
+ lda sprite_bank
+ sta $F2
+ ldy #0
+ lda [$F0],y
+ jsr dbg_print_hex8
+ jsr dbg_print_nl
+:ea_dbg_skip
+ fin
  jsr draw_sprite_compiled
  bra :ea_post_draw
 :ea_legacy
@@ -6155,11 +6570,9 @@ draw_all
 * signal "current FRAME_ADDR points at compiled DATA"; advance_walk
 * and :anim_done idle-restore set it, while start_anim and
 * advance_climb clear it (their frames are uncompiled, must go
-* through legacy). NPCs always use legacy (controller != 1).
- ldy #22
- lda (info_ptr),y
- cmp #$01
- bne :da_legacy
+* through legacy). NPCs route compiled too when their info+60
+* (active_mask_addr) is non-zero — i.e. they have a compiled
+* idle pose loaded.
  lda MASK_ADDR
  ora MASK_ADDR+1
  beq :da_legacy
@@ -6237,11 +6650,13 @@ load_sprite
  ldy #20
  lda (info_ptr),y     ; +20 masklo
  sta MASKLO
- ldy #52
- lda (info_ptr),y     ; +52 mask_addr low (compiled-pipeline mask;
-                      ;     for NPC slots this is walk_anim — dispatch
-                      ;     in draw_all gates on controller==1, so this
-                      ;     value is harmless when the legacy path runs)
+ ldy #60
+ lda (info_ptr),y     ; +60 active_mask_addr — compiled-pipeline
+                      ;     mask address; non-zero routes the
+                      ;     dispatch to draw_sprite_compiled. Used
+                      ;     by Billy and any compiled NPC. Zero for
+                      ;     legacy-only sprites and during legacy
+                      ;     anims (start_anim/load_frame clear it).
  sta MASK_ADDR
  iny
  lda (info_ptr),y
@@ -6306,20 +6721,17 @@ save_sprite
  iny
  lda FRAME_ADDR+1
  sta (info_ptr),y     ; +15 frame_addr high
-* For Billy (keyboard player), also persist MASK_ADDR → +52 so
-* load_sprite picks up the matching inverse-mask next frame. NPC
-* slots use +52 as walk_anim, so we skip the write for them.
- ldy #22
- lda (info_ptr),y     ; +22 controller
- cmp #$01
- bne :ss_skip_mask
- ldy #52
+* Persist MASK_ADDR → +60 (active_mask_addr) for every sprite.
+* The compiled-vs-legacy decision happens in dispatch via
+* MASK_ADDR != 0; +60 is the persistent backing for it.
+* (Was gated to controller==1 when +52 served double-duty as
+* walk_anim for NPCs; the new +60 field is dedicated.)
+ ldy #60
  lda MASK_ADDR
  sta (info_ptr),y
  iny
  lda MASK_ADDR+1
  sta (info_ptr),y
-:ss_skip_mask
 * Mark sprite as dirty (bit0=needs_draw, bit1=needs_erase)
  ldy #30
  lda #$03
@@ -6360,18 +6772,15 @@ save_anim_state
  iny
  lda FRAME_ADDR+1
  sta (info_ptr),y
-* Persist MASK_ADDR → +52 for Billy only (see save_sprite note).
- ldy #22
- lda (info_ptr),y
- cmp #$01
- bne :sas_skip_mask
- ldy #52
+* Persist MASK_ADDR → +60 (active_mask_addr) for every sprite.
+* No longer gated on controller — +60 is dedicated, NPC walk_anim
+* lives at +52.
+ ldy #60
  lda MASK_ADDR
  sta (info_ptr),y
  iny
  lda MASK_ADDR+1
  sta (info_ptr),y
-:sas_skip_mask
 * Mark dirty (bit0=needs_draw, bit1=needs_erase)
  ldy #30
  lda #$03
@@ -8117,7 +8526,7 @@ cancel_action_anim
  lda #0
  sta MASK_ADDR
  sta MASK_ADDR+1
- ldy #52
+ ldy #60
  sta (info_ptr),y
  iny
  sta (info_ptr),y
@@ -8511,23 +8920,42 @@ start_anim
  ldy #26
  lda #0
  sta (info_ptr),y     ; anim_frame = 0
-* Per-anim frame_bank from descriptor flag bit 5.
-*   bit 5 clear → frames in bank $02 (mission1)
-*   bit 5 set   → frames in bank $19 (mission12)
-* Lets a single sprite straddle both banks (e.g. williams_pipe
-* walks with bank-$19 WPIPEWALK frames but falls with bank-$02
+* Per-anim frame_bank from descriptor flag bits.
+*   bit 3 set → frames in bank $1C (mission14, armed compiled)
+*   bit 6 set → frames in bank $1B (mission13, regular compiled)
+*   bit 5 set → frames in bank $19 (mission12, legacy)
+*   else      → frames in bank $02 (mission1)
+* bit 7 (compiled stride) is independent — Billy's compiled anims
+* (anim_jump, anim_bspinkick, anim_bpunched, anim_punch*, etc.)
+* have bit 7 set but bits 3/5/6 clear so their frames stay in
+* bank $02. Precedence is bit 3 > bit 6 > bit 5 > default.
+* Lets a single sprite straddle banks (e.g. williams_pipe walks
+* with bank-$1C WPIPEWALK frames but falls with bank-$1B
 * anim_wfall). :normal_end restores info+56 from info+58 when the
 * anim ends so the idle frame draws from its own bank.
  ldy #2
  lda (anim_ptr),y     ; flags
+ and #$08
+ beq :sa_chk_1b
+ lda #$1C
+ bra :sa_set_bank
+:sa_chk_1b
+ ldy #2
+ lda (anim_ptr),y
+ and #$40
+ beq :sa_chk_19
+ lda #$1B
+ bra :sa_set_bank
+:sa_chk_19
+ ldy #2
+ lda (anim_ptr),y
  and #$20
- beq :sa_bank2
+ beq :sa_bank2_default
  lda #$19
- ldy #56
- sta (info_ptr),y
- bra :sa_bank_done
-:sa_bank2
+ bra :sa_set_bank
+:sa_bank2_default
  lda #$02
+:sa_set_bank
  ldy #56
  sta (info_ptr),y
 :sa_bank_done
@@ -8539,22 +8967,18 @@ start_anim
 * === Legacy 5-byte stride: frame 0 at +3..+7 ===
 * Reached by NPC animations and by Billy's anim_uppercut (which is
 * uncompiled because BUPPER frames don't ship in compiled form).
-* If the keyboard player (Billy) is starting an uncompiled anim,
-* clear MASK_ADDR + info+52 so draw_all routes him through the
-* legacy draw_sprite path. NPCs starting uncompiled anims must
-* NOT touch MASK_ADDR — when Billy hits an NPC mid-punch the hit
-* path runs start_anim on the target's punched_anim, and clearing
-* the global mask there would clobber Billy's compiled state and
-* re-route him into the legacy renderer with compiled data,
-* rendering as black boxes around his sprite.
- ldy #22
- lda (info_ptr),y
- cmp #$01
- bne :sa_legacy_load
+* Clear MASK_ADDR + info+60 so the dispatch routes legacy this
+* frame; load_sprite next frame copies info+60 back to MASK_ADDR
+* (still 0 here, so legacy persists through the anim). For Billy
+* and compiled NPCs, :normal_end restores info+60 from the right
+* idle source when the legacy anim ends.
+* (The previous code gated this on controller==1 because info+52
+* held walk_anim for NPCs and zeroing it would corrupt them. With
+* the move to info+60 the gate is no longer needed.)
  lda #0
  sta MASK_ADDR
  sta MASK_ADDR+1
- ldy #52
+ ldy #60
  lda #0
  sta (info_ptr),y
  iny
@@ -8621,15 +9045,10 @@ start_anim
  lda (anim_ptr),y
  sta MASK_ADDR+1
 :sa_compiled_persist
-* For Billy: persist MASK_ADDR → info+52 so load_sprite picks it
-* up next frame. NPCs would never run a compiled animation under
-* the current model — but if one does, we'd corrupt walk_anim, so
-* gate on controller==1.
- ldy #22
- lda (info_ptr),y
- cmp #$01
- bne :sa_write_block
- ldy #52
+* Persist MASK_ADDR → info+60 (active_mask_addr) so load_sprite
+* picks it up next frame. Used by both Billy and compiled NPCs
+* now that +60 is dedicated.
+ ldy #60
  lda MASK_ADDR
  sta (info_ptr),y
  iny
@@ -9457,7 +9876,7 @@ update_anims
  lda #0
  sta MASK_ADDR
  sta MASK_ADDR+1
- ldy #52
+ ldy #60
  sta (info_ptr),y
  iny
  sta (info_ptr),y
@@ -9853,23 +10272,18 @@ update_anims
  ldy #22
  lda (info_ptr),y
  cmp #$01
- bne :ne_no_billy_mask
+ bne :ne_npc_mask_restore
  lda billy_pipe_armed
  ora billy_mace_armed
  ora billy_knife_armed
  beq :ne_billy_mask_chk_mirror
-* Armed Billy: clear MASK_ADDR + info+52/53 so dispatch routes
-* through legacy (armed) draw next frame. Without this, info+52
-* still holds the just-ended anim's compiled mask (e.g.
-* BPUNCHED_MASK at a bank-$02 address) — load_sprite next frame
-* copies it back to MASK_ADDR, the dispatch fires the compiled
-* path with armed bank-$19 frame data, and reading the bank-$02
-* mask address from bank $19 yields garbage AND/ORA bytes →
-* corrupted-looking BPUNCH sprite + ghost rect afterward.
+* Armed Billy: clear MASK_ADDR + info+60/61 so dispatch routes
+* through legacy (armed) draw next frame. (Was info+52 in the
+* old layout — info+60 since the compiled-mask field moved.)
  lda #0
  sta MASK_ADDR
  sta MASK_ADDR+1
- ldy #52
+ ldy #60
  sta (info_ptr),y
  iny
  sta (info_ptr),y
@@ -9893,11 +10307,94 @@ update_anims
  sta MASK_ADDR
  lda spr_image01_mask_mirror+1
  sta MASK_ADDR+1
+ bra :ne_no_billy_mask
+:ne_npc_mask_restore
+* NPC: restore MASK_ADDR from info+62/+63 (idle_mask_addr) so
+* compiled-NPC sprites revert to compiled idle after a legacy
+* anim ends. Legacy NPCs have info+62 = 0, so MASK_ADDR stays
+* zero and the dispatch keeps routing legacy.
+ ldy #62
+ lda (info_ptr),y
+ sta MASK_ADDR
+ iny
+ lda (info_ptr),y
+ sta MASK_ADDR+1
 :ne_no_billy_mask
  jsr save_anim_state
+* DEBUG: dump key idle-state fields after :normal_end so we can
+* verify compiled-NPC restore (Williams: info+56 should be $1B,
+* info+60 should be the compiled mask address). Print only for
+* NPCs (controller != 1) to keep the output focused.
+ do DEBUG_PRINT
+ ldy #22
+ lda (info_ptr),y
+ cmp #$01
+ beq :ne_no_dbg
+ lda #$CE              ; 'N'
+ jsr dbg_print_char
+ lda #$C5              ; 'E'
+ jsr dbg_print_char
+ lda #$A0
+ jsr dbg_print_char
+ lda info_ptr
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda #$C2              ; 'B'
+ jsr dbg_print_char
+ ldy #56
+ lda (info_ptr),y
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda #$CD              ; 'M'
+ jsr dbg_print_char
+ ldy #61
+ lda (info_ptr),y
+ jsr dbg_print_hex8
+ ldy #60
+ lda (info_ptr),y
+ jsr dbg_print_hex8
+ jsr dbg_print_nl
+:ne_no_dbg
+ fin
  jmp :next
 
 :load_frame
+* Set info+56 (frame_bank) per the anim's flag bits. start_anim
+* does this once at anim install, but npc_ensure_walking installs
+* walk anims directly without going through start_anim — so on
+* the first frame load after install, frame_bank could still be
+* the *idle*'s bank. Re-applying it here covers both code paths.
+* Dispatch matches start_anim: bit 3 → $1C (mission14), bit 6 →
+* $1B (mission13), bit 5 → $19 (mission12), else $02 (mission1).
+* Precedence: bit 3 > bit 6 > bit 5 > default.
+ ldy #2
+ lda (anim_ptr),y     ; flags
+ and #$08
+ beq :lf_chk_1b
+ lda #$1C
+ bra :lf_set_bank
+:lf_chk_1b
+ ldy #2
+ lda (anim_ptr),y
+ and #$40
+ beq :lf_chk_19
+ lda #$1B
+ bra :lf_set_bank
+:lf_chk_19
+ ldy #2
+ lda (anim_ptr),y
+ and #$20
+ beq :lf_bank2_default
+ lda #$19
+ bra :lf_set_bank
+:lf_bank2_default
+ lda #$02
+:lf_set_bank
+ ldy #56
+ sta (info_ptr),y
+:lf_bank_done
 * Load frame data from descriptor. Dispatch on flags bit 7:
 *   bit 7 set  → compiled (11-byte stride, data + mask + dmir + mmir)
 *   bit 7 clear → legacy (5-byte stride, single frame_addr)
@@ -9935,19 +10432,15 @@ update_anims
  ldy #28
  sta (info_ptr),y     ; anim_timer = duration
 * Legacy frames are reached by NPC animations and by Billy's
-* anim_uppercut. Same constraint as start_anim: clear MASK_ADDR
-* + info+52 only for the keyboard player. Touching MASK_ADDR for
-* an NPC mid-frame (e.g. punched_anim spawned by check_punch_hit)
-* would clobber Billy's still-active compiled mask and put him
-* on the legacy draw path with compiled pixel data.
- ldy #22
- lda (info_ptr),y
- cmp #$01
- bne :lf_legacy_done
+* anim_uppercut. Clear MASK_ADDR + info+60 so dispatch routes
+* legacy. (Was gated on controller==1 because info+52 doubled
+* as walk_anim for NPCs; with the move to info+60 the gate
+* is unnecessary and compiled NPCs now route legacy through
+* a clean info+60 = 0.)
  lda #0
  sta MASK_ADDR
  sta MASK_ADDR+1
- ldy #52
+ ldy #60
  lda #0
  sta (info_ptr),y
  iny
@@ -10016,14 +10509,11 @@ update_anims
  pla
  ldy #28
  sta (info_ptr),y     ; anim_timer = duration
-* For Billy: persist MASK_ADDR → info+52 so load_sprite next frame
-* picks up the matching mask (since save_anim_state hasn't run yet
-* for this frame).
- ldy #22
- lda (info_ptr),y
- cmp #$01
- bne :lf_load_done
- ldy #52
+* Persist MASK_ADDR → info+60 (active_mask_addr) so load_sprite
+* next frame picks up the matching mask. Used by Billy and any
+* compiled NPC. (Was gated to controller==1 when +52 was
+* overloaded as walk_anim for NPCs; +60 is dedicated.)
+ ldy #60
  lda MASK_ADDR
  sta (info_ptr),y
  iny
@@ -10552,36 +11042,45 @@ finish_burnov_recon
 *----------------------------------------------------------
 linda_flail_drop_and_transform
  jsr spawn_dropped_mace
-* Transform linda_flail → regular Linda by rewriting her block.
-* idle_addr/frame_addr → spr_linda1 (LINDA1 in bank $02).
- lda spr_linda1
+* Transform linda_flail → regular compiled Linda. idle_addr /
+* frame_addr → compiled LINDA1 (bank $1B). info+60/+62 →
+* compiled LINDA1_MASK so post-transform idle renders compiled.
+ lda spr_linda1c_data
  ldy #14
  sta (info_ptr),y
- lda spr_linda1+1
- ldy #15
- sta (info_ptr),y
- lda spr_linda1
  ldy #42
  sta (info_ptr),y
- lda spr_linda1+1
+ lda spr_linda1c_data+1
+ ldy #15
+ sta (info_ptr),y
  ldy #43
  sta (info_ptr),y
-* walk_anim → anim_lwalk
+ lda spr_linda1c_mask
+ ldy #60
+ sta (info_ptr),y
+ ldy #62
+ sta (info_ptr),y
+ lda spr_linda1c_mask+1
+ ldy #61
+ sta (info_ptr),y
+ ldy #63
+ sta (info_ptr),y
+* walk_anim → anim_lwalk (already compiled bank $1B)
  lda #<anim_lwalk
  ldy #52
  sta (info_ptr),y
  lda #>anim_lwalk
  ldy #53
  sta (info_ptr),y
-* atk_anim → anim_lpunch
+* atk_anim → anim_lpunch (already compiled bank $1B)
  lda #<anim_lpunch
  ldy #54
  sta (info_ptr),y
  lda #>anim_lpunch
  ldy #55
  sta (info_ptr),y
-* frame_bank / idle_bank → $02
- lda #$02
+* frame_bank / idle_bank → $1B (compiled bank)
+ lda #$1B
  ldy #56
  sta (info_ptr),y
  ldy #58
@@ -10659,9 +11158,9 @@ spawn_dropped_mace
  lda npc_buf_next+1
  sta info_ptr+1
 
-* Zero the first 60 bytes (the buffer may carry stale data
-* from a previous occupant).
- ldy #59
+* Zero the slot (NPC_INFO_SIZE = 64 bytes — covers compiled
+* mask fields at +60..+63 too).
+ ldy #63
  lda #0
 :sm_clear
  sta (info_ptr),y
@@ -10749,7 +11248,7 @@ spawn_dropped_mace
 * Advance npc_buf_next by 60 bytes.
  lda npc_buf_next
  clc
- adc #60
+ adc #64
  sta npc_buf_next
  lda npc_buf_next+1
  adc #0
@@ -10974,8 +11473,8 @@ spawn_thrown_knife
  lda npc_buf_next+1
  sta info_ptr+1
 
-* Zero 60 bytes (clear stale data).
- ldy #59
+* Zero the full 64-byte slot (clear stale data).
+ ldy #63
  lda #0
 :tk_clear
  sta (info_ptr),y
@@ -11104,7 +11603,7 @@ spawn_thrown_knife
 * Advance npc_buf_next.
  lda npc_buf_next
  clc
- adc #60
+ adc #64
  sta npc_buf_next
  lda npc_buf_next+1
  adc #0
@@ -11728,7 +12227,7 @@ spawn_dropped_knife
  lda npc_buf_next+1
  sta info_ptr+1
 
- ldy #59
+ ldy #63                ; clear full 64-byte slot
  lda #0
 :sk_clear
  sta (info_ptr),y
@@ -11826,7 +12325,7 @@ spawn_dropped_knife
 
  lda npc_buf_next
  clc
- adc #60
+ adc #64
  sta npc_buf_next
  lda npc_buf_next+1
  adc #0
@@ -11852,35 +12351,45 @@ spawn_dropped_knife
 *----------------------------------------------------------
 williams_pipe_drop_and_transform
  jsr spawn_dropped_pipe
-* Transform → regular williams. idle_addr/frame_addr → spr_william1.
- lda spr_william1
+* Transform → regular compiled williams. idle_addr/frame_addr
+* → compiled WILLIAM1 (bank $1B). info+60/+62 → compiled
+* WILLIAM1_MASK so post-transform idle renders compiled.
+ lda spr_william1c_data
  ldy #14
  sta (info_ptr),y
- lda spr_william1+1
- ldy #15
- sta (info_ptr),y
- lda spr_william1
  ldy #42
  sta (info_ptr),y
- lda spr_william1+1
+ lda spr_william1c_data+1
+ ldy #15
+ sta (info_ptr),y
  ldy #43
  sta (info_ptr),y
-* walk_anim → anim_wwalk
+ lda spr_william1c_mask
+ ldy #60
+ sta (info_ptr),y
+ ldy #62
+ sta (info_ptr),y
+ lda spr_william1c_mask+1
+ ldy #61
+ sta (info_ptr),y
+ ldy #63
+ sta (info_ptr),y
+* walk_anim → anim_wwalk (already compiled bank $1B)
  lda #<anim_wwalk
  ldy #52
  sta (info_ptr),y
  lda #>anim_wwalk
  ldy #53
  sta (info_ptr),y
-* atk_anim → anim_wpunch
+* atk_anim → anim_wpunch (already compiled bank $1B)
  lda #<anim_wpunch
  ldy #54
  sta (info_ptr),y
  lda #>anim_wpunch
  ldy #55
  sta (info_ptr),y
-* frame_bank / idle_bank → $02
- lda #$02
+* frame_bank / idle_bank → $1B (compiled bank)
+ lda #$1B
  ldy #56
  sta (info_ptr),y
  ldy #58
@@ -11950,7 +12459,7 @@ spawn_dropped_pipe
  lda npc_buf_next+1
  sta info_ptr+1
 
- ldy #59
+ ldy #63                ; clear full 64-byte slot
  lda #0
 :sp_clear
  sta (info_ptr),y
@@ -12033,7 +12542,7 @@ spawn_dropped_pipe
 
  lda npc_buf_next
  clc
- adc #60
+ adc #64
  sta npc_buf_next
  lda npc_buf_next+1
  adc #0
@@ -12343,9 +12852,9 @@ billy_disarm_weapon
  lda spr_img01+1
  sta billy_sprite+43
  lda spr_image01_mask
- sta billy_sprite+52      ; persisted into save_sprite next frame
+ sta billy_sprite+60      ; persisted into save_sprite next frame
  lda spr_image01_mask+1
- sta billy_sprite+53
+ sta billy_sprite+61
 * Pick the live data + mask pair that matches IMAGE01_MIRROR.
  lda IMAGE01_MIRROR
  bne :bdw_mirror
@@ -13369,97 +13878,46 @@ init_level
  lda spr_bupper3
  sta anim_uppercut+3+13       ; frame 2 addr
 
-* Patch anim_wpunched: 1 frame
- lda spr_wpunched
- sta anim_wpunched+3+3
-
-* Patch anim_wfall: 2 frames
- lda spr_wfall
- sta anim_wfall+3+3
- lda spr_wfallen
- sta anim_wfall+3+8
+* anim_wpunched, anim_wfall, anim_wwalk, anim_wpunch are now
+* compiled (bank $1B). They are patched in init_williams_compiled
+* (called from init_mission13) since the compiled cache vars
+* aren't populated until init_mission13 has run. The legacy
+* spr_wpunched / spr_wfall / spr_wfallen / spr_william*/spr_wpunch*
+* cache vars below stay because mission1.s spawn templates'
+* idle_addr fields still point at bank-$02 WILLIAM1 (the
+* spawn-template detector in script_spawn_npc keys on that).
 
 * Patch anim_bfall: 2 legacy frames in bank $19. Frame 0 BFALL
 * (in-air arc pose), frame 1 BFALLEN (grounded). Patched here
 * would set the compiled-form fields, but anim_bfall is now
 * legacy — the bank-$19 init below patches the actual addrs.
 
-* Patch anim_wwalk: 4 frames (WILLIAM1, WILLIAM2, WILLIAM3, WILLIAM2)
- lda spr_william1
- sta anim_wwalk+3+3
- lda spr_william2
- sta anim_wwalk+3+8
- lda spr_william3
- sta anim_wwalk+3+13
- lda spr_william2
- sta anim_wwalk+3+18
+* anim_rwalk, anim_rpunch, anim_rpunched, anim_rfall are now
+* compiled (bank $1B). Patched in init_roper_compiled (called
+* from init_mission13). The legacy spr_roper*/spr_rpunch*/
+* spr_rpunched/spr_rfall* cache vars below stay because mission1.s
+* spawn templates' idle_addr fields still point at bank-$02
+* ROPER1 (the spawn-template detector in script_spawn_npc keys
+* on that).
 
-* Patch anim_wpunch: 2 frames (WPUNCH1, WPUNCH2)
- lda spr_wpunch1
- sta anim_wpunch+3+3
- lda spr_wpunch2
- sta anim_wpunch+3+8
-
-* Patch anim_rwalk: 4 frames (ROPER1, ROPER2, ROPER3, ROPER2)
- lda spr_roper1
- sta anim_rwalk+3+3
- lda spr_roper2
- sta anim_rwalk+3+8
- lda spr_roper3
- sta anim_rwalk+3+13
- lda spr_roper2
- sta anim_rwalk+3+18
-
-* Patch anim_rpunch: 2 frames
- lda spr_rpunch1
- sta anim_rpunch+3+3
- lda spr_rpunch2
- sta anim_rpunch+3+8
-
-* Patch anim_rpunched: 1 frame
- lda spr_rpunched
- sta anim_rpunched+3+3
-
-* Patch anim_rfall: 2 frames
- lda spr_rfall1
- sta anim_rfall+3+3
- lda spr_rfall2
- sta anim_rfall+3+8
-
-* Patch anim_lwalk: 4 frames (LINDA1, LINDA2, LINDA3, LINDA2)
- lda spr_linda1
- sta anim_lwalk+3+3
- lda spr_linda2
- sta anim_lwalk+3+8
- lda spr_linda3
- sta anim_lwalk+3+13
- lda spr_linda2
- sta anim_lwalk+3+18
-
-* Patch anim_lpunch: 2 frames
- lda spr_lpunch1
- sta anim_lpunch+3+3
- lda spr_lpunch2
- sta anim_lpunch+3+8
-
-* Patch anim_lpunched: 1 frame
- lda spr_lpunched
- sta anim_lpunched+3+3
-
-* Patch anim_lfall: 2 frames
- lda spr_lfall1
- sta anim_lfall+3+3
- lda spr_lfall2
- sta anim_lfall+3+8
+* anim_lwalk, anim_lpunch, anim_lpunched, anim_lfall are now
+* compiled (bank $1B). Patched in init_linda_compiled (called
+* from init_mission13). The legacy spr_linda*/spr_lpunch*/
+* spr_lpunched/spr_lfall* cache vars below stay because mission1.s
+* spawn templates' idle_addr fields point at bank-$02 LINDA1
+* (the spawn-template detector keys on that) and ld_set_frame
+* still uses spr_lclimb1/2 for ladder climbing (not migrated —
+* legacy bank-$02 frames).
 
 * Patch billy_sprite frame_addr (+14), idle_addr (+42), and the
-* compiled inverse-mask address (+52). Also seed MASK_ADDR so the
-* very first draw_all (before any advance_walk) renders correctly.
+* compiled inverse-mask address (+60 — moved from +52 since the
+* compiled-NPC migration). Also seed MASK_ADDR so the very first
+* draw_all (before any advance_walk) renders correctly.
  lda spr_img01
  sta billy_sprite+14
  sta billy_sprite+42
  lda spr_image01_mask
- sta billy_sprite+52
+ sta billy_sprite+60
  sta MASK_ADDR
 
 * Patch william_sprite frame_addr and idle_addr
@@ -13601,6 +14059,184 @@ spr_william2 ds 2
 spr_william3 ds 2
 spr_wpunch1  ds 2
 spr_wpunch2  ds 2
+
+* Compiled Williams sprites — bank-$1B addresses populated by
+* init_mission13 from mission13's spr_addr_tbl. Used to render
+* Williams' frames through draw_sprite_compiled (AND/ORA
+* pipeline) instead of the slower legacy mask-checking path.
+* Each frame is 4 entries: DATA, MASK, DATA_MIRROR, MASK_MIRROR.
+spr_william1c_data     ds 2
+spr_william1c_mask     ds 2
+spr_william1c_data_mir ds 2
+spr_william1c_mask_mir ds 2
+spr_william2c_data     ds 2
+spr_william2c_mask     ds 2
+spr_william2c_data_mir ds 2
+spr_william2c_mask_mir ds 2
+spr_william3c_data     ds 2
+spr_william3c_mask     ds 2
+spr_william3c_data_mir ds 2
+spr_william3c_mask_mir ds 2
+spr_wpunch1c_data      ds 2
+spr_wpunch1c_mask      ds 2
+spr_wpunch1c_data_mir  ds 2
+spr_wpunch1c_mask_mir  ds 2
+spr_wpunch2c_data      ds 2
+spr_wpunch2c_mask      ds 2
+spr_wpunch2c_data_mir  ds 2
+spr_wpunch2c_mask_mir  ds 2
+spr_wpunchedc_data     ds 2
+spr_wpunchedc_mask     ds 2
+spr_wpunchedc_data_mir ds 2
+spr_wpunchedc_mask_mir ds 2
+spr_wfallc_data        ds 2
+spr_wfallc_mask        ds 2
+spr_wfallc_data_mir    ds 2
+spr_wfallc_mask_mir    ds 2
+spr_wfallenc_data      ds 2
+spr_wfallenc_mask      ds 2
+spr_wfallenc_data_mir  ds 2
+spr_wfallenc_mask_mir  ds 2
+spr_roper1c_data       ds 2
+spr_roper1c_mask       ds 2
+spr_roper1c_data_mir   ds 2
+spr_roper1c_mask_mir   ds 2
+spr_roper2c_data       ds 2
+spr_roper2c_mask       ds 2
+spr_roper2c_data_mir   ds 2
+spr_roper2c_mask_mir   ds 2
+spr_roper3c_data       ds 2
+spr_roper3c_mask       ds 2
+spr_roper3c_data_mir   ds 2
+spr_roper3c_mask_mir   ds 2
+spr_rpunch1c_data      ds 2
+spr_rpunch1c_mask      ds 2
+spr_rpunch1c_data_mir  ds 2
+spr_rpunch1c_mask_mir  ds 2
+spr_rpunch2c_data      ds 2
+spr_rpunch2c_mask      ds 2
+spr_rpunch2c_data_mir  ds 2
+spr_rpunch2c_mask_mir  ds 2
+spr_rpunchedc_data     ds 2
+spr_rpunchedc_mask     ds 2
+spr_rpunchedc_data_mir ds 2
+spr_rpunchedc_mask_mir ds 2
+spr_rfall1c_data       ds 2
+spr_rfall1c_mask       ds 2
+spr_rfall1c_data_mir   ds 2
+spr_rfall1c_mask_mir   ds 2
+spr_rfall2c_data       ds 2
+spr_rfall2c_mask       ds 2
+spr_rfall2c_data_mir   ds 2
+spr_rfall2c_mask_mir   ds 2
+spr_linda1c_data       ds 2
+spr_linda1c_mask       ds 2
+spr_linda1c_data_mir   ds 2
+spr_linda1c_mask_mir   ds 2
+spr_linda2c_data       ds 2
+spr_linda2c_mask       ds 2
+spr_linda2c_data_mir   ds 2
+spr_linda2c_mask_mir   ds 2
+spr_linda3c_data       ds 2
+spr_linda3c_mask       ds 2
+spr_linda3c_data_mir   ds 2
+spr_linda3c_mask_mir   ds 2
+spr_lpunch1c_data      ds 2
+spr_lpunch1c_mask      ds 2
+spr_lpunch1c_data_mir  ds 2
+spr_lpunch1c_mask_mir  ds 2
+spr_lpunch2c_data      ds 2
+spr_lpunch2c_mask      ds 2
+spr_lpunch2c_data_mir  ds 2
+spr_lpunch2c_mask_mir  ds 2
+spr_lpunchedc_data     ds 2
+spr_lpunchedc_mask     ds 2
+spr_lpunchedc_data_mir ds 2
+spr_lpunchedc_mask_mir ds 2
+spr_lfall1c_data       ds 2
+spr_lfall1c_mask       ds 2
+spr_lfall1c_data_mir   ds 2
+spr_lfall1c_mask_mir   ds 2
+spr_lfall2c_data       ds 2
+spr_lfall2c_mask       ds 2
+spr_lfall2c_data_mir   ds 2
+spr_lfall2c_mask_mir   ds 2
+spr_bnwalk1c_data      ds 2
+spr_bnwalk1c_mask      ds 2
+spr_bnwalk1c_data_mir  ds 2
+spr_bnwalk1c_mask_mir  ds 2
+spr_bnwalk2c_data      ds 2
+spr_bnwalk2c_mask      ds 2
+spr_bnwalk2c_data_mir  ds 2
+spr_bnwalk2c_mask_mir  ds 2
+spr_bnwalk3c_data      ds 2
+spr_bnwalk3c_mask      ds 2
+spr_bnwalk3c_data_mir  ds 2
+spr_bnwalk3c_mask_mir  ds 2
+spr_lfwalk1c_data      ds 2
+spr_lfwalk1c_mask      ds 2
+spr_lfwalk1c_data_mir  ds 2
+spr_lfwalk1c_mask_mir  ds 2
+spr_lfwalk2c_data      ds 2
+spr_lfwalk2c_mask      ds 2
+spr_lfwalk2c_data_mir  ds 2
+spr_lfwalk2c_mask_mir  ds 2
+spr_lfwalk3c_data      ds 2
+spr_lfwalk3c_mask      ds 2
+spr_lfwalk3c_data_mir  ds 2
+spr_lfwalk3c_mask_mir  ds 2
+spr_lmace1c_data       ds 2
+spr_lmace1c_mask       ds 2
+spr_lmace1c_data_mir   ds 2
+spr_lmace1c_mask_mir   ds 2
+spr_lmace2c_data       ds 2
+spr_lmace2c_mask       ds 2
+spr_lmace2c_data_mir   ds 2
+spr_lmace2c_mask_mir   ds 2
+spr_lmace3c_data       ds 2
+spr_lmace3c_mask       ds 2
+spr_lmace3c_data_mir   ds 2
+spr_lmace3c_mask_mir   ds 2
+spr_wpipewalk1c_data   ds 2
+spr_wpipewalk1c_mask   ds 2
+spr_wpipewalk1c_data_mir ds 2
+spr_wpipewalk1c_mask_mir ds 2
+spr_wpipewalk2c_data   ds 2
+spr_wpipewalk2c_mask   ds 2
+spr_wpipewalk2c_data_mir ds 2
+spr_wpipewalk2c_mask_mir ds 2
+spr_wpipewalk3c_data   ds 2
+spr_wpipewalk3c_mask   ds 2
+spr_wpipewalk3c_data_mir ds 2
+spr_wpipewalk3c_mask_mir ds 2
+spr_wpipe1c_data       ds 2
+spr_wpipe1c_mask       ds 2
+spr_wpipe1c_data_mir   ds 2
+spr_wpipe1c_mask_mir   ds 2
+spr_wpipe2c_data       ds 2
+spr_wpipe2c_mask       ds 2
+spr_wpipe2c_data_mir   ds 2
+spr_wpipe2c_mask_mir   ds 2
+spr_wpipe3c_data       ds 2
+spr_wpipe3c_mask       ds 2
+spr_wpipe3c_data_mir   ds 2
+spr_wpipe3c_mask_mir   ds 2
+spr_wpipe4c_data       ds 2
+spr_wpipe4c_mask       ds 2
+spr_wpipe4c_data_mir   ds 2
+spr_wpipe4c_mask_mir   ds 2
+spr_wpipe6c_data       ds 2
+spr_wpipe6c_mask       ds 2
+spr_wpipe6c_data_mir   ds 2
+spr_wpipe6c_mask_mir   ds 2
+spr_wknife1c_data      ds 2
+spr_wknife1c_mask      ds 2
+spr_wknife1c_data_mir  ds 2
+spr_wknife1c_mask_mir  ds 2
+spr_wknife2c_data      ds 2
+spr_wknife2c_mask      ds 2
+spr_wknife2c_data_mir  ds 2
+spr_wknife2c_mask_mir  ds 2
 
 * Burnov (boss) — bank-$06 sprite addresses, populated by
 * init_mission12 from mission12's spr_addr_tbl.
@@ -14267,14 +14903,13 @@ init_mission12
 * Patch Burnov animation descriptors. Per-frame frame_addr
 * lives at +3+3 (frame 0), +3+8 (frame 1), etc. (5-byte stride
 * for legacy/uncompiled animations).
- lda spr_bnwalk1
- sta anim_bnwalk+3+3
- lda spr_bnwalk2
- sta anim_bnwalk+3+8
- lda spr_bnwalk3
- sta anim_bnwalk+3+13
- lda spr_bnwalk2
- sta anim_bnwalk+3+18
+*
+* anim_bnwalk is now compiled (bank $1B) — patched in
+* init_burnov_compiled (called from init_mission13). The legacy
+* spr_bnwalk1/2/3 cache vars below stay because the spawn
+* detector :is_burnov writes spr_bnwalk1 to info+14 and the
+* post-:do_patch compiled-Burnov detector keys on that match
+* before repointing to compiled.
 
  lda spr_bnpunch1
  sta anim_bnpunch+3+3
@@ -14339,64 +14974,24 @@ init_mission12
  lda spr_bdiss1
  sta anim_bn_recon+3+38
 
-* Patch anim_lfwalk: 4 frames (LFWALK1, 2, 3, 2 cycle).
- lda spr_lfwalk1
- sta anim_lfwalk+3+3
- lda spr_lfwalk2
- sta anim_lfwalk+3+8
- lda spr_lfwalk3
- sta anim_lfwalk+3+13
- lda spr_lfwalk2
- sta anim_lfwalk+3+18
-
-* Patch anim_lmace: 3 frames (LMACE1, 2, 3) — Linda's mace-swing
-* attack, replaces anim_lpunch for the armed variant.
- lda spr_lmace1
- sta anim_lmace+3+3
- lda spr_lmace2
- sta anim_lmace+3+8
- lda spr_lmace3
- sta anim_lmace+3+13
-
-* Patch anim_lffall: placeholder using LFWALK1 for both frames.
+* anim_lfwalk, anim_lmace, anim_wpipewalk, anim_wpipeswing,
+* anim_wkthrow are now compiled (bank $1B). Patched in
+* init_armed_compiled (called from init_mission13). The legacy
+* spr_lfwalk*/spr_lmace*/spr_wpipewalk*/spr_wpipe*/spr_wknife*
+* cache vars below stay because mission1.s armed-NPC spawn
+* templates' idle_addr fields point at bank-$19 LFWALK1 /
+* WPIPEWALK1 / WKNIFE1 (the spawn-template detector keys on
+* those values).
+*
+* anim_lffall and anim_wpfall placeholders (bank-$19 LFWALK1 /
+* WPIPEWALK1 reuse) are still patched here — they're not yet
+* migrated to compiled form.
  lda spr_lfwalk1
  sta anim_lffall+3+3
  sta anim_lffall+3+8
-
-* Patch anim_wpipewalk: 4 frames (WPIPEWALK1, 2, 3, 2 cycle).
- lda spr_wpipewalk1
- sta anim_wpipewalk+3+3
- lda spr_wpipewalk2
- sta anim_wpipewalk+3+8
- lda spr_wpipewalk3
- sta anim_wpipewalk+3+13
- lda spr_wpipewalk2
- sta anim_wpipewalk+3+18
-
-* Patch anim_wpfall: placeholder using WPIPEWALK1 for both frames.
  lda spr_wpipewalk1
  sta anim_wpfall+3+3
  sta anim_wpfall+3+8
-
-* Patch anim_wpipeswing: 5 frames in design order
-* (WPIPE1, WPIPE4, WPIPE2, WPIPE6, WPIPE3). Frame stride = 5
-* (legacy): offsets +3+3, +3+8, +3+13, +3+18, +3+23.
- lda spr_wpipe1
- sta anim_wpipeswing+3+3
- lda spr_wpipe4
- sta anim_wpipeswing+3+8
- lda spr_wpipe2
- sta anim_wpipeswing+3+13
- lda spr_wpipe6
- sta anim_wpipeswing+3+18
- lda spr_wpipe3
- sta anim_wpipeswing+3+23
-
-* Patch anim_wkthrow: 2 frames (WKNIFE1, WKNIFE2).
- lda spr_wknife1
- sta anim_wkthrow+3+3
- lda spr_wknife2
- sta anim_wkthrow+3+8
 
 * Patch anim_bpipewalk: 4 frames (BPIPEW1, 2, 3, 2 cycle).
  lda spr_bpipew1
@@ -14545,6 +15140,1198 @@ init_mission12
  jsr dbg_print_hex8
  jsr dbg_print_nl
  fin
+ rts
+
+*----------------------------------------------------------
+* init_mission13 - Read mission13's spr_addr_tbl (bank $1A) and
+* populate the spr_w*c_data / _mask / _mirror cache vars in
+* game.s. Mirror of init_mission12's lookup but for the
+* compiled mission1 sprite bank. Each frame contributes 4
+* table entries (DATA, MASK, DATA_MIRROR, MASK_MIRROR), so
+* the table indexes step by $08 between frames.
+* Caller: init flow after init_mission12. Native mode + 16-bit
+* A/X/Y on entry.
+*----------------------------------------------------------
+init_mission13
+ clc
+ xce
+ rep $30
+ mx %00
+* Set $F0/$F1/$F2 = $1B/0012 (header.spr_addr_off field).
+ lda #$0012
+ sta $F0
+ sep $20
+ lda #$1B
+ sta $F2
+ rep $20
+* Dereference: $F0 ← *($1B/0012) = bank-$1B offset of spr_addr_tbl.
+ ldy #0
+ lda [$F0],y
+ sta $F0
+* spr_addr_tbl is a contiguous array of 2-byte bank-$1B offsets,
+* 4 entries per sprite (DATA, MASK, DATA_MIRROR, MASK_MIRROR).
+* Order matches the cache var declarations: WILLIAM1, WILLIAM2,
+* WILLIAM3, WPUNCH1, WPUNCH2, WPUNCHED, WFALL, WFALLEN.
+ ldy #0
+ lda [$F0],y
+ sta spr_william1c_data
+ ldy #2
+ lda [$F0],y
+ sta spr_william1c_mask
+ ldy #4
+ lda [$F0],y
+ sta spr_william1c_data_mir
+ ldy #6
+ lda [$F0],y
+ sta spr_william1c_mask_mir
+ ldy #8
+ lda [$F0],y
+ sta spr_william2c_data
+ ldy #10
+ lda [$F0],y
+ sta spr_william2c_mask
+ ldy #12
+ lda [$F0],y
+ sta spr_william2c_data_mir
+ ldy #14
+ lda [$F0],y
+ sta spr_william2c_mask_mir
+ ldy #16
+ lda [$F0],y
+ sta spr_william3c_data
+ ldy #18
+ lda [$F0],y
+ sta spr_william3c_mask
+ ldy #20
+ lda [$F0],y
+ sta spr_william3c_data_mir
+ ldy #22
+ lda [$F0],y
+ sta spr_william3c_mask_mir
+ ldy #24
+ lda [$F0],y
+ sta spr_wpunch1c_data
+ ldy #26
+ lda [$F0],y
+ sta spr_wpunch1c_mask
+ ldy #28
+ lda [$F0],y
+ sta spr_wpunch1c_data_mir
+ ldy #30
+ lda [$F0],y
+ sta spr_wpunch1c_mask_mir
+ ldy #32
+ lda [$F0],y
+ sta spr_wpunch2c_data
+ ldy #34
+ lda [$F0],y
+ sta spr_wpunch2c_mask
+ ldy #36
+ lda [$F0],y
+ sta spr_wpunch2c_data_mir
+ ldy #38
+ lda [$F0],y
+ sta spr_wpunch2c_mask_mir
+ ldy #40
+ lda [$F0],y
+ sta spr_wpunchedc_data
+ ldy #42
+ lda [$F0],y
+ sta spr_wpunchedc_mask
+ ldy #44
+ lda [$F0],y
+ sta spr_wpunchedc_data_mir
+ ldy #46
+ lda [$F0],y
+ sta spr_wpunchedc_mask_mir
+ ldy #48
+ lda [$F0],y
+ sta spr_wfallc_data
+ ldy #50
+ lda [$F0],y
+ sta spr_wfallc_mask
+ ldy #52
+ lda [$F0],y
+ sta spr_wfallc_data_mir
+ ldy #54
+ lda [$F0],y
+ sta spr_wfallc_mask_mir
+ ldy #56
+ lda [$F0],y
+ sta spr_wfallenc_data
+ ldy #58
+ lda [$F0],y
+ sta spr_wfallenc_mask
+ ldy #60
+ lda [$F0],y
+ sta spr_wfallenc_data_mir
+ ldy #62
+ lda [$F0],y
+ sta spr_wfallenc_mask_mir
+ ldy #64
+ lda [$F0],y
+ sta spr_roper1c_data
+ ldy #66
+ lda [$F0],y
+ sta spr_roper1c_mask
+ ldy #68
+ lda [$F0],y
+ sta spr_roper1c_data_mir
+ ldy #70
+ lda [$F0],y
+ sta spr_roper1c_mask_mir
+ ldy #72
+ lda [$F0],y
+ sta spr_roper2c_data
+ ldy #74
+ lda [$F0],y
+ sta spr_roper2c_mask
+ ldy #76
+ lda [$F0],y
+ sta spr_roper2c_data_mir
+ ldy #78
+ lda [$F0],y
+ sta spr_roper2c_mask_mir
+ ldy #80
+ lda [$F0],y
+ sta spr_roper3c_data
+ ldy #82
+ lda [$F0],y
+ sta spr_roper3c_mask
+ ldy #84
+ lda [$F0],y
+ sta spr_roper3c_data_mir
+ ldy #86
+ lda [$F0],y
+ sta spr_roper3c_mask_mir
+ ldy #88
+ lda [$F0],y
+ sta spr_rpunch1c_data
+ ldy #90
+ lda [$F0],y
+ sta spr_rpunch1c_mask
+ ldy #92
+ lda [$F0],y
+ sta spr_rpunch1c_data_mir
+ ldy #94
+ lda [$F0],y
+ sta spr_rpunch1c_mask_mir
+ ldy #96
+ lda [$F0],y
+ sta spr_rpunch2c_data
+ ldy #98
+ lda [$F0],y
+ sta spr_rpunch2c_mask
+ ldy #100
+ lda [$F0],y
+ sta spr_rpunch2c_data_mir
+ ldy #102
+ lda [$F0],y
+ sta spr_rpunch2c_mask_mir
+ ldy #104
+ lda [$F0],y
+ sta spr_rpunchedc_data
+ ldy #106
+ lda [$F0],y
+ sta spr_rpunchedc_mask
+ ldy #108
+ lda [$F0],y
+ sta spr_rpunchedc_data_mir
+ ldy #110
+ lda [$F0],y
+ sta spr_rpunchedc_mask_mir
+ ldy #112
+ lda [$F0],y
+ sta spr_rfall1c_data
+ ldy #114
+ lda [$F0],y
+ sta spr_rfall1c_mask
+ ldy #116
+ lda [$F0],y
+ sta spr_rfall1c_data_mir
+ ldy #118
+ lda [$F0],y
+ sta spr_rfall1c_mask_mir
+ ldy #120
+ lda [$F0],y
+ sta spr_rfall2c_data
+ ldy #122
+ lda [$F0],y
+ sta spr_rfall2c_mask
+ ldy #124
+ lda [$F0],y
+ sta spr_rfall2c_data_mir
+ ldy #126
+ lda [$F0],y
+ sta spr_rfall2c_mask_mir
+ ldy #128
+ lda [$F0],y
+ sta spr_linda1c_data
+ ldy #130
+ lda [$F0],y
+ sta spr_linda1c_mask
+ ldy #132
+ lda [$F0],y
+ sta spr_linda1c_data_mir
+ ldy #134
+ lda [$F0],y
+ sta spr_linda1c_mask_mir
+ ldy #136
+ lda [$F0],y
+ sta spr_linda2c_data
+ ldy #138
+ lda [$F0],y
+ sta spr_linda2c_mask
+ ldy #140
+ lda [$F0],y
+ sta spr_linda2c_data_mir
+ ldy #142
+ lda [$F0],y
+ sta spr_linda2c_mask_mir
+ ldy #144
+ lda [$F0],y
+ sta spr_linda3c_data
+ ldy #146
+ lda [$F0],y
+ sta spr_linda3c_mask
+ ldy #148
+ lda [$F0],y
+ sta spr_linda3c_data_mir
+ ldy #150
+ lda [$F0],y
+ sta spr_linda3c_mask_mir
+ ldy #152
+ lda [$F0],y
+ sta spr_lpunch1c_data
+ ldy #154
+ lda [$F0],y
+ sta spr_lpunch1c_mask
+ ldy #156
+ lda [$F0],y
+ sta spr_lpunch1c_data_mir
+ ldy #158
+ lda [$F0],y
+ sta spr_lpunch1c_mask_mir
+ ldy #160
+ lda [$F0],y
+ sta spr_lpunch2c_data
+ ldy #162
+ lda [$F0],y
+ sta spr_lpunch2c_mask
+ ldy #164
+ lda [$F0],y
+ sta spr_lpunch2c_data_mir
+ ldy #166
+ lda [$F0],y
+ sta spr_lpunch2c_mask_mir
+ ldy #168
+ lda [$F0],y
+ sta spr_lpunchedc_data
+ ldy #170
+ lda [$F0],y
+ sta spr_lpunchedc_mask
+ ldy #172
+ lda [$F0],y
+ sta spr_lpunchedc_data_mir
+ ldy #174
+ lda [$F0],y
+ sta spr_lpunchedc_mask_mir
+ ldy #176
+ lda [$F0],y
+ sta spr_lfall1c_data
+ ldy #178
+ lda [$F0],y
+ sta spr_lfall1c_mask
+ ldy #180
+ lda [$F0],y
+ sta spr_lfall1c_data_mir
+ ldy #182
+ lda [$F0],y
+ sta spr_lfall1c_mask_mir
+ ldy #184
+ lda [$F0],y
+ sta spr_lfall2c_data
+ ldy #186
+ lda [$F0],y
+ sta spr_lfall2c_mask
+ ldy #188
+ lda [$F0],y
+ sta spr_lfall2c_data_mir
+ ldy #190
+ lda [$F0],y
+ sta spr_lfall2c_mask_mir
+ ldy #192
+ lda [$F0],y
+ sta spr_bnwalk1c_data
+ ldy #194
+ lda [$F0],y
+ sta spr_bnwalk1c_mask
+ ldy #196
+ lda [$F0],y
+ sta spr_bnwalk1c_data_mir
+ ldy #198
+ lda [$F0],y
+ sta spr_bnwalk1c_mask_mir
+ ldy #200
+ lda [$F0],y
+ sta spr_bnwalk2c_data
+ ldy #202
+ lda [$F0],y
+ sta spr_bnwalk2c_mask
+ ldy #204
+ lda [$F0],y
+ sta spr_bnwalk2c_data_mir
+ ldy #206
+ lda [$F0],y
+ sta spr_bnwalk2c_mask_mir
+ ldy #208
+ lda [$F0],y
+ sta spr_bnwalk3c_data
+ ldy #210
+ lda [$F0],y
+ sta spr_bnwalk3c_mask
+ ldy #212
+ lda [$F0],y
+ sta spr_bnwalk3c_data_mir
+ ldy #214
+ lda [$F0],y
+ sta spr_bnwalk3c_mask_mir
+ sec
+ xce
+ mx %11
+* DEBUG: dump compiled WILLIAM1 cache values + first bytes of
+* WILLIAM1_DATA at bank $1B:$0020. Format:
+*   "M13 D<dh><dl> M<mh><ml> R<b29><b2A><b2D><b2E>"
+* The "R" line samples bytes at offsets that should differ in
+* row 1 of WILLIAM1_DATA. Per the compile output:
+*   $1B:$0029 = $00 (row 1 byte 0 — transparent prefix)
+*   $1B:$002A = $00 (row 1 byte 1 — transparent prefix)
+*   $1B:$002D = $F0 (row 1 byte 4 — first opaque pixel pair)
+*   $1B:$002E = $F0 (row 1 byte 5)
+* If we see anything other than 00 00 F0 F0 the bank-$1B image
+* is corrupted (data wasn't loaded, or got overwritten).
+ do DEBUG_PRINT
+ lda #$CD              ; 'M'
+ jsr dbg_print_char
+ lda #$B1              ; '1'
+ jsr dbg_print_char
+ lda #$B3              ; '3'
+ jsr dbg_print_char
+ lda #$A0
+ jsr dbg_print_char
+ lda #$C4              ; 'D'
+ jsr dbg_print_char
+ lda spr_william1c_data+1
+ jsr dbg_print_hex8
+ lda spr_william1c_data
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda #$CD              ; 'M'
+ jsr dbg_print_char
+ lda spr_william1c_mask+1
+ jsr dbg_print_hex8
+ lda spr_william1c_mask
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda #$D2              ; 'R'
+ jsr dbg_print_char
+ ldal $1B0029
+ jsr dbg_print_hex8
+ ldal $1B002A
+ jsr dbg_print_hex8
+ ldal $1B002D
+ jsr dbg_print_hex8
+ ldal $1B002E
+ jsr dbg_print_hex8
+ jsr dbg_print_nl
+ fin
+ jsr init_williams_compiled
+ jsr init_roper_compiled
+ jsr init_linda_compiled
+ jsr init_burnov_compiled
+ rts
+
+*----------------------------------------------------------
+* init_williams_compiled - Patch the compiled-form Williams
+* anim descriptors (anim_wwalk, anim_wpunch, anim_wpunched,
+* anim_wfall) with the bank-$1B WILLIAM*_DATA / _MASK / _MIRROR
+* addresses populated by init_mission13. Each compiled frame
+* slot is 11 bytes: 3-byte header (frame_x, frame_y, duration)
+* + 8 bytes of patched fields (data_lo/hi, mask_lo/hi,
+* dmir_lo/hi, mmir_lo/hi). Frame N starts at descriptor + 3 +
+* N*11; data field at +6+N*11, mask at +8+N*11, dmir at
+* +10+N*11, mmir at +12+N*11. Native mode, MX %00 entry.
+*----------------------------------------------------------
+ mx %11
+init_williams_compiled
+ clc
+ xce
+ rep $30
+ mx %00
+
+* anim_wwalk frame 0 = WILLIAM1
+ lda spr_william1c_data
+ sta anim_wwalk+6
+ lda spr_william1c_mask
+ sta anim_wwalk+8
+ lda spr_william1c_data_mir
+ sta anim_wwalk+10
+ lda spr_william1c_mask_mir
+ sta anim_wwalk+12
+* anim_wwalk frame 1 = WILLIAM2
+ lda spr_william2c_data
+ sta anim_wwalk+17
+ lda spr_william2c_mask
+ sta anim_wwalk+19
+ lda spr_william2c_data_mir
+ sta anim_wwalk+21
+ lda spr_william2c_mask_mir
+ sta anim_wwalk+23
+* anim_wwalk frame 2 = WILLIAM3
+ lda spr_william3c_data
+ sta anim_wwalk+28
+ lda spr_william3c_mask
+ sta anim_wwalk+30
+ lda spr_william3c_data_mir
+ sta anim_wwalk+32
+ lda spr_william3c_mask_mir
+ sta anim_wwalk+34
+* anim_wwalk frame 3 = WILLIAM2
+ lda spr_william2c_data
+ sta anim_wwalk+39
+ lda spr_william2c_mask
+ sta anim_wwalk+41
+ lda spr_william2c_data_mir
+ sta anim_wwalk+43
+ lda spr_william2c_mask_mir
+ sta anim_wwalk+45
+
+* anim_wpunch frame 0 = WPUNCH1
+ lda spr_wpunch1c_data
+ sta anim_wpunch+6
+ lda spr_wpunch1c_mask
+ sta anim_wpunch+8
+ lda spr_wpunch1c_data_mir
+ sta anim_wpunch+10
+ lda spr_wpunch1c_mask_mir
+ sta anim_wpunch+12
+* anim_wpunch frame 1 = WPUNCH2
+ lda spr_wpunch2c_data
+ sta anim_wpunch+17
+ lda spr_wpunch2c_mask
+ sta anim_wpunch+19
+ lda spr_wpunch2c_data_mir
+ sta anim_wpunch+21
+ lda spr_wpunch2c_mask_mir
+ sta anim_wpunch+23
+
+* anim_wpunched frame 0 = WPUNCHED
+ lda spr_wpunchedc_data
+ sta anim_wpunched+6
+ lda spr_wpunchedc_mask
+ sta anim_wpunched+8
+ lda spr_wpunchedc_data_mir
+ sta anim_wpunched+10
+ lda spr_wpunchedc_mask_mir
+ sta anim_wpunched+12
+
+* anim_wfall frame 0 = WFALL
+ lda spr_wfallc_data
+ sta anim_wfall+6
+ lda spr_wfallc_mask
+ sta anim_wfall+8
+ lda spr_wfallc_data_mir
+ sta anim_wfall+10
+ lda spr_wfallc_mask_mir
+ sta anim_wfall+12
+* anim_wfall frame 1 = WFALLEN
+ lda spr_wfallenc_data
+ sta anim_wfall+17
+ lda spr_wfallenc_mask
+ sta anim_wfall+19
+ lda spr_wfallenc_data_mir
+ sta anim_wfall+21
+ lda spr_wfallenc_mask_mir
+ sta anim_wfall+23
+
+* WSOMER table population removed pending re-investigation —
+* fo_somersault is back to legacy bank-$02 path so the tables
+* aren't read.
+
+ sec
+ xce
+ mx %11
+ rts
+
+*----------------------------------------------------------
+* init_roper_compiled - Patch the compiled-form Roper anim
+* descriptors (anim_rwalk, anim_rpunch, anim_rpunched,
+* anim_rfall) with the bank-$1B ROPER*_DATA / _MASK / _MIRROR
+* addresses populated by init_mission13. Stride layout matches
+* init_williams_compiled.
+*----------------------------------------------------------
+ mx %11
+init_roper_compiled
+ clc
+ xce
+ rep $30
+ mx %00
+
+* anim_rwalk frame 0 = ROPER1
+ lda spr_roper1c_data
+ sta anim_rwalk+6
+ lda spr_roper1c_mask
+ sta anim_rwalk+8
+ lda spr_roper1c_data_mir
+ sta anim_rwalk+10
+ lda spr_roper1c_mask_mir
+ sta anim_rwalk+12
+* anim_rwalk frame 1 = ROPER2
+ lda spr_roper2c_data
+ sta anim_rwalk+17
+ lda spr_roper2c_mask
+ sta anim_rwalk+19
+ lda spr_roper2c_data_mir
+ sta anim_rwalk+21
+ lda spr_roper2c_mask_mir
+ sta anim_rwalk+23
+* anim_rwalk frame 2 = ROPER3
+ lda spr_roper3c_data
+ sta anim_rwalk+28
+ lda spr_roper3c_mask
+ sta anim_rwalk+30
+ lda spr_roper3c_data_mir
+ sta anim_rwalk+32
+ lda spr_roper3c_mask_mir
+ sta anim_rwalk+34
+* anim_rwalk frame 3 = ROPER2
+ lda spr_roper2c_data
+ sta anim_rwalk+39
+ lda spr_roper2c_mask
+ sta anim_rwalk+41
+ lda spr_roper2c_data_mir
+ sta anim_rwalk+43
+ lda spr_roper2c_mask_mir
+ sta anim_rwalk+45
+
+* anim_rpunch frame 0 = RPUNCH1
+ lda spr_rpunch1c_data
+ sta anim_rpunch+6
+ lda spr_rpunch1c_mask
+ sta anim_rpunch+8
+ lda spr_rpunch1c_data_mir
+ sta anim_rpunch+10
+ lda spr_rpunch1c_mask_mir
+ sta anim_rpunch+12
+* anim_rpunch frame 1 = RPUNCH2
+ lda spr_rpunch2c_data
+ sta anim_rpunch+17
+ lda spr_rpunch2c_mask
+ sta anim_rpunch+19
+ lda spr_rpunch2c_data_mir
+ sta anim_rpunch+21
+ lda spr_rpunch2c_mask_mir
+ sta anim_rpunch+23
+
+* anim_rpunched frame 0 = RPUNCHED
+ lda spr_rpunchedc_data
+ sta anim_rpunched+6
+ lda spr_rpunchedc_mask
+ sta anim_rpunched+8
+ lda spr_rpunchedc_data_mir
+ sta anim_rpunched+10
+ lda spr_rpunchedc_mask_mir
+ sta anim_rpunched+12
+
+* anim_rfall frame 0 = RFALL1
+ lda spr_rfall1c_data
+ sta anim_rfall+6
+ lda spr_rfall1c_mask
+ sta anim_rfall+8
+ lda spr_rfall1c_data_mir
+ sta anim_rfall+10
+ lda spr_rfall1c_mask_mir
+ sta anim_rfall+12
+* anim_rfall frame 1 = RFALL2
+ lda spr_rfall2c_data
+ sta anim_rfall+17
+ lda spr_rfall2c_mask
+ sta anim_rfall+19
+ lda spr_rfall2c_data_mir
+ sta anim_rfall+21
+ lda spr_rfall2c_mask_mir
+ sta anim_rfall+23
+
+ sec
+ xce
+ mx %11
+ rts
+
+*----------------------------------------------------------
+* init_linda_compiled - Patch the compiled-form Linda anim
+* descriptors (anim_lwalk, anim_lpunch, anim_lpunched,
+* anim_lfall) with the bank-$1B LINDA*_DATA / _MASK / _MIRROR
+* addresses populated by init_mission13. Stride layout matches
+* init_williams_compiled / init_roper_compiled.
+*----------------------------------------------------------
+ mx %11
+init_linda_compiled
+ clc
+ xce
+ rep $30
+ mx %00
+
+* anim_lwalk frame 0 = LINDA1
+ lda spr_linda1c_data
+ sta anim_lwalk+6
+ lda spr_linda1c_mask
+ sta anim_lwalk+8
+ lda spr_linda1c_data_mir
+ sta anim_lwalk+10
+ lda spr_linda1c_mask_mir
+ sta anim_lwalk+12
+* anim_lwalk frame 1 = LINDA2
+ lda spr_linda2c_data
+ sta anim_lwalk+17
+ lda spr_linda2c_mask
+ sta anim_lwalk+19
+ lda spr_linda2c_data_mir
+ sta anim_lwalk+21
+ lda spr_linda2c_mask_mir
+ sta anim_lwalk+23
+* anim_lwalk frame 2 = LINDA3
+ lda spr_linda3c_data
+ sta anim_lwalk+28
+ lda spr_linda3c_mask
+ sta anim_lwalk+30
+ lda spr_linda3c_data_mir
+ sta anim_lwalk+32
+ lda spr_linda3c_mask_mir
+ sta anim_lwalk+34
+* anim_lwalk frame 3 = LINDA2
+ lda spr_linda2c_data
+ sta anim_lwalk+39
+ lda spr_linda2c_mask
+ sta anim_lwalk+41
+ lda spr_linda2c_data_mir
+ sta anim_lwalk+43
+ lda spr_linda2c_mask_mir
+ sta anim_lwalk+45
+
+* anim_lpunch frame 0 = LPUNCH1
+ lda spr_lpunch1c_data
+ sta anim_lpunch+6
+ lda spr_lpunch1c_mask
+ sta anim_lpunch+8
+ lda spr_lpunch1c_data_mir
+ sta anim_lpunch+10
+ lda spr_lpunch1c_mask_mir
+ sta anim_lpunch+12
+* anim_lpunch frame 1 = LPUNCH2
+ lda spr_lpunch2c_data
+ sta anim_lpunch+17
+ lda spr_lpunch2c_mask
+ sta anim_lpunch+19
+ lda spr_lpunch2c_data_mir
+ sta anim_lpunch+21
+ lda spr_lpunch2c_mask_mir
+ sta anim_lpunch+23
+
+* anim_lpunched frame 0 = LPUNCHED
+ lda spr_lpunchedc_data
+ sta anim_lpunched+6
+ lda spr_lpunchedc_mask
+ sta anim_lpunched+8
+ lda spr_lpunchedc_data_mir
+ sta anim_lpunched+10
+ lda spr_lpunchedc_mask_mir
+ sta anim_lpunched+12
+
+* anim_lfall frame 0 = LFALL1
+ lda spr_lfall1c_data
+ sta anim_lfall+6
+ lda spr_lfall1c_mask
+ sta anim_lfall+8
+ lda spr_lfall1c_data_mir
+ sta anim_lfall+10
+ lda spr_lfall1c_mask_mir
+ sta anim_lfall+12
+* anim_lfall frame 1 = LFALL2
+ lda spr_lfall2c_data
+ sta anim_lfall+17
+ lda spr_lfall2c_mask
+ sta anim_lfall+19
+ lda spr_lfall2c_data_mir
+ sta anim_lfall+21
+ lda spr_lfall2c_mask_mir
+ sta anim_lfall+23
+
+ sec
+ xce
+ mx %11
+ rts
+
+*----------------------------------------------------------
+* init_burnov_compiled - Patch the compiled-form anim_bnwalk
+* with bank-$1B BNWALK*_DATA / _MASK / _MIRROR addresses
+* populated by init_mission13. Burnov's other anims (punch,
+* grab, fall, dissolve, recon) remain legacy bank-$19.
+*----------------------------------------------------------
+ mx %11
+init_burnov_compiled
+ clc
+ xce
+ rep $30
+ mx %00
+
+* anim_bnwalk frame 0 = BNWALK1
+ lda spr_bnwalk1c_data
+ sta anim_bnwalk+6
+ lda spr_bnwalk1c_mask
+ sta anim_bnwalk+8
+ lda spr_bnwalk1c_data_mir
+ sta anim_bnwalk+10
+ lda spr_bnwalk1c_mask_mir
+ sta anim_bnwalk+12
+* anim_bnwalk frame 1 = BNWALK2
+ lda spr_bnwalk2c_data
+ sta anim_bnwalk+17
+ lda spr_bnwalk2c_mask
+ sta anim_bnwalk+19
+ lda spr_bnwalk2c_data_mir
+ sta anim_bnwalk+21
+ lda spr_bnwalk2c_mask_mir
+ sta anim_bnwalk+23
+* anim_bnwalk frame 2 = BNWALK3
+ lda spr_bnwalk3c_data
+ sta anim_bnwalk+28
+ lda spr_bnwalk3c_mask
+ sta anim_bnwalk+30
+ lda spr_bnwalk3c_data_mir
+ sta anim_bnwalk+32
+ lda spr_bnwalk3c_mask_mir
+ sta anim_bnwalk+34
+* anim_bnwalk frame 3 = BNWALK2
+ lda spr_bnwalk2c_data
+ sta anim_bnwalk+39
+ lda spr_bnwalk2c_mask
+ sta anim_bnwalk+41
+ lda spr_bnwalk2c_data_mir
+ sta anim_bnwalk+43
+ lda spr_bnwalk2c_mask_mir
+ sta anim_bnwalk+45
+
+ sec
+ xce
+ mx %11
+ rts
+
+*----------------------------------------------------------
+* init_mission14 - Read mission14's spr_addr_tbl from bank $1C
+* and populate the spr_*c_* cache vars for armed Linda / armed
+* Williams sprites. Mirrors init_mission13's structure but uses
+* bank $1C and reads only the 16 armed sprites (offsets 0-126).
+* Calls init_armed_compiled at the end to patch the descriptors.
+*----------------------------------------------------------
+ mx %11
+init_mission14
+ clc
+ xce
+ rep $30
+ mx %00
+* Set $F0/$F1/$F2 = $1C/0012 (header.spr_addr_off field).
+ lda #$0012
+ sta $F0
+ sep $20
+ lda #$1C
+ sta $F2
+ rep $20
+* Dereference: $F0 ← *($1C/0012) = bank-$1C offset of spr_addr_tbl.
+ ldy #0
+ lda [$F0],y
+ sta $F0
+* spr_addr_tbl is 16 sprites × 4 entries × 2 bytes = 128 bytes.
+* Order matches init_armed_compiled's expectations: LFWALK1/2/3,
+* LMACE1/2/3, WPIPEWALK1/2/3, WPIPE1/2/3/4/6, WKNIFE1/2.
+ ldy #0
+ lda [$F0],y
+ sta spr_lfwalk1c_data
+ ldy #2
+ lda [$F0],y
+ sta spr_lfwalk1c_mask
+ ldy #4
+ lda [$F0],y
+ sta spr_lfwalk1c_data_mir
+ ldy #6
+ lda [$F0],y
+ sta spr_lfwalk1c_mask_mir
+ ldy #8
+ lda [$F0],y
+ sta spr_lfwalk2c_data
+ ldy #10
+ lda [$F0],y
+ sta spr_lfwalk2c_mask
+ ldy #12
+ lda [$F0],y
+ sta spr_lfwalk2c_data_mir
+ ldy #14
+ lda [$F0],y
+ sta spr_lfwalk2c_mask_mir
+ ldy #16
+ lda [$F0],y
+ sta spr_lfwalk3c_data
+ ldy #18
+ lda [$F0],y
+ sta spr_lfwalk3c_mask
+ ldy #20
+ lda [$F0],y
+ sta spr_lfwalk3c_data_mir
+ ldy #22
+ lda [$F0],y
+ sta spr_lfwalk3c_mask_mir
+ ldy #24
+ lda [$F0],y
+ sta spr_lmace1c_data
+ ldy #26
+ lda [$F0],y
+ sta spr_lmace1c_mask
+ ldy #28
+ lda [$F0],y
+ sta spr_lmace1c_data_mir
+ ldy #30
+ lda [$F0],y
+ sta spr_lmace1c_mask_mir
+ ldy #32
+ lda [$F0],y
+ sta spr_lmace2c_data
+ ldy #34
+ lda [$F0],y
+ sta spr_lmace2c_mask
+ ldy #36
+ lda [$F0],y
+ sta spr_lmace2c_data_mir
+ ldy #38
+ lda [$F0],y
+ sta spr_lmace2c_mask_mir
+ ldy #40
+ lda [$F0],y
+ sta spr_lmace3c_data
+ ldy #42
+ lda [$F0],y
+ sta spr_lmace3c_mask
+ ldy #44
+ lda [$F0],y
+ sta spr_lmace3c_data_mir
+ ldy #46
+ lda [$F0],y
+ sta spr_lmace3c_mask_mir
+ ldy #48
+ lda [$F0],y
+ sta spr_wpipewalk1c_data
+ ldy #50
+ lda [$F0],y
+ sta spr_wpipewalk1c_mask
+ ldy #52
+ lda [$F0],y
+ sta spr_wpipewalk1c_data_mir
+ ldy #54
+ lda [$F0],y
+ sta spr_wpipewalk1c_mask_mir
+ ldy #56
+ lda [$F0],y
+ sta spr_wpipewalk2c_data
+ ldy #58
+ lda [$F0],y
+ sta spr_wpipewalk2c_mask
+ ldy #60
+ lda [$F0],y
+ sta spr_wpipewalk2c_data_mir
+ ldy #62
+ lda [$F0],y
+ sta spr_wpipewalk2c_mask_mir
+ ldy #64
+ lda [$F0],y
+ sta spr_wpipewalk3c_data
+ ldy #66
+ lda [$F0],y
+ sta spr_wpipewalk3c_mask
+ ldy #68
+ lda [$F0],y
+ sta spr_wpipewalk3c_data_mir
+ ldy #70
+ lda [$F0],y
+ sta spr_wpipewalk3c_mask_mir
+ ldy #72
+ lda [$F0],y
+ sta spr_wpipe1c_data
+ ldy #74
+ lda [$F0],y
+ sta spr_wpipe1c_mask
+ ldy #76
+ lda [$F0],y
+ sta spr_wpipe1c_data_mir
+ ldy #78
+ lda [$F0],y
+ sta spr_wpipe1c_mask_mir
+ ldy #80
+ lda [$F0],y
+ sta spr_wpipe2c_data
+ ldy #82
+ lda [$F0],y
+ sta spr_wpipe2c_mask
+ ldy #84
+ lda [$F0],y
+ sta spr_wpipe2c_data_mir
+ ldy #86
+ lda [$F0],y
+ sta spr_wpipe2c_mask_mir
+ ldy #88
+ lda [$F0],y
+ sta spr_wpipe3c_data
+ ldy #90
+ lda [$F0],y
+ sta spr_wpipe3c_mask
+ ldy #92
+ lda [$F0],y
+ sta spr_wpipe3c_data_mir
+ ldy #94
+ lda [$F0],y
+ sta spr_wpipe3c_mask_mir
+ ldy #96
+ lda [$F0],y
+ sta spr_wpipe4c_data
+ ldy #98
+ lda [$F0],y
+ sta spr_wpipe4c_mask
+ ldy #100
+ lda [$F0],y
+ sta spr_wpipe4c_data_mir
+ ldy #102
+ lda [$F0],y
+ sta spr_wpipe4c_mask_mir
+ ldy #104
+ lda [$F0],y
+ sta spr_wpipe6c_data
+ ldy #106
+ lda [$F0],y
+ sta spr_wpipe6c_mask
+ ldy #108
+ lda [$F0],y
+ sta spr_wpipe6c_data_mir
+ ldy #110
+ lda [$F0],y
+ sta spr_wpipe6c_mask_mir
+ ldy #112
+ lda [$F0],y
+ sta spr_wknife1c_data
+ ldy #114
+ lda [$F0],y
+ sta spr_wknife1c_mask
+ ldy #116
+ lda [$F0],y
+ sta spr_wknife1c_data_mir
+ ldy #118
+ lda [$F0],y
+ sta spr_wknife1c_mask_mir
+ ldy #120
+ lda [$F0],y
+ sta spr_wknife2c_data
+ ldy #122
+ lda [$F0],y
+ sta spr_wknife2c_mask
+ ldy #124
+ lda [$F0],y
+ sta spr_wknife2c_data_mir
+ ldy #126
+ lda [$F0],y
+ sta spr_wknife2c_mask_mir
+ sec
+ xce
+ mx %11
+ jsr init_armed_compiled
+ rts
+
+*----------------------------------------------------------
+* init_armed_compiled - Patch the compiled-form armed-Linda /
+* armed-Williams anim descriptors with the bank-$1C addresses
+* populated by init_mission14. Stride layout matches the other
+* init_*_compiled patchers.
+*----------------------------------------------------------
+ mx %11
+init_armed_compiled
+ clc
+ xce
+ rep $30
+ mx %00
+
+* anim_lfwalk frame 0 = LFWALK1
+ lda spr_lfwalk1c_data
+ sta anim_lfwalk+6
+ lda spr_lfwalk1c_mask
+ sta anim_lfwalk+8
+ lda spr_lfwalk1c_data_mir
+ sta anim_lfwalk+10
+ lda spr_lfwalk1c_mask_mir
+ sta anim_lfwalk+12
+* anim_lfwalk frame 1 = LFWALK2
+ lda spr_lfwalk2c_data
+ sta anim_lfwalk+17
+ lda spr_lfwalk2c_mask
+ sta anim_lfwalk+19
+ lda spr_lfwalk2c_data_mir
+ sta anim_lfwalk+21
+ lda spr_lfwalk2c_mask_mir
+ sta anim_lfwalk+23
+* anim_lfwalk frame 2 = LFWALK3
+ lda spr_lfwalk3c_data
+ sta anim_lfwalk+28
+ lda spr_lfwalk3c_mask
+ sta anim_lfwalk+30
+ lda spr_lfwalk3c_data_mir
+ sta anim_lfwalk+32
+ lda spr_lfwalk3c_mask_mir
+ sta anim_lfwalk+34
+* anim_lfwalk frame 3 = LFWALK2
+ lda spr_lfwalk2c_data
+ sta anim_lfwalk+39
+ lda spr_lfwalk2c_mask
+ sta anim_lfwalk+41
+ lda spr_lfwalk2c_data_mir
+ sta anim_lfwalk+43
+ lda spr_lfwalk2c_mask_mir
+ sta anim_lfwalk+45
+
+* anim_lmace frame 0 = LMACE1
+ lda spr_lmace1c_data
+ sta anim_lmace+6
+ lda spr_lmace1c_mask
+ sta anim_lmace+8
+ lda spr_lmace1c_data_mir
+ sta anim_lmace+10
+ lda spr_lmace1c_mask_mir
+ sta anim_lmace+12
+* anim_lmace frame 1 = LMACE2
+ lda spr_lmace2c_data
+ sta anim_lmace+17
+ lda spr_lmace2c_mask
+ sta anim_lmace+19
+ lda spr_lmace2c_data_mir
+ sta anim_lmace+21
+ lda spr_lmace2c_mask_mir
+ sta anim_lmace+23
+* anim_lmace frame 2 = LMACE3
+ lda spr_lmace3c_data
+ sta anim_lmace+28
+ lda spr_lmace3c_mask
+ sta anim_lmace+30
+ lda spr_lmace3c_data_mir
+ sta anim_lmace+32
+ lda spr_lmace3c_mask_mir
+ sta anim_lmace+34
+
+* anim_wpipewalk frame 0 = WPIPEWALK1
+ lda spr_wpipewalk1c_data
+ sta anim_wpipewalk+6
+ lda spr_wpipewalk1c_mask
+ sta anim_wpipewalk+8
+ lda spr_wpipewalk1c_data_mir
+ sta anim_wpipewalk+10
+ lda spr_wpipewalk1c_mask_mir
+ sta anim_wpipewalk+12
+* anim_wpipewalk frame 1 = WPIPEWALK2
+ lda spr_wpipewalk2c_data
+ sta anim_wpipewalk+17
+ lda spr_wpipewalk2c_mask
+ sta anim_wpipewalk+19
+ lda spr_wpipewalk2c_data_mir
+ sta anim_wpipewalk+21
+ lda spr_wpipewalk2c_mask_mir
+ sta anim_wpipewalk+23
+* anim_wpipewalk frame 2 = WPIPEWALK3
+ lda spr_wpipewalk3c_data
+ sta anim_wpipewalk+28
+ lda spr_wpipewalk3c_mask
+ sta anim_wpipewalk+30
+ lda spr_wpipewalk3c_data_mir
+ sta anim_wpipewalk+32
+ lda spr_wpipewalk3c_mask_mir
+ sta anim_wpipewalk+34
+* anim_wpipewalk frame 3 = WPIPEWALK2
+ lda spr_wpipewalk2c_data
+ sta anim_wpipewalk+39
+ lda spr_wpipewalk2c_mask
+ sta anim_wpipewalk+41
+ lda spr_wpipewalk2c_data_mir
+ sta anim_wpipewalk+43
+ lda spr_wpipewalk2c_mask_mir
+ sta anim_wpipewalk+45
+
+* anim_wpipeswing: WPIPE1, WPIPE4, WPIPE2, WPIPE6, WPIPE3
+* (5 frames; offsets +6/+17/+28/+39/+50, etc.)
+ lda spr_wpipe1c_data
+ sta anim_wpipeswing+6
+ lda spr_wpipe1c_mask
+ sta anim_wpipeswing+8
+ lda spr_wpipe1c_data_mir
+ sta anim_wpipeswing+10
+ lda spr_wpipe1c_mask_mir
+ sta anim_wpipeswing+12
+ lda spr_wpipe4c_data
+ sta anim_wpipeswing+17
+ lda spr_wpipe4c_mask
+ sta anim_wpipeswing+19
+ lda spr_wpipe4c_data_mir
+ sta anim_wpipeswing+21
+ lda spr_wpipe4c_mask_mir
+ sta anim_wpipeswing+23
+ lda spr_wpipe2c_data
+ sta anim_wpipeswing+28
+ lda spr_wpipe2c_mask
+ sta anim_wpipeswing+30
+ lda spr_wpipe2c_data_mir
+ sta anim_wpipeswing+32
+ lda spr_wpipe2c_mask_mir
+ sta anim_wpipeswing+34
+ lda spr_wpipe6c_data
+ sta anim_wpipeswing+39
+ lda spr_wpipe6c_mask
+ sta anim_wpipeswing+41
+ lda spr_wpipe6c_data_mir
+ sta anim_wpipeswing+43
+ lda spr_wpipe6c_mask_mir
+ sta anim_wpipeswing+45
+ lda spr_wpipe3c_data
+ sta anim_wpipeswing+50
+ lda spr_wpipe3c_mask
+ sta anim_wpipeswing+52
+ lda spr_wpipe3c_data_mir
+ sta anim_wpipeswing+54
+ lda spr_wpipe3c_mask_mir
+ sta anim_wpipeswing+56
+
+* anim_wkthrow: WKNIFE1, WKNIFE2 (2 frames)
+ lda spr_wknife1c_data
+ sta anim_wkthrow+6
+ lda spr_wknife1c_mask
+ sta anim_wkthrow+8
+ lda spr_wknife1c_data_mir
+ sta anim_wkthrow+10
+ lda spr_wknife1c_mask_mir
+ sta anim_wkthrow+12
+ lda spr_wknife2c_data
+ sta anim_wkthrow+17
+ lda spr_wknife2c_mask
+ sta anim_wkthrow+19
+ lda spr_wknife2c_data_mir
+ sta anim_wkthrow+21
+ lda spr_wknife2c_mask_mir
+ sta anim_wkthrow+23
+
+ sec
+ xce
+ mx %11
  rts
 
 *----------------------------------------------------------
@@ -15395,6 +17182,12 @@ mission1_path dfb 25
 
 mission12_path dfb 26
  asc '/DDIIGS/MISSION1/MISSION12'
+
+mission13_path dfb 26
+ asc '/DDIIGS/MISSION1/MISSION13'
+
+mission14_path dfb 26
+ asc '/DDIIGS/MISSION1/MISSION14'
 
 * MISSION1NTP.PAK rather than MISSION1.NTP.PAK because ProDOS
 * limits each filename component to 15 chars.
@@ -17318,10 +19111,10 @@ scroll_up
  bne :st_mirror
  lda spr_image01_mask
  sta MASK_ADDR
- sta billy_sprite+52
+ sta billy_sprite+60
  lda spr_image01_mask+1
  sta MASK_ADDR+1
- sta billy_sprite+53
+ sta billy_sprite+61
  bra :st_mask_done
 :st_mirror
  lda spr_image01_data_mirror
@@ -17332,10 +19125,10 @@ scroll_up
  sta billy_sprite+15
  lda spr_image01_mask_mirror
  sta MASK_ADDR
- sta billy_sprite+52
+ sta billy_sprite+60
  lda spr_image01_mask_mirror+1
  sta MASK_ADDR+1
- sta billy_sprite+53
+ sta billy_sprite+61
 :st_mask_done
  stz climb_toggle       ; next climb starts on BCLIMB1
 * Disable the ladder Billy just climbed by locating it from his
@@ -18341,18 +20134,28 @@ anim_bpunched
 anim_wpunched
  dfb 1               ; num_frames
  dfb $09             ; max_width
- dfb $00             ; flags: none (one-shot)
+ dfb $C0             ; flags: bit 7 = compiled stride, bit 6 = bank $1B
  dfb $09,$28,5       ; WPUNCHED: 9 wide, 40 tall, 5 VBLs
-  hex 0000             ; patched: WPUNCHED
+  hex 0000             ; patched: WPUNCHED_DATA
+  hex 0000             ; patched: WPUNCHED_MASK
+  hex 0000             ; patched: WPUNCHED_DATA_MIRROR
+  hex 0000             ; patched: WPUNCHED_MASK_MIRROR
 
 anim_wfall
  dfb 2               ; num_frames
  dfb $13             ; max_width (WFALL is widest at $13)
- dfb $10             ; flags: bit 4 = fall trajectory (parabolic arc)
+ dfb $D0             ; flags: bit 7 = compiled, bit 6 = bank $1B,
+                     ;        bit 4 = fall trajectory
  dfb $13,$21,FALL_ARC_FRAMES ; WFALL: 19 wide, 33 tall, arc duration
-  hex 0000             ; patched: WFALL
+  hex 0000             ; patched: WFALL_DATA
+  hex 0000             ; patched: WFALL_MASK
+  hex 0000             ; patched: WFALL_DATA_MIRROR
+  hex 0000             ; patched: WFALL_MASK_MIRROR
  dfb $10,$0D,60      ; WFALLEN: 16 wide, 13 tall, 60 VBLs
-  hex 0000             ; patched: WFALLEN
+  hex 0000             ; patched: WFALLEN_DATA
+  hex 0000             ; patched: WFALLEN_MASK
+  hex 0000             ; patched: WFALLEN_DATA_MIRROR
+  hex 0000             ; patched: WFALLEN_MASK_MIRROR
 
 anim_bfall
  dfb 2               ; num_frames
@@ -18364,129 +20167,230 @@ anim_bfall
   hex 0000             ; patched: BFALLEN
 
 * William walking cycle (WILLIAM1, 2, 3, 2). Looping, no
-* auto-advance — behavior code controls position.
+* auto-advance — behavior code controls position. Compiled
+* (bank $1B) — patched by init_williams_compiled.
 anim_wwalk
  dfb 4               ; num_frames
  dfb $09             ; max_width
- dfb $02             ; flags: loop
- dfb $09,$28,5       ; WILLIAM1
-  hex 0000             ; patched: WILLIAM1
+ dfb $C2             ; flags: bit 7 = compiled, bit 6 = bank $1B,
+                     ;        bit 1 = loop
+ dfb $09,$28,5       ; WILLIAM1: 9 wide, 40 tall, 5 VBLs
+  hex 0000             ; patched: WILLIAM1_DATA
+  hex 0000             ; patched: WILLIAM1_MASK
+  hex 0000             ; patched: WILLIAM1_DATA_MIRROR
+  hex 0000             ; patched: WILLIAM1_MASK_MIRROR
  dfb $09,$28,5       ; WILLIAM2
-  hex 0000             ; patched: WILLIAM2
+  hex 0000             ; patched: WILLIAM2_DATA
+  hex 0000             ; patched: WILLIAM2_MASK
+  hex 0000             ; patched: WILLIAM2_DATA_MIRROR
+  hex 0000             ; patched: WILLIAM2_MASK_MIRROR
  dfb $09,$28,5       ; WILLIAM3
-  hex 0000             ; patched: WILLIAM3
+  hex 0000             ; patched: WILLIAM3_DATA
+  hex 0000             ; patched: WILLIAM3_MASK
+  hex 0000             ; patched: WILLIAM3_DATA_MIRROR
+  hex 0000             ; patched: WILLIAM3_MASK_MIRROR
  dfb $09,$28,5       ; WILLIAM2
-  hex 0000             ; patched: WILLIAM2
+  hex 0000             ; patched: WILLIAM2_DATA
+  hex 0000             ; patched: WILLIAM2_MASK
+  hex 0000             ; patched: WILLIAM2_DATA_MIRROR
+  hex 0000             ; patched: WILLIAM2_MASK_MIRROR
 
 * William's offensive punch (NPC). 2 frames, non-looping.
+* Compiled (bank $1B) — patched by init_williams_compiled.
 anim_wpunch
  dfb 2               ; num_frames
  dfb $11             ; max_width (WPUNCH2 is widest)
- dfb $00             ; flags: none (one-shot)
- dfb $0B,$28,6       ; WPUNCH1
-  hex 0000             ; patched: WPUNCH1
- dfb $11,$28,6       ; WPUNCH2
-  hex 0000             ; patched: WPUNCH2
+ dfb $C0             ; flags: bit 7 = compiled, bit 6 = bank $1B
+ dfb $0B,$28,6       ; WPUNCH1: 11 wide, 40 tall, 6 VBLs
+  hex 0000             ; patched: WPUNCH1_DATA
+  hex 0000             ; patched: WPUNCH1_MASK
+  hex 0000             ; patched: WPUNCH1_DATA_MIRROR
+  hex 0000             ; patched: WPUNCH1_MASK_MIRROR
+ dfb $11,$28,6       ; WPUNCH2: 17 wide, 40 tall, 6 VBLs
+  hex 0000             ; patched: WPUNCH2_DATA
+  hex 0000             ; patched: WPUNCH2_MASK
+  hex 0000             ; patched: WPUNCH2_DATA_MIRROR
+  hex 0000             ; patched: WPUNCH2_MASK_MIRROR
 
 * Roper walk (ROPER1, 2, 3, 2). Looping, no auto-advance.
+* Roper walk (ROPER1, 2, 3, 2). Compiled bank-$1B; patched
+* by init_roper_compiled.
 anim_rwalk
  dfb 4
  dfb $09
- dfb $02             ; flags: loop
+ dfb $C2             ; flags: bit 7 = compiled, bit 6 = bank $1B,
+                     ;        bit 1 = loop
  dfb $09,$27,5       ; ROPER1
-  hex 0000             ; patched
+  hex 0000             ; patched: ROPER1_DATA
+  hex 0000             ; patched: ROPER1_MASK
+  hex 0000             ; patched: ROPER1_DATA_MIRROR
+  hex 0000             ; patched: ROPER1_MASK_MIRROR
  dfb $09,$26,5       ; ROPER2
-  hex 0000             ; patched
+  hex 0000             ; patched: ROPER2_DATA
+  hex 0000             ; patched: ROPER2_MASK
+  hex 0000             ; patched: ROPER2_DATA_MIRROR
+  hex 0000             ; patched: ROPER2_MASK_MIRROR
  dfb $09,$27,5       ; ROPER3
-  hex 0000             ; patched
+  hex 0000             ; patched: ROPER3_DATA
+  hex 0000             ; patched: ROPER3_MASK
+  hex 0000             ; patched: ROPER3_DATA_MIRROR
+  hex 0000             ; patched: ROPER3_MASK_MIRROR
  dfb $09,$26,5       ; ROPER2
-  hex 0000             ; patched
+  hex 0000             ; patched: ROPER2_DATA
+  hex 0000             ; patched: ROPER2_MASK
+  hex 0000             ; patched: ROPER2_DATA_MIRROR
+  hex 0000             ; patched: ROPER2_MASK_MIRROR
 
-* Roper punch. 2 frames, one-shot.
+* Roper punch. 2 frames, one-shot. Compiled bank-$1B.
 anim_rpunch
  dfb 2
  dfb $10             ; max_width (RPUNCH2)
- dfb $00
+ dfb $C0             ; flags: bit 7 = compiled, bit 6 = bank $1B
  dfb $0B,$27,6       ; RPUNCH1
-  hex 0000             ; patched
+  hex 0000             ; patched: RPUNCH1_DATA
+  hex 0000             ; patched: RPUNCH1_MASK
+  hex 0000             ; patched: RPUNCH1_DATA_MIRROR
+  hex 0000             ; patched: RPUNCH1_MASK_MIRROR
  dfb $10,$27,6       ; RPUNCH2
-  hex 0000             ; patched
+  hex 0000             ; patched: RPUNCH2_DATA
+  hex 0000             ; patched: RPUNCH2_MASK
+  hex 0000             ; patched: RPUNCH2_DATA_MIRROR
+  hex 0000             ; patched: RPUNCH2_MASK_MIRROR
 
-* Roper punched reaction. 1 frame, one-shot.
+* Roper punched reaction. 1 frame, one-shot. Compiled bank-$1B.
 anim_rpunched
  dfb 1
  dfb $09
- dfb $00
+ dfb $C0             ; flags: bit 7 = compiled, bit 6 = bank $1B
  dfb $09,$26,5       ; RPUNCHED
-  hex 0000             ; patched
+  hex 0000             ; patched: RPUNCHED_DATA
+  hex 0000             ; patched: RPUNCHED_MASK
+  hex 0000             ; patched: RPUNCHED_DATA_MIRROR
+  hex 0000             ; patched: RPUNCHED_MASK_MIRROR
 
 * Roper fall. 2 frames, one-shot, parabolic arc on frame 0.
+* Compiled bank-$1B.
 anim_rfall
  dfb 2
  dfb $10
- dfb $10             ; flags: bit 4 = fall trajectory
+ dfb $D0             ; flags: bit 7 = compiled, bit 6 = bank $1B,
+                     ;        bit 4 = fall trajectory
  dfb $10,$17,FALL_ARC_FRAMES ; RFALL1: arc duration
-  hex 0000             ; patched
+  hex 0000             ; patched: RFALL1_DATA
+  hex 0000             ; patched: RFALL1_MASK
+  hex 0000             ; patched: RFALL1_DATA_MIRROR
+  hex 0000             ; patched: RFALL1_MASK_MIRROR
  dfb $10,$0F,60      ; RFALL2
-  hex 0000             ; patched
+  hex 0000             ; patched: RFALL2_DATA
+  hex 0000             ; patched: RFALL2_MASK
+  hex 0000             ; patched: RFALL2_DATA_MIRROR
+  hex 0000             ; patched: RFALL2_MASK_MIRROR
 
 * Linda walk (LINDA1, 2, 3, 2). Looping, no auto-advance.
+* Linda walk (LINDA1, 2, 3, 2). Compiled bank-$1B; patched by
+* init_linda_compiled.
 anim_lwalk
  dfb 4
  dfb $09
- dfb $02             ; flags: loop
+ dfb $C2             ; flags: bit 7 = compiled, bit 6 = bank $1B,
+                     ;        bit 1 = loop
  dfb $09,$28,5       ; LINDA1
-  hex 0000             ; patched
+  hex 0000             ; patched: LINDA1_DATA
+  hex 0000             ; patched: LINDA1_MASK
+  hex 0000             ; patched: LINDA1_DATA_MIRROR
+  hex 0000             ; patched: LINDA1_MASK_MIRROR
  dfb $09,$27,5       ; LINDA2
-  hex 0000             ; patched
+  hex 0000             ; patched: LINDA2_DATA
+  hex 0000             ; patched: LINDA2_MASK
+  hex 0000             ; patched: LINDA2_DATA_MIRROR
+  hex 0000             ; patched: LINDA2_MASK_MIRROR
  dfb $09,$28,5       ; LINDA3
-  hex 0000             ; patched
+  hex 0000             ; patched: LINDA3_DATA
+  hex 0000             ; patched: LINDA3_MASK
+  hex 0000             ; patched: LINDA3_DATA_MIRROR
+  hex 0000             ; patched: LINDA3_MASK_MIRROR
  dfb $09,$27,5       ; LINDA2
-  hex 0000             ; patched
+  hex 0000             ; patched: LINDA2_DATA
+  hex 0000             ; patched: LINDA2_MASK
+  hex 0000             ; patched: LINDA2_DATA_MIRROR
+  hex 0000             ; patched: LINDA2_MASK_MIRROR
 
-* Linda punch. 2 frames, one-shot.
+* Linda punch. 2 frames, one-shot. Compiled bank-$1B.
 anim_lpunch
  dfb 2
  dfb $0E             ; max_width (LPUNCH2)
- dfb $00
+ dfb $C0             ; flags: bit 7 = compiled, bit 6 = bank $1B
  dfb $0B,$28,6       ; LPUNCH1
-  hex 0000             ; patched
+  hex 0000             ; patched: LPUNCH1_DATA
+  hex 0000             ; patched: LPUNCH1_MASK
+  hex 0000             ; patched: LPUNCH1_DATA_MIRROR
+  hex 0000             ; patched: LPUNCH1_MASK_MIRROR
  dfb $0E,$28,6       ; LPUNCH2
-  hex 0000             ; patched
+  hex 0000             ; patched: LPUNCH2_DATA
+  hex 0000             ; patched: LPUNCH2_MASK
+  hex 0000             ; patched: LPUNCH2_DATA_MIRROR
+  hex 0000             ; patched: LPUNCH2_MASK_MIRROR
 
-* Linda punched reaction. 1 frame, one-shot.
+* Linda punched reaction. 1 frame, one-shot. Compiled bank-$1B.
 anim_lpunched
  dfb 1
  dfb $09
- dfb $00
+ dfb $C0             ; flags: bit 7 = compiled, bit 6 = bank $1B
  dfb $08,$26,5       ; LPUNCHED
-  hex 0000             ; patched
+  hex 0000             ; patched: LPUNCHED_DATA
+  hex 0000             ; patched: LPUNCHED_MASK
+  hex 0000             ; patched: LPUNCHED_DATA_MIRROR
+  hex 0000             ; patched: LPUNCHED_MASK_MIRROR
 
 * Linda fall. 2 frames, one-shot, parabolic arc on frame 0.
+* Compiled bank-$1B.
 anim_lfall
  dfb 2
  dfb $11
- dfb $10             ; flags: bit 4 = fall trajectory
+ dfb $D0             ; flags: bit 7 = compiled, bit 6 = bank $1B,
+                     ;        bit 4 = fall trajectory
  dfb $10,$17,FALL_ARC_FRAMES ; LFALL1: arc duration
-  hex 0000             ; patched
+  hex 0000             ; patched: LFALL1_DATA
+  hex 0000             ; patched: LFALL1_MASK
+  hex 0000             ; patched: LFALL1_DATA_MIRROR
+  hex 0000             ; patched: LFALL1_MASK_MIRROR
  dfb $11,$0F,60      ; LFALL2
-  hex 0000             ; patched
+  hex 0000             ; patched: LFALL2_DATA
+  hex 0000             ; patched: LFALL2_MASK
+  hex 0000             ; patched: LFALL2_DATA_MIRROR
+  hex 0000             ; patched: LFALL2_MASK_MIRROR
 
 * Burnov (boss) walk. 4 frames, looping (BNWALK1, 2, 3, 2 cycle).
 * Pixel data lives in bank $06 — frame_addr fields are patched
 * by init_mission12 from spr_bnwalk1/2/3 (also in $06).
+* Burnov walk (BNWALK1, 2, 3, 2 cycle). Compiled bank-$1B;
+* patched by init_burnov_compiled. Burnov's other anims (punch,
+* grab, fall, dissolve, recon) remain legacy bank-$19.
 anim_bnwalk
  dfb 4
  dfb $0D             ; max_width (BNWALK1)
- dfb $22             ; flags: bit 1 = loop, bit 5 = bank $19
+ dfb $C2             ; flags: bit 7 = compiled, bit 6 = bank $1B,
+                     ;        bit 1 = loop
  dfb $0D,$30,5       ; BNWALK1: 13 wide, 48 tall, 5 VBLs
-  hex 0000             ; patched
+  hex 0000             ; patched: BNWALK1_DATA
+  hex 0000             ; patched: BNWALK1_MASK
+  hex 0000             ; patched: BNWALK1_DATA_MIRROR
+  hex 0000             ; patched: BNWALK1_MASK_MIRROR
  dfb $0D,$30,5       ; BNWALK2
-  hex 0000             ; patched
+  hex 0000             ; patched: BNWALK2_DATA
+  hex 0000             ; patched: BNWALK2_MASK
+  hex 0000             ; patched: BNWALK2_DATA_MIRROR
+  hex 0000             ; patched: BNWALK2_MASK_MIRROR
  dfb $0D,$30,5       ; BNWALK3
-  hex 0000             ; patched
+  hex 0000             ; patched: BNWALK3_DATA
+  hex 0000             ; patched: BNWALK3_MASK
+  hex 0000             ; patched: BNWALK3_DATA_MIRROR
+  hex 0000             ; patched: BNWALK3_MASK_MIRROR
  dfb $0D,$30,5       ; BNWALK2 (cycle back)
-  hex 0000             ; patched
+  hex 0000             ; patched: BNWALK2_DATA
+  hex 0000             ; patched: BNWALK2_MASK
+  hex 0000             ; patched: BNWALK2_DATA_MIRROR
+  hex 0000             ; patched: BNWALK2_MASK_MIRROR
 
 * Burnov punch. 2 frames, one-shot.
 anim_bnpunch
@@ -18594,31 +20498,56 @@ anim_bn_recon
 * Linda-with-flail walk (LFWALK1, 2, 3, 2 cycle). Same shape as
 * anim_lwalk (frame_x=$09) — same character, just a different
 * frame source (bank-$19 instead of $02).
+* Linda flail walk (LFWALK1, 2, 3, 2). Compiled bank-$1C; patched
+* by init_armed_compiled.
 anim_lfwalk
  dfb 4
  dfb $09
- dfb $22              ; flags: bit 1 = loop, bit 5 = bank $19
+ dfb $8A              ; flags: bit 7 = compiled, bit 3 = bank $1C,
+                      ;        bit 1 = loop
  dfb $09,$28,5        ; LFWALK1: 9 wide, 40 tall
-  hex 0000             ; patched
+  hex 0000             ; patched: LFWALK1_DATA
+  hex 0000             ; patched: LFWALK1_MASK
+  hex 0000             ; patched: LFWALK1_DATA_MIRROR
+  hex 0000             ; patched: LFWALK1_MASK_MIRROR
  dfb $09,$27,5        ; LFWALK2: 9 wide, 39 tall
-  hex 0000             ; patched
+  hex 0000             ; patched: LFWALK2_DATA
+  hex 0000             ; patched: LFWALK2_MASK
+  hex 0000             ; patched: LFWALK2_DATA_MIRROR
+  hex 0000             ; patched: LFWALK2_MASK_MIRROR
  dfb $09,$28,5        ; LFWALK3
-  hex 0000             ; patched
+  hex 0000             ; patched: LFWALK3_DATA
+  hex 0000             ; patched: LFWALK3_MASK
+  hex 0000             ; patched: LFWALK3_DATA_MIRROR
+  hex 0000             ; patched: LFWALK3_MASK_MIRROR
  dfb $09,$27,5        ; LFWALK2 (cycle back)
-  hex 0000             ; patched
+  hex 0000             ; patched: LFWALK2_DATA
+  hex 0000             ; patched: LFWALK2_MASK
+  hex 0000             ; patched: LFWALK2_DATA_MIRROR
+  hex 0000             ; patched: LFWALK2_MASK_MIRROR
 
 * Linda mace-swing attack (LMACE1, 2, 3). Wider sprite (mace
 * swings out to the side); max_width tracks LMACE1 at 24 bytes.
+* Compiled bank-$1C; patched by init_armed_compiled.
 anim_lmace
  dfb 3
  dfb $18              ; max_width (LMACE1 is 24 wide)
- dfb $20              ; flags: bit 5 = bank $19
+ dfb $88              ; flags: bit 7 = compiled, bit 3 = bank $1C
  dfb $18,$28,6        ; LMACE1: 24×40
-  hex 0000             ; patched
+  hex 0000             ; patched: LMACE1_DATA
+  hex 0000             ; patched: LMACE1_MASK
+  hex 0000             ; patched: LMACE1_DATA_MIRROR
+  hex 0000             ; patched: LMACE1_MASK_MIRROR
  dfb $14,$26,6        ; LMACE2: 20×38
-  hex 0000             ; patched
+  hex 0000             ; patched: LMACE2_DATA
+  hex 0000             ; patched: LMACE2_MASK
+  hex 0000             ; patched: LMACE2_DATA_MIRROR
+  hex 0000             ; patched: LMACE2_MASK_MIRROR
  dfb $10,$26,6        ; LMACE3: 16×38
-  hex 0000             ; patched
+  hex 0000             ; patched: LMACE3_DATA
+  hex 0000             ; patched: LMACE3_MASK
+  hex 0000             ; patched: LMACE3_DATA_MIRROR
+  hex 0000             ; patched: LMACE3_MASK_MIRROR
 
 * Linda-with-flail fall — placeholder, both frames just reuse
 * LFWALK1 for now. When the "drop the mace and turn into a
@@ -18635,19 +20564,33 @@ anim_lffall
   hex 0000             ; patched
 
 * Williams-with-pipe walk (WPIPEWALK1, 2, 3, 2 cycle). Same
-* shape as anim_wwalk (frame_x=$09).
+* shape as anim_wwalk (frame_x=$09). Compiled bank-$1C; patched
+* by init_armed_compiled.
 anim_wpipewalk
  dfb 4
  dfb $09
- dfb $22              ; flags: bit 1 = loop, bit 5 = bank $19
+ dfb $8A              ; flags: bit 7 = compiled, bit 3 = bank $1C,
+                      ;        bit 1 = loop
  dfb $09,$28,5        ; WPIPEWALK1
-  hex 0000             ; patched
+  hex 0000             ; patched: WPIPEWALK1_DATA
+  hex 0000             ; patched: WPIPEWALK1_MASK
+  hex 0000             ; patched: WPIPEWALK1_DATA_MIRROR
+  hex 0000             ; patched: WPIPEWALK1_MASK_MIRROR
  dfb $09,$28,5        ; WPIPEWALK2
-  hex 0000             ; patched
+  hex 0000             ; patched: WPIPEWALK2_DATA
+  hex 0000             ; patched: WPIPEWALK2_MASK
+  hex 0000             ; patched: WPIPEWALK2_DATA_MIRROR
+  hex 0000             ; patched: WPIPEWALK2_MASK_MIRROR
  dfb $09,$28,5        ; WPIPEWALK3
-  hex 0000             ; patched
+  hex 0000             ; patched: WPIPEWALK3_DATA
+  hex 0000             ; patched: WPIPEWALK3_MASK
+  hex 0000             ; patched: WPIPEWALK3_DATA_MIRROR
+  hex 0000             ; patched: WPIPEWALK3_MASK_MIRROR
  dfb $09,$28,5        ; WPIPEWALK2 (cycle back)
-  hex 0000             ; patched
+  hex 0000             ; patched: WPIPEWALK2_DATA
+  hex 0000             ; patched: WPIPEWALK2_MASK
+  hex 0000             ; patched: WPIPEWALK2_DATA_MIRROR
+  hex 0000             ; patched: WPIPEWALK2_MASK_MIRROR
 
 * Williams-with-pipe fall placeholder — both frames are
 * WPIPEWALK1 (visible-pipe pose). Replace with proper sprites
@@ -18664,32 +20607,55 @@ anim_wpfall
 * Williams-with-pipe attack — 5-frame pipe swing.
 * Frame order (per design): WPIPE1, WPIPE4, WPIPE2, WPIPE6, WPIPE3.
 * Each frame ~6 VBLs ≈ 100 ms — total swing ~0.5 s.
+* Compiled bank-$1C; patched by init_armed_compiled.
 anim_wpipeswing
  dfb 5
  dfb $0F              ; max_width (WPIPE2 is 15 wide)
- dfb $20              ; flags: bit 5 = bank $19
+ dfb $88              ; flags: bit 7 = compiled, bit 3 = bank $1C
  dfb $0E,$28,6        ; WPIPE1: 14×40
-  hex 0000             ; patched
+  hex 0000             ; patched: WPIPE1_DATA
+  hex 0000             ; patched: WPIPE1_MASK
+  hex 0000             ; patched: WPIPE1_DATA_MIRROR
+  hex 0000             ; patched: WPIPE1_MASK_MIRROR
  dfb $0E,$28,6        ; WPIPE4: 14×40
-  hex 0000             ; patched
+  hex 0000             ; patched: WPIPE4_DATA
+  hex 0000             ; patched: WPIPE4_MASK
+  hex 0000             ; patched: WPIPE4_DATA_MIRROR
+  hex 0000             ; patched: WPIPE4_MASK_MIRROR
  dfb $0F,$28,6        ; WPIPE2: 15×40
-  hex 0000             ; patched
+  hex 0000             ; patched: WPIPE2_DATA
+  hex 0000             ; patched: WPIPE2_MASK
+  hex 0000             ; patched: WPIPE2_DATA_MIRROR
+  hex 0000             ; patched: WPIPE2_MASK_MIRROR
  dfb $0A,$28,6        ; WPIPE6: 10×40
-  hex 0000             ; patched
+  hex 0000             ; patched: WPIPE6_DATA
+  hex 0000             ; patched: WPIPE6_MASK
+  hex 0000             ; patched: WPIPE6_DATA_MIRROR
+  hex 0000             ; patched: WPIPE6_MASK_MIRROR
  dfb $0D,$28,6        ; WPIPE3: 13×40
-  hex 0000             ; patched
+  hex 0000             ; patched: WPIPE3_DATA
+  hex 0000             ; patched: WPIPE3_MASK
+  hex 0000             ; patched: WPIPE3_DATA_MIRROR
+  hex 0000             ; patched: WPIPE3_MASK_MIRROR
 
 * Williams-with-knife throw — 2 frames (WKNIFE1 wind-up, WKNIFE2
 * release). When the anim ends, :normal_end spawns the knife
 * projectile and downgrades williams_knife to a regular williams.
+* Compiled bank-$1C; patched by init_armed_compiled.
 anim_wkthrow
  dfb 2
  dfb $0D              ; max_width (both frames are 13 wide)
- dfb $20              ; flags: bit 5 = bank $19
+ dfb $88              ; flags: bit 7 = compiled, bit 3 = bank $1C
  dfb $0D,$2F,8        ; WKNIFE1: 13×47
-  hex 0000             ; patched
+  hex 0000             ; patched: WKNIFE1_DATA
+  hex 0000             ; patched: WKNIFE1_MASK
+  hex 0000             ; patched: WKNIFE1_DATA_MIRROR
+  hex 0000             ; patched: WKNIFE1_MASK_MIRROR
  dfb $0D,$27,8        ; WKNIFE2: 13×39
-  hex 0000             ; patched
+  hex 0000             ; patched: WKNIFE2_DATA
+  hex 0000             ; patched: WKNIFE2_MASK
+  hex 0000             ; patched: WKNIFE2_DATA_MIRROR
+  hex 0000             ; patched: WKNIFE2_MASK_MIRROR
 
 * Billy-with-pipe walk — 4-frame cycle (BPIPEW1, 2, 3, 2). Same
 * shape as anim_wpipewalk but with Billy's frames. NOT installed
@@ -19282,6 +21248,18 @@ check_punch_hit
  lda anim_ptr
  pha
  lda anim_ptr+1
+ pha
+* Save MASK_ADDR too. start_anim called below on a hit target
+* may overwrite it (compiled targets) or zero it (legacy
+* targets), and update_anims's save_anim_state runs right after
+* check_punch_hit returns — it persists MASK_ADDR → puncher's
+* info+60. Without this restore, a Billy-hits-Williams sequence
+* leaves Billy's info+60 = 0, so next frame his compiled punch
+* renders LEGACY with all-zero data → black background around
+* PUNCH12/22.
+ lda MASK_ADDR
+ pha
+ lda MASK_ADDR+1
  pha
 * Stash puncher's anim_ptr in a scratch — the iteration below
 * overwrites the global anim_ptr with each target's value during
@@ -19997,7 +21975,12 @@ check_punch_hit
 :jloop jmp :loop
 
 :done
-* Restore caller's anim_ptr, info_ptr, and spr_ptr (reverse order)
+* Restore caller's MASK_ADDR, anim_ptr, info_ptr, and spr_ptr
+* in reverse order of the pushes at the top.
+ pla
+ sta MASK_ADDR+1
+ pla
+ sta MASK_ADDR
  pla
  sta anim_ptr+1
  pla
@@ -20689,12 +22672,10 @@ billy_sprite
   hex 2800         ; +46 idle_y
   hex 0000         ; +48 punch_count
   da anim_bfall    ; +50 fall_anim pointer
-  hex 0000         ; +52 mask_addr (compiled inverse-mask companion to
-                   ;     +14 frame_addr; patched by init_level, kept in
-                   ;     sync by advance_walk and :anim_done. NPC slots
-                   ;     use +52/+54 as walk_anim/atk_anim — compiled
-                   ;     dispatch in draw_all gates on controller==1 so
-                   ;     the meaning of +52 stays sprite-type-specific)
+  hex 0000         ; +52 (NPC walk_anim slot — unused for Billy; the
+                   ;     compiled mask_addr now lives at +60 so
+                   ;     load_sprite can read it without colliding
+                   ;     with NPC walk_anim).
   hex 0000         ; +54 (NPC atk_anim slot; unused for the player)
   hex 0200         ; +56 frame_bank — bank where this sprite's pixel
                    ;     data lives. Read by load_sprite into the
@@ -20706,6 +22687,14 @@ billy_sprite
                    ;     idle frame at anim end, so per-anim
                    ;     frame_bank changes (set by start_anim from
                    ;     descriptor flag bit 5) revert correctly.
+  hex 0000         ; +60 active_mask_addr (compiled inverse-mask
+                   ;     companion to +14 frame_addr). Patched by
+                   ;     init_level + load_sprite + start_anim.
+                   ;     Replaces the old +52 mask field.
+  hex 0000         ; +62 idle_mask_addr (NPC compiled-idle source —
+                   ;     unused for Billy: his idle mask flips with
+                   ;     facing via spr_image01_mask / _mirror in
+                   ;     :normal_end's billy branch).
 
 *-------------------------------
 * Globals (used by erase/draw_sprite)

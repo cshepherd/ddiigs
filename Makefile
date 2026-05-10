@@ -26,6 +26,16 @@ out/mission12: src/mission12.s
 	cd src && merlin32 mission12.s
 	mv src/mission12 out/mission12
 
+out/mission13: src/mission13.s
+	mkdir -p out
+	cd src && merlin32 mission13.s
+	mv src/mission13 out/mission13
+
+out/mission14: src/mission14.s
+	mkdir -p out
+	cd src && merlin32 mission14.s
+	mv src/mission14 out/mission14
+
 out/cutscene: src/cutscene.s
 	mkdir -p out
 	cd src && merlin32 cutscene.s
@@ -41,7 +51,7 @@ out/ddii: src/ddii.s
 	cd src && merlin32 ddii.s
 	mv src/ddii out/ddii
 
-$(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.shr assets/mission13.shr assets/mission14.shr assets/mission15.shr assets/mission16.shr assets/mission17.shr assets/mission18.shr assets/mission19.shr assets/mission110.shr assets/mission111.shr assets/mission112.shr assets/mission113.shr assets/mission114.shr out/game out/title out/mission1 out/mission12 out/cutscene out/cutscene1 out/ddii
+$(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.shr assets/mission13.shr assets/mission14.shr assets/mission15.shr assets/mission16.shr assets/mission17.shr assets/mission18.shr assets/mission19.shr assets/mission110.shr assets/mission111.shr assets/mission112.shr assets/mission113.shr assets/mission114.shr out/game out/title out/mission1 out/mission12 out/mission13 out/cutscene out/cutscene1 out/ddii out/mission14
 	mkdir -p out
 	rm -f $(IMGFILE)
 	cadius CREATEVOLUME $(IMGFILE) $(VOLNAME) 800KB --quiet
@@ -99,6 +109,16 @@ $(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.sh
 	cp out/mission12 out/MISSION12\#060000
 	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/MISSION1/ out/MISSION12\#060000 --quiet
 	rm out/MISSION12\#060000
+	# Compiled mission1 sprites (bank $1B) — added to disk and loaded
+	# at startup alongside mission12. ProDOS file name is MISSION13.
+	cp out/mission13 out/MISSION13\#060000
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/MISSION1/ out/MISSION13\#060000 --quiet
+	rm out/MISSION13\#060000
+	# Compiled armed-NPC sprites (bank $1C) — split out from mission13
+	# because the regular + armed sprite set together exceeded 64 KB.
+	cp out/mission14 out/MISSION14\#060000
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/MISSION1/ out/MISSION14\#060000 --quiet
+	rm out/MISSION14\#060000
 	cp out/game out/GAME\#FF2000
 	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/GAME\#FF2000 --quiet
 	rm out/GAME\#FF2000

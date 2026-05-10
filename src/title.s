@@ -535,7 +535,7 @@ toolbox_init
 * _QDStartup
 * NOTE we are hardwiring this buffer address
 * but we did request it and receive it already
- pea $b400             ; dpAddress — 3 pages ($B400-$B6FF) sit just
+ pea $1d00             ; dpAddress — 3 pages ($1D00-$1FFF) sit just
                        ; below RDBUF at $B700. Anything in game.s
                        ; below $B400 is safe from QD II's DP scribbles.
  pea $0000             ; master SCB (320 mode)
