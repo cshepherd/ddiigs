@@ -3962,8 +3962,11 @@ update_npcs
 SCROLL_THRESH = 80    ; player xpos at/over which walking scrolls right
 LEFT_SCROLL_THRESH = 30 ; player xpos at/under which walking scrolls left
 UP_SCROLL_THRESH = 90 ; player ypos at/under which walking-up scrolls
-KICK_BACK_EXT = 10     ; bytes to extend kick hit box opposite Billy's
-                       ; facing so the foot reaches enemies behind him
+KICK_BACK_EXT = 9      ; bytes the back-kick hitbox extends opposite
+                       ; Billy's facing. Hitbox is BEHIND Billy only
+                       ; (NPC xpos < billy_xpos when mirror=0, NPC
+                       ; xpos > billy_xpos when mirror=1). Forward
+                       ; portion of KICK2's natural frame is excluded.
 PLAYFIELD_EDGE = 109   ; rightmost byte position in the 110-byte playfield
 PLAYER_MAX_X = 98      ; rightmost xpos the player can walk to — ~22px inset
                        ; from PLAYFIELD_EDGE so Billy doesn't walk into the
@@ -4240,9 +4243,19 @@ fo_approach
  clc
  adc (info_ptr),y      ; + frame_x = new right edge
  sta chk_xpos
- ldy #56
- lda (info_ptr),y      ; frame_bank low byte
- cmp #$19
+* Burnov-only padding (his 13-wide walk + 23-wide combat
+* sprites need more clearance than Williams/Roper/Linda's
+* 9-wide frames). Detect Burnov via walk_anim == anim_bnwalk
+* — the bank field used to identify him, but now both his
+* compiled walk ($1B) and combat ($1C) banks overlap with
+* other NPCs.
+ ldy #52
+ lda (info_ptr),y
+ cmp #<anim_bnwalk
+ bne :rgt_no_pad
+ ldy #53
+ lda (info_ptr),y
+ cmp #>anim_bnwalk
  bne :rgt_no_pad
  lda chk_xpos
  clc
@@ -4272,9 +4285,14 @@ fo_approach
  sec
  sbc #1
  sta chk_xpos
- ldy #56
- lda (info_ptr),y      ; frame_bank low byte
- cmp #$19
+* Burnov-only padding (same reasoning as the right-edge check).
+ ldy #52
+ lda (info_ptr),y
+ cmp #<anim_bnwalk
+ bne :lft_no_pad
+ ldy #53
+ lda (info_ptr),y
+ cmp #>anim_bnwalk
  bne :lft_no_pad
  lda chk_xpos
  sec
@@ -4341,9 +4359,16 @@ fo_approach
  clc
  adc (info_ptr),y      ; A = proposed_top + frame_y = proposed_bottom
  sta :yp_bottom
- ldy #56
- lda (info_ptr),y      ; frame_bank low byte
- cmp #$19
+* Burnov-only Y cap: keep his 48-tall sprite 10 lines above
+* the normal 200 floor. Detect via walk_anim == anim_bnwalk
+* (bank check no longer works — see right/left padding above).
+ ldy #52
+ lda (info_ptr),y
+ cmp #<anim_bnwalk
+ bne :yd_normal_cap
+ ldy #53
+ lda (info_ptr),y
+ cmp #>anim_bnwalk
  bne :yd_normal_cap
  lda :yp_bottom
  cmp #190
@@ -7778,6 +7803,8 @@ btn_action_jump
  jsr start_anim
  rts
 :baj_normal
+ ldx #SND_JUMP
+ jsr sound_trigger
  lda #<anim_jump
  ldx #>anim_jump
  jsr start_anim
@@ -9160,6 +9187,33 @@ start_anim
  iny
  lda FRAME_ADDR+1
  sta (info_ptr),y
+* NPC right-edge clamp. When an NPC at the right edge of the
+* playable area gets fall_anim'd (or any wider anim), the new
+* frame_x can push xpos + frame_x past PLAYFIELD_EDGE and the
+* sprite renders into the black margin. The fall-trajectory
+* clamp prevents further increase but doesn't decrement the
+* initial overshoot — do that here once at anim install. Skip
+* for Billy (controller=1) since his own movement code already
+* clamps to PLAYER_MAX_X.
+ ldy #22
+ lda (info_ptr),y
+ cmp #$01
+ beq :sa_skip_xclamp
+ ldy #2
+ lda (info_ptr),y      ; xpos
+ ldy #10
+ clc
+ adc (info_ptr),y      ; A = xpos + frame_x = right edge
+ cmp #PLAYFIELD_EDGE
+ bcc :sa_skip_xclamp
+* right_edge >= PLAYFIELD_EDGE → snap xpos = PLAYFIELD_EDGE - frame_x.
+ lda #PLAYFIELD_EDGE
+ ldy #10
+ sec
+ sbc (info_ptr),y      ; A = PLAYFIELD_EDGE - frame_x
+ ldy #2
+ sta (info_ptr),y      ; xpos = clamped
+:sa_skip_xclamp
  ldy #30
  lda #$03
  sta (info_ptr),y
@@ -10819,13 +10873,17 @@ update_anims
  lda anim_ptr+1
  cmp #>anim_kick
  bne :no_punch_hit
-* Back-kick: KICK2 renders Billy's foot opposite his facing so
-* the sprite's natural bounding box doesn't cover enemies behind
-* him. Extend the hit box by KICK_BACK_EXT bytes in the opposite
-* direction before calling the standard punch-hit path, then
-* restore IMAGE01_XPOS / FRAME_X / FRAME_Y afterward. Override
-* FRAME_Y to walk-height (40) so the vertical tolerance in
-* check_punch_hit isn't thrown off by KICK2's shorter 34-row box.
+* Back-kick: KICK2 renders Billy's foot opposite his facing.
+* Replace the hitbox with a BEHIND-only band so the kick can
+* only catch NPCs whose xpos is on Billy's back side, not
+* forward of him. Override FRAME_Y to walk-height (40) so the
+* vertical tolerance in check_punch_hit isn't thrown off by
+* KICK2's shorter 34-row box.
+*
+* mirror=0 (facing right): hitbox = (xpos-EXT)..(xpos-1).
+* mirror=1 (facing left):  hitbox = (xpos+9)..(xpos+8+EXT).
+*   (xpos+9 = Billy's natural walk right edge — start the
+*    behind-band just past his body.)
  lda IMAGE01_XPOS
  sta :kick_saved_xpos
  lda FRAME_X
@@ -10834,10 +10892,11 @@ update_anims
  sta :kick_saved_fy
  lda #40
  sta FRAME_Y
+ lda #KICK_BACK_EXT
+ sta FRAME_X            ; hitbox width = EXT
  lda IMAGE01_MIRROR
- bne :kick_extend_right
-* Mirror=0 (facing right): foot reaches LEFT. Shift xpos left and
-* widen FRAME_X so the box covers xpos-EXT..xpos+FRAME_X.
+ bne :kick_behind_right
+* Mirror=0: hitbox xpos = billy_xpos - EXT (behind to the left).
  lda IMAGE01_XPOS
  sec
  sbc #KICK_BACK_EXT
@@ -10845,17 +10904,14 @@ update_anims
  lda #0
 :kick_xl_ok
  sta IMAGE01_XPOS
- lda FRAME_X
- clc
- adc #KICK_BACK_EXT
- sta FRAME_X
  bra :kick_do_hit
-:kick_extend_right
-* Mirror=1 (facing left): foot reaches RIGHT. Just widen FRAME_X.
- lda FRAME_X
+:kick_behind_right
+* Mirror=1: hitbox xpos = billy_xpos + 9 (behind to the right,
+* just past his standing-frame's right edge).
+ lda IMAGE01_XPOS
  clc
- adc #KICK_BACK_EXT
- sta FRAME_X
+ adc #9
+ sta IMAGE01_XPOS
 :kick_do_hit
  jsr check_punch_hit
  lda :kick_saved_xpos
