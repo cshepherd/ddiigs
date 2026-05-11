@@ -8202,6 +8202,7 @@ btn_action_jump
  dec IMAGE01_YPOS
  lda via_ladder
  beq :up_walkframe
+ dec IMAGE01_YPOS        ; ladder: 2 px/VBL (NES-feel pacing)
  jsr advance_climb
  bra :up_after_anim
 :up_walkframe
@@ -8251,6 +8252,7 @@ btn_action_jump
  inc IMAGE01_YPOS
  lda via_ladder
  beq :down_walkframe
+ inc IMAGE01_YPOS       ; ladder: 2 px/VBL (NES-feel pacing)
  jsr advance_climb
  bra :down_after_anim
 :down_walkframe
