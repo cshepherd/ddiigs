@@ -223,7 +223,7 @@ level_script
 
 ; screen 2
     db OP_WAITX
-    dw $0100            ; wait for player abs_x >= 274 (scr2 Ropers)
+    dw $00F0            ; wait for player abs_x >= 274 (scr2 Ropers)
     db OP_SCRLOCK       ; stuck here
     db OP_NPC           ; Roper near right edge
     dw roper_sprite
