@@ -43,6 +43,7 @@ info_ptr = $E2
          jml _init_mission12           ; $1F/0010
          jml _init_mission13           ; $1F/0014
          jml _init_mission14           ; $1F/0018
+         jml _init_jimmy               ; $1F/001C
 
          PUT engine_externs.s
 
@@ -5260,3 +5261,127 @@ init_armed_compiled
  xce
  mx %11
  rts
+
+*----------------------------------------------------------
+* init_jimmy - Patch the bank-$00 Jimmy cache vars + info-block
+* fields + anim_walk_j descriptor from the sprite-address table
+* in mission1jimmy.s at $1D:$0000.
+*
+* The header at $1D:$0000 is a 2-byte spr_addr_off. The table
+* it points at is 12 sequential `dw <label>` entries (4 per
+* compiled sprite: DATA / MASK / DATA_MIRROR / MASK_MIRROR).
+*----------------------------------------------------------
+ mx %11
+_init_jimmy
+ clc
+ xce                   ; native mode
+ rep $30
+ mx %00
+
+* Read spr_addr_off (the header word at $1D:$0000).
+ lda #$0000
+ sta $F0
+ sep $20
+ lda #$1D
+ sta $F2
+ rep $20
+ ldy #0
+ lda [$F0],y
+ sta $F0               ; $F0/F1 now points at spr_addr_tbl ($1D:nnnn)
+
+* Walk the 12-entry table and write each 2-byte address into
+* its corresponding cache var. Order matches mission1jimmy.s.
+ ldy #0
+ lda [$F0],y
+ sta spr_jimmy01
+ ldy #2
+ lda [$F0],y
+ sta spr_jimmy01_mask
+ ldy #4
+ lda [$F0],y
+ sta spr_jimmy01_data_mir
+ ldy #6
+ lda [$F0],y
+ sta spr_jimmy01_mask_mir
+ ldy #8
+ lda [$F0],y
+ sta spr_jimmy02
+ ldy #10
+ lda [$F0],y
+ sta spr_jimmy02_mask
+ ldy #12
+ lda [$F0],y
+ sta spr_jimmy02_data_mir
+ ldy #14
+ lda [$F0],y
+ sta spr_jimmy02_mask_mir
+ ldy #16
+ lda [$F0],y
+ sta spr_jimmy03
+ ldy #18
+ lda [$F0],y
+ sta spr_jimmy03_mask
+ ldy #20
+ lda [$F0],y
+ sta spr_jimmy03_data_mir
+ ldy #22
+ lda [$F0],y
+ sta spr_jimmy03_mask_mir
+
+* Patch jimmy_sprite info block: frame_addr (+14) and
+* idle_addr (+42) from spr_jimmy01; active_mask_addr (+60)
+* and idle_mask_addr (+62) from spr_jimmy01_mask.
+ lda spr_jimmy01
+ sta jimmy_sprite+14
+ sta jimmy_sprite+42
+ lda spr_jimmy01_mask
+ sta jimmy_sprite+60
+ sta jimmy_sprite+62
+
+* Patch anim_walk_j: 11-byte stride per frame, 4 frames in
+* order JIMMY01, JIMMY02, JIMMY03, JIMMY02. Frame slot offsets
+* relative to descriptor start:
+*   header is 3 bytes; frame 0 starts at +3 with x/y/dur (3B)
+*   then DATA / MASK / DATA_MIRROR / MASK_MIRROR (8B), total 11.
+*
+*   Frame 0 DATA at +6, MASK at +8, DATA_MIRROR +10, MASK_MIRROR +12
+*   Frame 1 DATA at +17, MASK at +19, DATA_MIRROR +21, MASK_MIRROR +23
+*   Frame 2 DATA at +28, MASK at +30, DATA_MIRROR +32, MASK_MIRROR +34
+*   Frame 3 DATA at +39, MASK at +41, DATA_MIRROR +43, MASK_MIRROR +45
+ lda spr_jimmy01
+ sta anim_walk_j+6
+ lda spr_jimmy01_mask
+ sta anim_walk_j+8
+ lda spr_jimmy01_data_mir
+ sta anim_walk_j+10
+ lda spr_jimmy01_mask_mir
+ sta anim_walk_j+12
+ lda spr_jimmy02
+ sta anim_walk_j+17
+ lda spr_jimmy02_mask
+ sta anim_walk_j+19
+ lda spr_jimmy02_data_mir
+ sta anim_walk_j+21
+ lda spr_jimmy02_mask_mir
+ sta anim_walk_j+23
+ lda spr_jimmy03
+ sta anim_walk_j+28
+ lda spr_jimmy03_mask
+ sta anim_walk_j+30
+ lda spr_jimmy03_data_mir
+ sta anim_walk_j+32
+ lda spr_jimmy03_mask_mir
+ sta anim_walk_j+34
+ lda spr_jimmy02
+ sta anim_walk_j+39
+ lda spr_jimmy02_mask
+ sta anim_walk_j+41
+ lda spr_jimmy02_data_mir
+ sta anim_walk_j+43
+ lda spr_jimmy02_mask_mir
+ sta anim_walk_j+45
+
+ sec
+ xce
+ mx %11
+ rtl

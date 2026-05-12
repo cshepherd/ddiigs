@@ -181,6 +181,20 @@ DEBUG_PRINT equ 0
  stz file_dest+1
  jsr load_file
 
+* Load /DDIIGS/MISSION1/MISSION1JIMMY (Jimmy color-shifted sprite
+* data) to bank $1D. init_jimmy walks the sprite-address table at
+* the head of this bank and patches the spr_jimmy0X cache vars in
+* bank $00.
+ lda #<mission1jimmy_path
+ sta file_open+1
+ lda #>mission1jimmy_path
+ sta file_open+2
+ lda #$1D
+ sta file_bank
+ stz file_dest
+ stz file_dest+1
+ jsr load_file
+
 * MISSION12 was already loaded above (before the LOADING screen
 * status text), so loading_str_tbl_addr is set up. Skip a
 * second load here.
@@ -396,6 +410,7 @@ DEBUG_PRINT equ 0
  jsl init_mission12
  jsl init_mission13
  jsl init_mission14
+ jsl init_jimmy
 
  ldx #5
  jsr draw_loading_string
@@ -7360,6 +7375,16 @@ process_input
  stz joy_armed         ; require centered read before accepting deflection
  jsr reset_input_state
  jsr cancel_action_anim
+* Activate Jimmy on Ctrl-J: install anim_walk_j as his anim_ptr
+* and request an initial draw. Idempotent — subsequent Ctrl-J
+* presses just rewrite the same values. Until this fires, his
+* anim_ptr / dirty are 0 so update_anims and draw_all skip him.
+ lda #<anim_walk_j
+ sta jimmy_sprite+24
+ lda #>anim_walk_j
+ sta jimmy_sprite+25
+ lda #$01
+ sta jimmy_sprite+30   ; dirty bit 0 = needs_draw
  lda #$0F              ; white border = joystick mode
  stal $E0C034
  rts
@@ -9053,11 +9078,12 @@ start_anim
 *   bit 3 set → frames in bank $1C (mission14, armed compiled)
 *   bit 6 set → frames in bank $1B (mission13, regular compiled)
 *   bit 5 set → frames in bank $19 (mission12, legacy)
+*   bit 2 set → frames in bank $1D (mission1jimmy, Jimmy player)
 *   else      → frames in bank $02 (mission1)
 * bit 7 (compiled stride) is independent — Billy's compiled anims
 * (anim_jump, anim_bspinkick, anim_bpunched, anim_punch*, etc.)
-* have bit 7 set but bits 3/5/6 clear so their frames stay in
-* bank $02. Precedence is bit 3 > bit 6 > bit 5 > default.
+* have bit 7 set but bits 3/5/6/2 clear so their frames stay in
+* bank $02. Precedence is bit 3 > bit 6 > bit 5 > bit 2 > default.
 * Lets a single sprite straddle banks (e.g. williams_pipe walks
 * with bank-$1C WPIPEWALK frames but falls with bank-$1B
 * anim_wfall). :normal_end restores info+56 from info+58 when the
@@ -9079,8 +9105,15 @@ start_anim
  ldy #2
  lda (anim_ptr),y
  and #$20
- beq :sa_bank2_default
+ beq :sa_chk_1d
  lda #$19
+ bra :sa_set_bank
+:sa_chk_1d
+ ldy #2
+ lda (anim_ptr),y
+ and #$04
+ beq :sa_bank2_default
+ lda #$1D
  bra :sa_set_bank
 :sa_bank2_default
  lda #$02
@@ -10539,9 +10572,8 @@ update_anims
 * walk anims directly without going through start_anim — so on
 * the first frame load after install, frame_bank could still be
 * the *idle*'s bank. Re-applying it here covers both code paths.
-* Dispatch matches start_anim: bit 3 → $1C (mission14), bit 6 →
-* $1B (mission13), bit 5 → $19 (mission12), else $02 (mission1).
-* Precedence: bit 3 > bit 6 > bit 5 > default.
+* Dispatch matches start_anim: bit 3 → $1C, bit 6 → $1B, bit 5 →
+* $19, bit 2 → $1D (Jimmy), else $02. Precedence top-to-bottom.
  ldy #2
  lda (anim_ptr),y     ; flags
  and #$08
@@ -10559,8 +10591,15 @@ update_anims
  ldy #2
  lda (anim_ptr),y
  and #$20
- beq :lf_bank2_default
+ beq :lf_chk_1d
  lda #$19
+ bra :lf_set_bank
+:lf_chk_1d
+ ldy #2
+ lda (anim_ptr),y
+ and #$04
+ beq :lf_bank2_default
+ lda #$1D
  bra :lf_set_bank
 :lf_bank2_default
  lda #$02
@@ -14281,6 +14320,9 @@ mission13_path dfb 26
 mission14_path dfb 26
  asc '/DDIIGS/MISSION1/MISSION14'
 
+mission1jimmy_path dfb 30
+ asc '/DDIIGS/MISSION1/MISSION1JIMMY'
+
 * MISSION1NTP.PAK rather than MISSION1.NTP.PAK because ProDOS
 * limits each filename component to 15 chars.
 m1ntp_path dfb 32
@@ -14314,6 +14356,7 @@ init_level     equ $1F000C
 init_mission12 equ $1F0010
 init_mission13 equ $1F0014
 init_mission14 equ $1F0018
+init_jimmy     equ $1F001C
 
 *----------------------------------------------------------
 * JSL trampolines used by engine.s to call back into bank-$00
@@ -17563,9 +17606,9 @@ path114 dfb 31
 
 * master sprite table
 sprite_table
-  dw billy_sprite       ; player (always first)
+  dw billy_sprite       ; player 1 (always first)
+  dw jimmy_sprite       ; player 2 (co-op)
   hex 0000              ; NPC slots (populated by level script)
-  hex 0000
   hex 0000
   hex 0000
   hex 0000
@@ -17637,6 +17680,84 @@ billy_sprite
                    ;     unused for Billy: his idle mask flips with
                    ;     facing via spr_image01_mask / _mirror in
                    ;     :normal_end's billy branch).
+
+**
+** JIMMY sprite — co-op player 2. Same info-block layout as Billy.
+** All sprite/mask pointers patched by init_jimmy from the bank-$1D
+** Jimmy sprite-address table. controller=0 for now (no input wired
+** up yet); set to $02 when player 2 controls come online.
+**
+jimmy_sprite
+  hex 6400 ; +0  ypos (placed alongside Billy for now)
+  hex 1F00 ; +2  xpos
+  hex 0000 ; +4  mirror (face right)
+  hex 0000 ; +6  unused
+  hex 0500 ; +8  unused
+  hex 0900 ; +10 frame_x (JIMMY01 width)
+  hex 2800 ; +12 frame_y
+  hex 0000 ; +14 frame_addr (patched: JIMMY01_DATA in bank $1D)
+  hex 6600 ; +16 mask color = $66
+  hex 6000 ; +18 maskhi
+  hex 0600 ; +20 masklo
+  hex 0200 ; +22 controller = $02 (player 2 — skipped by update_npcs
+                   ;     and check_punch_hit until Ctrl-J flips
+                   ;     jimmy_active. The Ctrl-J path doesn't have
+                   ;     to touch this byte.)
+  hex 0000 ; +24 anim_ptr = 0 (inert at boot — update_anims walks
+                   ;     past sprites whose anim_ptr is zero, and
+                   ;     draw_all keys off dirty so Jimmy is fully
+                   ;     invisible until Ctrl-J)
+  hex 0000 ; +26 anim_frame
+  hex 0000 ; +28 anim_timer
+  hex 0000 ; +30 dirty = 0 (no draw / no erase)
+  hex 0000 ; +32 prev_ypos = 0
+  hex 0000 ; +34 prev_xpos = 0
+  hex 0000 ; +36 prev_frame_x = 0 (mark_overlapping reads this as
+                   ;     the on-screen "prev rect" width — with it
+                   ;     at 0, the horizontal-overlap test always
+                   ;     rejects Jimmy, so Billy's moves don't set
+                   ;     Jimmy's dirty bit before activation)
+  hex 0000 ; +38 prev_frame_y = 0
+  hex 0000 ; +40 punched_anim (none yet)
+  hex 0000 ; +42 idle_addr (patched: JIMMY01_DATA)
+  hex 0900 ; +44 idle_x
+  hex 2800 ; +46 idle_y
+  hex 0000 ; +48 punch_count
+  hex 0000 ; +50 fall_anim (none yet)
+  hex 0000 ; +52 walk_anim (NPC slot, unused for player)
+  hex 0000 ; +54 atk_anim (NPC slot, unused)
+  hex 1D00 ; +56 frame_bank = $1D (Jimmy data lives in bank $1D)
+  hex 1D00 ; +58 idle_bank = $1D
+  hex 0000 ; +60 active_mask_addr (patched: JIMMY01_MASK)
+  hex 0000 ; +62 idle_mask_addr (patched: JIMMY01_MASK)
+
+* Jimmy walk animation — mirrors anim_walk's structure but with
+* compiled stride (11 bytes/frame). init_jimmy patches each frame
+* slot from the spr_jimmy0X cache vars.
+anim_walk_j
+ dfb 4               ; num_frames
+ dfb $0B             ; max_width (JIMMY03 is widest)
+ dfb $84             ; flags: bit 7 = compiled stride, bit 2 = bank $1D
+ dfb $09,$28,5       ; JIMMY01: 9 wide, 40 tall, 5 VBLs
+  hex 0000             ; patched: spr_jimmy01
+  hex 0000             ; patched: spr_jimmy01_mask
+  hex 0000             ; patched: spr_jimmy01_data_mir
+  hex 0000             ; patched: spr_jimmy01_mask_mir
+ dfb $08,$28,5       ; JIMMY02
+  hex 0000
+  hex 0000
+  hex 0000
+  hex 0000
+ dfb $0B,$28,5       ; JIMMY03
+  hex 0000
+  hex 0000
+  hex 0000
+  hex 0000
+ dfb $08,$28,5       ; JIMMY02 (return)
+  hex 0000
+  hex 0000
+  hex 0000
+  hex 0000
 
 *-------------------------------
 * Globals (used by erase/draw_sprite)
