@@ -8,8 +8,21 @@ package: $(IMGFILE)
 
 out/game: src/game.s
 	mkdir -p out
-	cd src && merlin32 game.s
+	cd src && merlin32 -V game.s
 	mv src/game out/game
+
+# engine.s (scroll/blit pipeline) lives in bank $1F. It references
+# bank-$00 symbols via absolute mode, so we re-extract their post-
+# build addresses from game.s's Merlin32 listing each time game.s
+# is reassembled. engine.s depends on out/game (which produces
+# src/game_Output.txt as a side effect of the -V flag).
+src/engine_externs.s: out/game src/engine_externs.list tools/extract_externs.py
+	python3 tools/extract_externs.py src/game_Output.txt src/engine_externs.list src/engine_externs.s
+
+out/engine: src/engine.s src/engine_externs.s
+	mkdir -p out
+	cd src && merlin32 engine.s
+	mv src/engine out/engine
 
 out/title: src/title.s
 	mkdir -p out
@@ -51,7 +64,7 @@ out/ddii: src/ddii.s
 	cd src && merlin32 ddii.s
 	mv src/ddii out/ddii
 
-$(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.shr assets/mission13.shr assets/mission14.shr assets/mission15.shr assets/mission16.shr assets/mission17.shr assets/mission18.shr assets/mission19.shr assets/mission110.shr assets/mission111.shr assets/mission112.shr assets/mission113.shr assets/mission114.shr out/game out/title out/mission1 out/mission12 out/mission13 out/cutscene out/cutscene1 out/ddii out/mission14
+$(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.shr assets/mission13.shr assets/mission14.shr assets/mission15.shr assets/mission16.shr assets/mission17.shr assets/mission18.shr assets/mission19.shr assets/mission110.shr assets/mission111.shr assets/mission112.shr assets/mission113.shr assets/mission114.shr out/game out/title out/mission1 out/mission12 out/mission13 out/cutscene out/cutscene1 out/ddii out/mission14 out/engine
 	mkdir -p out
 	rm -f $(IMGFILE)
 	cadius CREATEVOLUME $(IMGFILE) $(VOLNAME) 800KB --quiet
@@ -122,6 +135,12 @@ $(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.sh
 	cp out/game out/GAME\#FF2000
 	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/GAME\#FF2000 --quiet
 	rm out/GAME\#FF2000
+	# Bank-$1F engine code (scroll/blit pipeline). Loaded by game.s
+	# at startup to $1F:$0000. Stored at the disk root (not under
+	# /MISSION1/) because it's level-independent.
+	cp out/engine out/ENGINE\#060000
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/ENGINE\#060000 --quiet
+	rm out/ENGINE\#060000
 	cp out/cutscene out/CUTSCENE\#FF2000
 	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/CUTSCENE\#FF2000 --quiet
 	rm out/CUTSCENE\#FF2000
