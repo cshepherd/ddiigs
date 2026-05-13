@@ -878,25 +878,38 @@ _scroll_up
  sta world_offset
  lda pending_snap_buf+1
  sta world_offset+1
-* Billy-tied snap (abs_x + xpos teleport) is what the level
-* script baked in for Billy's climb. When Jimmy is the one
-* climbing, leave Billy where he is and just recompute abs_x
-* against the new world_offset so the invariant (assert_abs_x:
-* abs_x == world_offset + billy.xpos) keeps holding. Also
-* mirror into billy_save_abs_x so swap_out_jimmy restores the
-* new value instead of the stale pre-snap one.
- lda jimmy_active
- bne :ps_jimmy_climber
+* Dispatch by climber (info_ptr): teleport only the climber to
+* pending_snap_buf+4 (the canonical ladder column). The level
+* script authored this column for Billy's climb but it's the
+* ladder regardless of who climbs first. The OTHER player is
+* NOT teleported — they enter the ladder under their own
+* control. abs_x is recomputed against the new world_offset
+* using Billy's actual info+2 so assert_abs_x keeps passing.
+ lda info_ptr
+ cmp #<billy_sprite
+ bne :ps_climber_jimmy
+ lda info_ptr+1
+ cmp #>billy_sprite
+ bne :ps_climber_jimmy
+* Climber = Billy. Apply the full canonical state.
  lda pending_snap_buf+2
  sta abs_x
+ sta billy_save_abs_x
  lda pending_snap_buf+3
  sta abs_x+1
+ sta billy_save_abs_x+1
  lda pending_snap_buf+4
  sta IMAGE01_XPOS
  sta billy_sprite+2
- sta billy_sprite+34   ; prev_xpos = new xpos
+ sta billy_sprite+34
  bra :ps_billy_done
-:ps_jimmy_climber
+:ps_climber_jimmy
+* Climber = Jimmy. Teleport Jimmy; leave Billy in place.
+* abs_x = new_world_offset + Billy's (unchanged) info+2.
+ lda pending_snap_buf+4
+ sta IMAGE01_XPOS
+ sta jimmy_sprite+2
+ sta jimmy_sprite+34
  clc
  lda billy_sprite+2
  adc pending_snap_buf+0

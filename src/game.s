@@ -2292,6 +2292,16 @@ climb_started        dfb 0       ; one-time flag for scr12 climb's scr8
                                   ; first call after OP_UP, cleared at
                                   ; OP_UP fire so each climb runs setup
                                   ; exactly once.
+did_climb_this_frame dfb 0       ; set after :sn_done fires scroll_up so
+                                  ; the second mover's :do_up_on_ladder
+                                  ; doesn't double-scroll. Cleared each
+                                  ; frame at top of process_input.
+billy_climb_pressed  dfb 0       ; set by Billy's :sn_done. Used by the
+                                  ; co-op climb-scroll gate so the scroll
+                                  ; only fires when both players are
+                                  ; pressing up — without it, one
+                                  ; player's press drags the other along.
+jimmy_climb_pressed  dfb 0       ; same idea for Jimmy.
 scroll_up_lbank      dfb $03     ; bank of upper screen's left neighbor
                                   ; (0 = sentinel, skip left-gap fill)
 scroll_up_rbank      dfb $03     ; bank of upper screen's right neighbor
@@ -6340,6 +6350,24 @@ erase_all
  bcc :not_end
  jmp :done
 :not_end
+* Skip inactive Jimmy entirely. mark_overlapping during another
+* sprite's erase (e.g., Billy being punched) sets Jimmy's
+* needs_draw bit when their rects overlap; without this gate
+* the interleaved draw below would reveal him before Ctrl-J.
+* Clear any stray dirty bits so they don't accumulate.
+ lda info_ptr
+ cmp #<jimmy_sprite
+ bne :ea_active_chk_done
+ lda info_ptr+1
+ cmp #>jimmy_sprite
+ bne :ea_active_chk_done
+ lda jimmy_active
+ bne :ea_active_chk_done
+ ldy #30
+ lda #0
+ sta (info_ptr),y
+ jmp :ea_draw_done
+:ea_active_chk_done
 * Check for death sentinel ($FFFF)
  ldy #24
  lda (info_ptr),y     ; anim_ptr low
@@ -6808,7 +6836,25 @@ draw_all
  lda #>sprite_table
  sta spr_ptr+1
 :loop jsr load_sprite
- bcs :done
+ bcc :da_loaded
+ jmp :done
+:da_loaded
+* Skip inactive Jimmy (Ctrl-J not yet pressed). Same gate as the
+* one in erase_all — without this, mark_overlapping setting his
+* draw bit while Billy is punched / falling makes him visible.
+ lda info_ptr
+ cmp #<jimmy_sprite
+ bne :da_active_chk_done
+ lda info_ptr+1
+ cmp #>jimmy_sprite
+ bne :da_active_chk_done
+ lda jimmy_active
+ bne :da_active_chk_done
+ ldy #30
+ lda #0
+ sta (info_ptr),y
+ jmp :skip_draw
+:da_active_chk_done
 * Draw if bit 0 set (needs_draw)
  ldy #30
  lda (info_ptr),y
@@ -6887,9 +6933,10 @@ draw_all
  clc
  adc #2
  sta spr_ptr
- bcc :loop
+ bcc :da_next_iter
  inc spr_ptr+1
- bra :loop
+:da_next_iter
+ jmp :loop
 :done rts
 
 *----------------------------------------------------------
@@ -7420,6 +7467,19 @@ process_input
  beq :pi_not_grabbed
  rts
 :pi_not_grabbed
+* Clear any stale co-op walk-boost so Billy doesn't pick it up
+* before Jimmy's pi_action_dispatch (which is when it's meant
+* to apply). Set later in this frame by the scroll handlers
+* when Billy scrolls and Jimmy is pressing same direction.
+ stz walk_boost_right
+ stz walk_boost_left
+* Same idea for the climb-scroll. did_climb_this_frame goes
+* non-zero after one player's :sn_done fires scroll_up; the
+* second mover's path then skips the actual scroll (but still
+* advances their own climb anim).
+ stz did_climb_this_frame
+ stz billy_climb_pressed
+ stz jimmy_climb_pressed
 * Snapshot last frame's kb_held → kb_held_prev so the action
 * dispatch below can edge-detect just-pressed buttons.
  ldx #15
@@ -8187,6 +8247,13 @@ btn_action_jump
  bcc :do_up_on_ladder   ; on ladder — continue
  jmp :up_walk           ; not on ladder — normal walk
 :do_up_on_ladder
+* The snap-to-ladder + advance_climb + save_sprite below run
+* unconditionally so a player on the ladder always gets centered
+* and animated. The world-scroll itself is co-op-gated at
+* :sn_done so it only fires when the OTHER player is also on
+* the ladder, otherwise the climber "treads in place" until the
+* partner catches up.
+:do_up_on_ladder_dbg
 * DEBUG: 'US' = up-scroll fired at current ypos
  do DEBUG_PRINT
  lda #$D5              ; 'U'
@@ -8335,11 +8402,72 @@ btn_action_jump
  beq :sn_done
  jmp :sn_scan
 :sn_done
-* Scroll world up by 4 rows with climbing animation
+* Climb anim + save state — always runs, so the climber's
+* sprite cycles through BCLIMB1/2 (or JCLIMB1/2) every frame
+* they press up, even if the world isn't scrolling.
  jsr advance_climb
  jsr save_sprite
+* Set this frame's "pressed climb" flag for the current player.
+* The gate below uses both players' flags to decide whether the
+* scroll fires.
+ lda info_ptr
+ cmp #<billy_sprite
+ bne :sn_flag_jimmy
+ lda info_ptr+1
+ cmp #>billy_sprite
+ bne :sn_flag_jimmy
+ lda #1
+ sta billy_climb_pressed
+ bra :sn_flag_done
+:sn_flag_jimmy
+ lda #1
+ sta jimmy_climb_pressed
+:sn_flag_done
+* Co-op gate. Single-player Billy bypasses entirely. With Jimmy
+* active the rule is: scroll fires if BOTH pressed climb this
+* frame, OR if OTHER has already ascended past the ladder floor
+* (their info+0 < UP_SCROLL_THRESH — meaning they're up on the
+* ladder / upper screen, so a solo climb won't leave them
+* behind). Otherwise OTHER is still at the floor below and the
+* scroll would drag them up — block.
+ lda jimmy_active
+ beq :sn_do_scroll
+ lda info_ptr
+ cmp #<billy_sprite
+ bne :sn_other_is_billy
+ lda info_ptr+1
+ cmp #>billy_sprite
+ bne :sn_other_is_billy
+* Current = Billy → OTHER = Jimmy.
+ lda jimmy_climb_pressed
+ ldx jimmy_sprite+0
+ bra :sn_other_state
+:sn_other_is_billy
+* Current = Jimmy → OTHER = Billy.
+ lda billy_climb_pressed
+ ldx billy_sprite+0
+:sn_other_state
+* A = OTHER's pressed flag, X = OTHER's screen ypos.
+ bne :sn_do_scroll                ; both pressing → scroll
+* OTHER didn't press. Did they already ascend?
+ cpx #UP_SCROLL_THRESH
+ bcs :sn_skip_scroll              ; still at floor → block (drag)
+:sn_do_scroll
+* Only the first mover this frame fires the world-scroll.
+ lda did_climb_this_frame
+ bne :sn_skip_scroll
  jsl scroll_up
  jsr load_sprite
+ lda #1
+ sta did_climb_this_frame
+* Mark the OTHER player dirty so erase_all + draw_all repaint
+* them after scroll_up's fast_blit_18_01 wiped bank $01.
+ lda jimmy_active
+ beq :sn_done_no_other
+ jsr co_op_mark_other_dirty
+:sn_done_no_other
+ rts
+:sn_skip_scroll
  rts
 :sn_wx     ds 2
 :sn_cnt    dfb 0
@@ -8503,13 +8631,22 @@ btn_action_jump
 :dl_not_climb
 * If at left scroll threshold AND scroll_left enabled AND
 * there's a screen to the left, scroll. Otherwise walk.
+* Branches to :left_walk are out of 8-bit range now that the
+* co-op helpers expanded the scroll body — invert each test
+* and JMP to a trampoline.
  lda scroll_left_enabled
- beq :left_walk
+ bne :dl_chk_screen
+ jmp :left_walk
+:dl_chk_screen
  lda current_screen
- beq :left_walk        ; on screen 0, no left source
+ bne :dl_chk_thresh
+ jmp :left_walk        ; on screen 0, no left source
+:dl_chk_thresh
  lda IMAGE01_XPOS
  cmp #LEFT_SCROLL_THRESH
- bcs :left_walk        ; xpos > threshold, walk
+ bcc :dl_chk_clamp
+ jmp :left_walk        ; xpos > threshold, walk
+:dl_chk_clamp
 * Script clamp: reject scroll when wo-4 would fall below
 * scroll_min_wo. 16-bit compare: (wo - 4) vs scroll_min_wo.
  lda world_offset
@@ -8519,10 +8656,13 @@ btn_action_jump
  lda world_offset+1
  sbc #0                ; high byte of (wo-4) in A
  cmp scroll_min_wo+1
- bcc :left_walk        ; (wo-4) < min → walk instead
- bne :left_scroll_ok   ; (wo-4) high > min high → scroll ok
+ bcs :dl_chk_eq
+ jmp :left_walk        ; (wo-4) < min → walk
+:dl_chk_eq
+ bne :left_scroll_ok   ; (wo-4) high > min high → ok
  cpx scroll_min_wo
- bcc :left_walk        ; (wo-4) low < min low → walk
+ bcs :left_scroll_ok
+ jmp :left_walk        ; (wo-4) low < min low → walk
 :left_scroll_ok
 * Co-op right-clamp: a left-scroll shifts the other player's
 * xpos RIGHT by 4 to keep them anchored to the same world
@@ -8561,27 +8701,74 @@ btn_action_jump
  sta world_offset+1
 * Co-op: shift the OTHER player's xpos RIGHT by 4 so their
 * world position stays fixed while the scroller anchors at
-* the left edge.
+* the left edge. If the OTHER is also pressing left, "carry"
+* them along — see :rso_curr_jimmy_std for the explanation.
  lda jimmy_active
  beq :lso_done
+ lda info_ptr
+ cmp #<billy_sprite
+ bne :lso_curr_jimmy
+ lda info_ptr+1
+ cmp #>billy_sprite
+ bne :lso_curr_jimmy
+ jsr co_op_shift_other_right
+ jsr co_op_other_pressing_left
+ bcc :lso_done
+ lda #4
+ sta walk_boost_left
+ bra :lso_done
+:lso_curr_jimmy
+ jsr co_op_other_pressing_left
+ bcc :lso_curr_jimmy_std
+ jsr co_op_carry_billy_right
+ bra :lso_done
+:lso_curr_jimmy_std
  jsr co_op_shift_other_right
 :lso_done
  bra :finish_left
 :left_walk
+* Co-op walk boost: if a scroll-left this frame queued a boost
+* and we're pressing left, step by 4 instead of 1 so we keep
+* up with the scroll's world advance.
+ lda walk_boost_left
+ bne :lw_boosted
+* Normal step: xpos -= 1.
  lda IMAGE01_XPOS
  cmp #2
  bcc :skip_left        ; already at minimum (1)
  sec
  sbc #1                ; proposed new xpos
  jsr check_x_bounds_walk_left
- bcs :skip_left        ; bounds (curr ∩ left-neighbor) reject this X
+ bcs :skip_left        ; bounds reject
  dec IMAGE01_XPOS
-* Decrement absolute X (16-bit)
  lda abs_x
  bne :dec_lo
  dec abs_x+1
 :dec_lo
  dec abs_x
+ bra :skip_left
+:lw_boosted
+* Boosted step: xpos -= 4 to match the scroll. Consume the
+* boost so it only fires once.
+ stz walk_boost_left
+ lda IMAGE01_XPOS
+ cmp #5
+ bcc :skip_left        ; not enough room to step -4
+ sec
+ sbc #4                ; proposed new xpos
+ jsr check_x_bounds_walk_left
+ bcs :skip_left
+ sec
+ lda IMAGE01_XPOS
+ sbc #4
+ sta IMAGE01_XPOS
+ sec
+ lda abs_x
+ sbc #4
+ sta abs_x
+ lda abs_x+1
+ sbc #0
+ sta abs_x+1
 :skip_left
 :finish_left
  lda #$01
@@ -8611,11 +8798,17 @@ btn_action_jump
 :dr_not_climb
 * If at scroll threshold AND scrolling enabled, scroll world.
 * If scroll disabled, walk normally up to the playfield edge.
+* Branches to :walk_right are out of 8-bit range now that the
+* co-op helpers expanded the scroll body — invert + JMP.
  lda scroll_right_enabled
- beq :walk_right       ; scroll disabled — walk to edge
+ bne :dr_chk_thresh
+ jmp :walk_right       ; scroll disabled — walk to edge
+:dr_chk_thresh
  lda IMAGE01_XPOS
  cmp #SCROLL_THRESH
- bcc :walk_right       ; xpos < threshold, walk
+ bcs :dr_chk_clamp
+ jmp :walk_right       ; xpos < threshold, walk
+:dr_chk_clamp
 * Script clamp: reject scroll when wo+4 would exceed scroll_max_wo.
 * 16-bit compare: scroll_max_wo vs (wo + 4).
  lda world_offset
@@ -8626,11 +8819,13 @@ btn_action_jump
  adc #0                ; high byte of (wo+4) in A
  cmp scroll_max_wo+1
  bcc :right_scroll_ok  ; (wo+4) high < max high → scroll ok
- bne :walk_right       ; (wo+4) high > max → walk
+ beq :dr_chk_low
+ jmp :walk_right       ; (wo+4) high > max → walk
+:dr_chk_low
  cpx scroll_max_wo
  bcc :right_scroll_ok  ; (wo+4) low < max low → ok
  beq :right_scroll_ok  ; equal → ok (reaching exactly max)
- bcs :walk_right       ; (wo+4) low > max low → walk
+ jmp :walk_right       ; (wo+4) low > max low → walk
 :right_scroll_ok
 * Co-op left-clamp: if Jimmy is active and the OTHER player is
 * within 4 px of xpos=0, a 4-byte right-scroll would push them
@@ -8667,24 +8862,77 @@ btn_action_jump
 * Co-op: shift the OTHER player's xpos left by 4 so their world
 * position stays fixed while the scroller anchors at the right
 * edge. Marks them dirty so erase_all + draw_all rebuild the
-* shifted sprite next frame.
+* shifted sprite next frame. If the OTHER player is also
+* pressing right, instead "carry" them along so they advance
+* with the scroll: walk_boost when Jimmy is the other (consumed
+* by his upcoming pi_action_dispatch), or retroactive carry on
+* Billy when he's the other (his pi_action_dispatch already ran).
  lda jimmy_active
  beq :rso_done
+ lda info_ptr
+ cmp #<billy_sprite
+ bne :rso_curr_jimmy
+ lda info_ptr+1
+ cmp #>billy_sprite
+ bne :rso_curr_jimmy
+* Current = Billy → other = Jimmy. Standard shift, then queue
+* walk_boost so Jimmy walks +4 instead of +1 if pressing right.
+ jsr co_op_shift_other_left
+ jsr co_op_other_pressing_right
+ bcc :rso_done
+ lda #4
+ sta walk_boost_right
+ bra :rso_done
+:rso_curr_jimmy
+* Current = Jimmy → other = Billy. Billy already walked. If he's
+* pressing right, apply retroactive carry. Else standard shift.
+ jsr co_op_other_pressing_right
+ bcc :rso_curr_jimmy_std
+ jsr co_op_carry_billy_left
+ bra :rso_done
+:rso_curr_jimmy_std
  jsr co_op_shift_other_left
 :rso_done
  bra :finish_right
 :walk_right
+* Co-op walk boost: if a scroll-right this frame queued a boost
+* and we're pressing right, step by 4 instead of 1.
+ lda walk_boost_right
+ bne :wr_boosted
+* Normal step: xpos += 1.
  lda IMAGE01_XPOS
  cmp #PLAYER_MAX_X
- bcs :clamp_right      ; at right edge of playfield
+ bcs :clamp_right
  clc
  adc #1                ; proposed new xpos
  jsr check_x_bounds_walk_right
- bcs :clamp_right      ; bounds (curr ∩ right-neighbor) reject this X
+ bcs :clamp_right
  inc IMAGE01_XPOS
  inc abs_x
  bne :finish_right
  inc abs_x+1
+ bra :finish_right
+:wr_boosted
+* Boosted step: xpos += 4. Consume the boost.
+ stz walk_boost_right
+ lda IMAGE01_XPOS
+ clc
+ adc #4
+ cmp #PLAYER_MAX_X+1
+ bcs :clamp_right      ; would overshoot the right edge
+ jsr check_x_bounds_walk_right
+ bcs :clamp_right
+ lda IMAGE01_XPOS
+ clc
+ adc #4
+ sta IMAGE01_XPOS
+ clc
+ lda abs_x
+ adc #4
+ sta abs_x
+ lda abs_x+1
+ adc #0
+ sta abs_x+1
  bra :finish_right
 :clamp_right
 * At edge — just face right, no movement
@@ -8820,6 +9068,219 @@ co_op_shift_other_right
  clc
  adc #4
  sta billy_sprite+2
+ lda billy_sprite+30
+ ora #$03
+ sta billy_sprite+30
+ rts
+
+*----------------------------------------------------------
+* co_op_other_pressing_right / co_op_other_pressing_left
+*
+* Returns C=1 if the OTHER player (the one NOT currently being
+* processed via info_ptr) is BOTH free to walk (no action anim)
+* AND pressing the given direction this frame.
+*
+* Used by scroll handlers to decide whether to "carry" the
+* other player along with the scroll. Otherwise the scroller
+* pulls ahead by 3 bytes per scroll tick (walk +1, shift -4).
+*
+* Billy uses keyboard ('A'/'D'); Jimmy uses joystick (X axis).
+* GetJoyXY is gated on joy_armed so a stuck KEGS axis doesn't
+* force a false-positive boost.
+*----------------------------------------------------------
+co_op_other_pressing_right
+ lda info_ptr
+ cmp #<billy_sprite
+ bne :copr_curr_jimmy
+ lda info_ptr+1
+ cmp #>billy_sprite
+ bne :copr_curr_jimmy
+* Current = Billy → other = Jimmy. Skip if Jimmy is anim-blocked.
+ lda jimmy_sprite+24
+ ora jimmy_sprite+25
+ bne :copr_no
+ lda joy_armed
+ beq :copr_no
+ jsr GetJoyXY            ; X = JoyX, Y = JoyY
+ cpx #JOY_DEAD_HI+1
+ bcc :copr_no
+ sec
+ rts
+:copr_curr_jimmy
+* Current = Jimmy → other = Billy. Skip if Billy is anim-blocked.
+ lda billy_sprite+24
+ ora billy_sprite+25
+ bne :copr_no
+ lda #ADB_KEY_D
+ jsr key_held
+ beq :copr_no
+ sec
+ rts
+:copr_no
+ clc
+ rts
+
+co_op_other_pressing_left
+ lda info_ptr
+ cmp #<billy_sprite
+ bne :copl_curr_jimmy
+ lda info_ptr+1
+ cmp #>billy_sprite
+ bne :copl_curr_jimmy
+ lda jimmy_sprite+24
+ ora jimmy_sprite+25
+ bne :copl_no
+ lda joy_armed
+ beq :copl_no
+ jsr GetJoyXY
+ cpx #JOY_DEAD_LO
+ bcs :copl_no            ; not past left deadzone
+ sec
+ rts
+:copl_curr_jimmy
+ lda billy_sprite+24
+ ora billy_sprite+25
+ bne :copl_no
+ lda #ADB_KEY_A
+ jsr key_held
+ beq :copl_no
+ sec
+ rts
+:copl_no
+ clc
+ rts
+
+*----------------------------------------------------------
+* co_op_carry_billy_left - Used when Jimmy scrolls right AND
+* Billy is pressing right. Replaces the standard
+* co_op_shift_other_left's shift-Billy-left behavior with a
+* "carry" that keeps Billy advancing with the scroll instead
+* of being left behind.
+*
+* Standard shift would set Billy.info+34 = pre-scroll info+2,
+* info+2 = info+2 - 4, leaving Billy 4 bytes behind in screen
+* coordinates (same world position). The carry instead:
+*
+*   info+2     = old info+34  (pre-walk-this-frame xpos)
+*   info+34    = old info+34 - 4  (post-scroll-shift ghost target)
+*
+* Renderer erases at the ghost target (where bank $18's shift
+* left Billy's pre-scroll pixels) and draws at info+2. Net Billy
+* world delta: +4, matching Jimmy's scroll. Billy's own walk
+* this frame (if any) is overwritten — accepted because the
+* scroll boost is more important than the 1-byte walk delta.
+*----------------------------------------------------------
+co_op_carry_billy_left
+ lda billy_sprite+34
+ sta billy_sprite+2
+ sec
+ sbc #4
+ sta billy_sprite+34
+ lda billy_sprite+30
+ ora #$03
+ sta billy_sprite+30
+ rts
+
+*----------------------------------------------------------
+* co_op_carry_billy_right - Mirror of co_op_carry_billy_left
+* for left-scroll. Bank $18's shift-right leaves Billy's
+* pre-scroll pixels 4 bytes to the RIGHT of his old position,
+* so the ghost target is info+34 + 4 (not - 4).
+*----------------------------------------------------------
+co_op_carry_billy_right
+ lda billy_sprite+34
+ sta billy_sprite+2
+ clc
+ adc #4
+ sta billy_sprite+34
+ lda billy_sprite+30
+ ora #$03
+ sta billy_sprite+30
+ rts
+
+*----------------------------------------------------------
+* co_op_other_on_ladder - Returns C=0 if the OTHER player's
+* xpos overlaps a ladder's x-range. Y is ignored.
+*
+* Why ignore y: the climbing player has just stepped onto the
+* ladder y-range (info+0 < y_bottom), but the other player is
+* usually still at the floor (info+0 well below the ladder's
+* y_bottom = 68 in mission1 vs floor at ~160). Including y in
+* the gate would block the climb forever unless both happened
+* to be at the same row — which is what the user reported:
+* "couple frames before he gets stuck, the same is true of
+* billy." The snap teleport pulls both xpos onto the ladder
+* column, and scroll_up carries the other player along
+* visually (their info+0 stays, world shifts under them).
+*
+* Mission1 caveat: ladder y_top = 0 for all 3 ladders, so
+* passing prop_y = 0 always satisfies check_ladder's y check
+* without bypassing it. Future levels with y_top > 0 would
+* need a dedicated x-only ladder scan.
+*----------------------------------------------------------
+co_op_other_on_ladder
+ lda chk_xpos
+ pha
+ lda anim_ptr
+ pha
+ lda anim_ptr+1
+ pha
+ lda info_ptr
+ cmp #<billy_sprite
+ bne :col_curr_jimmy
+ lda info_ptr+1
+ cmp #>billy_sprite
+ bne :col_curr_jimmy
+* Current = Billy → other = Jimmy.
+ lda jimmy_sprite+2
+ sta chk_xpos
+ bra :col_check
+:col_curr_jimmy
+* Current = Jimmy → other = Billy.
+ lda billy_sprite+2
+ sta chk_xpos
+:col_check
+ lda #0                  ; prop_y = 0 (within y_top..y_bottom for
+                         ; all mission1 ladders since y_top = 0).
+ jsr check_ladder        ; C=0 if on ladder, C=1 otherwise
+ php
+ pla
+ sta :col_flags
+ pla
+ sta anim_ptr+1
+ pla
+ sta anim_ptr
+ pla
+ sta chk_xpos
+ lda :col_flags
+ pha
+ plp
+ rts
+:col_flags dfb 0
+
+*----------------------------------------------------------
+* co_op_mark_other_dirty - Set bit 0 + bit 1 (needs_draw +
+* needs_erase) on the OTHER player's info+30. Used right after
+* a climb-scroll so the next render restores them — scroll_up's
+* fast_blit_18_01 just replaced bank $01 with the shifted bank
+* $18 bg, wiping the other player off the visible playfield.
+*
+* Their info+0/+2 are unchanged, so info+32/+34 from last frame
+* (or this frame's earlier save_sprite) point at the right erase
+* rect. We just need them dirty so erase_all + draw_all fire.
+*----------------------------------------------------------
+co_op_mark_other_dirty
+ lda info_ptr
+ cmp #<billy_sprite
+ bne :cmod_curr_jimmy
+ lda info_ptr+1
+ cmp #>billy_sprite
+ bne :cmod_curr_jimmy
+ lda jimmy_sprite+30
+ ora #$03
+ sta jimmy_sprite+30
+ rts
+:cmod_curr_jimmy
  lda billy_sprite+30
  ora #$03
  sta billy_sprite+30
@@ -9575,6 +10036,16 @@ jump_x_toggle dfb 0    ; flips each VBL during anim_jump's bit-0
                        ; X-advance step. Halves the horizontal jump
                        ; distance: xpos / abs_x advance only on the
                        ; ticks where the toggle flips to 0.
+
+* Co-op walk boost. Set non-zero (= step magnitude) by a scroll
+* handler when the OTHER player is pressing same direction as
+* the scroll. Their walk handler reads it instead of the default
+* +1, then clears it. Lets the non-scrolling player advance at
+* scroll speed (+4) instead of falling behind by 3 per tick.
+* Cleared at top of process_input each frame so stale boost
+* doesn't fire on a future walk.
+walk_boost_right dfb 0
+walk_boost_left  dfb 0
 
 *----------------------------------------------------------
 * advance_climb - Set climbing frame (BCLIMB1/BCLIMB2),
@@ -17274,7 +17745,19 @@ kill_objects
  lda (info_ptr),y       ; controller
  beq :ko_skip           ; $00 = NPC, keep
  cmp #$01
- beq :ko_skip           ; $01 = player, keep
+ beq :ko_skip           ; $01 = Billy, keep
+ cmp #$02
+ bne :ko_kill_item
+* controller=$02 is shared by Jimmy AND dropped items. Pointer-
+* match against jimmy_sprite so OP_KILLOBJ only wipes items, not
+* the second player.
+ lda info_ptr
+ cmp #<jimmy_sprite
+ bne :ko_kill_item
+ lda info_ptr+1
+ cmp #>jimmy_sprite
+ beq :ko_skip           ; Jimmy → keep
+:ko_kill_item
 * Item: stamp $FFFF into anim_ptr to flag for erase/removal.
  lda #$FF
  ldy #24
@@ -17875,15 +18358,23 @@ check_punch_hit
 * below is short-circuited.
 *
 * Same spot enforces the friendly-fire gate one more time as a
-* belt-and-braces check: if target is Billy and puncher is a
+* belt-and-braces check: if target is a player and puncher is a
 * player (puncher_ctrl != 0), only let the hit register when
-* friendly_fire is non-zero. Without this, anything that bypasses
-* the controller filter above (e.g. future special-cased hit
-* paths) would still get caught here.
+* friendly_fire is non-zero. god_mode protects both players.
  ldy #22
  lda (info_ptr),y
  cmp #$01
- bne :god_skip          ; target isn't Billy — gates irrelevant
+ beq :god_check         ; target = Billy
+ cmp #$02
+ bne :god_skip          ; not a player target (NPC or unknown)
+* controller=$02 covers Jimmy AND dropped items. Disambiguate.
+ lda info_ptr
+ cmp #<jimmy_sprite
+ bne :god_skip
+ lda info_ptr+1
+ cmp #>jimmy_sprite
+ bne :god_skip
+:god_check
  lda :puncher_ctrl
  beq :hit_ff_done       ; NPC puncher → no FF gating
  lda friendly_fire
@@ -17892,7 +18383,7 @@ check_punch_hit
 :hit_ff_done
  lda god_mode
  beq :god_skip
- jmp :advance           ; god_mode on + target=Billy → no hit
+ jmp :advance           ; god_mode on + target=player → no hit
 :god_skip
 
 * DEBUG: 'HT' = bbox check passed, about to check special-case
@@ -17979,13 +18470,23 @@ check_punch_hit
  jmp :done
 :hit_normal
 
-* Hit! Damage = 3 if puncher is mid-uppercut, mid-pipeswing, or
-* mid-maceswing; else 1. All three are forced-fall attacks.
+* Hit! Damage = 3 for forced-fall attacks (uppercut, pipeswing,
+* maceswing, spin-kick, lmace) regardless of which player did it.
+* Else damage = 1.
  lda :puncher_anim_lo
  cmp #<anim_uppercut
- bne :hit_chk_pipe
+ bne :hit_chk_juc
  lda :puncher_anim_hi
  cmp #>anim_uppercut
+ bne :hit_chk_juc
+ lda #3
+ bra :hit_dmg_done
+:hit_chk_juc
+ lda :puncher_anim_lo
+ cmp #<anim_juppercut
+ bne :hit_chk_pipe
+ lda :puncher_anim_hi
+ cmp #>anim_juppercut
  bne :hit_chk_pipe
  lda #3
  bra :hit_dmg_done
@@ -18010,9 +18511,18 @@ check_punch_hit
 :hit_chk_spin
  lda :puncher_anim_lo
  cmp #<anim_bspinkick
- bne :hit_chk_lmace
+ bne :hit_chk_jspin
  lda :puncher_anim_hi
  cmp #>anim_bspinkick
+ bne :hit_chk_jspin
+ lda #3
+ bra :hit_dmg_done
+:hit_chk_jspin
+ lda :puncher_anim_lo
+ cmp #<anim_jbspinkick
+ bne :hit_chk_lmace
+ lda :puncher_anim_hi
+ cmp #>anim_jbspinkick
  bne :hit_chk_lmace
  lda #3
  bra :hit_dmg_done
@@ -18066,12 +18576,20 @@ check_punch_hit
 ; ora :tmp
 ; stal $E0C034
 * Check if punch_count triggers a fall (3 or 6) — or force fall
-* immediately for any of the three damage-3 attacks.
+* immediately for any of the damage-3 forced-fall attacks.
  lda :puncher_anim_lo
  cmp #<anim_uppercut
- bne :hit_chk2_pipe
+ bne :hit_chk2_juc
  lda :puncher_anim_hi
  cmp #>anim_uppercut
+ bne :hit_chk2_juc
+ jmp :use_fall
+:hit_chk2_juc
+ lda :puncher_anim_lo
+ cmp #<anim_juppercut
+ bne :hit_chk2_pipe
+ lda :puncher_anim_hi
+ cmp #>anim_juppercut
  bne :hit_chk2_pipe
  jmp :use_fall
 :hit_chk2_pipe
@@ -18093,9 +18611,17 @@ check_punch_hit
 :hit_chk2_spin
  lda :puncher_anim_lo
  cmp #<anim_bspinkick
- bne :hit_chk2_lmace
+ bne :hit_chk2_jspin
  lda :puncher_anim_hi
  cmp #>anim_bspinkick
+ bne :hit_chk2_jspin
+ jmp :use_fall
+:hit_chk2_jspin
+ lda :puncher_anim_lo
+ cmp #<anim_jbspinkick
+ bne :hit_chk2_lmace
+ lda :puncher_anim_hi
+ cmp #>anim_jbspinkick
  bne :hit_chk2_lmace
  jmp :use_fall
 :hit_chk2_lmace
