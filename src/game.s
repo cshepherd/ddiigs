@@ -1394,16 +1394,18 @@ run_script
 :wx_wait_rts rts
 
 :check_waitx
-* Check if player absolute X >= threshold (16-bit compare)
- lda abs_x+1
+* Compare rightmost player's world X against threshold (16-bit).
+* script_x = max(billy_world, jimmy_world) when co-op, else abs_x.
+ jsr compute_script_x
+ lda script_x+1
  cmp script_wait_val+1
  bcc :wx_wait_rts       ; not yet (high byte less)
  bne :waitx_done        ; high byte greater — done
- lda abs_x
+ lda script_x
  cmp script_wait_val
  bcc :wx_wait_rts       ; low byte less
 :waitx_done
-* DEBUG: 'WX xxxx=tttt' — abs_x vs threshold at the moment the op fires.
+* DEBUG: 'WX xxxx=tttt' — script_x vs threshold at fire.
  do DEBUG_PRINT
  lda #$D7              ; 'W'
  jsr dbg_print_char
@@ -1411,9 +1413,9 @@ run_script
  jsr dbg_print_char
  lda #$A0
  jsr dbg_print_char
- lda abs_x+1
+ lda script_x+1
  jsr dbg_print_hex8
- lda abs_x
+ lda script_x
  jsr dbg_print_hex8
  lda #$BD              ; '='
  jsr dbg_print_char
@@ -1428,16 +1430,19 @@ run_script
  jmp :exec_loop         ; condition met, resume executing
 
 :check_waitxrev
-* Check if player absolute X <= threshold (16-bit compare)
+* Compare rightmost player's world X against threshold (16-bit).
+* "rightmost <= threshold" means BOTH players have retreated past
+* the threshold — the right condition for a retreat-gated event.
+ jsr compute_script_x
  lda script_wait_val+1
- cmp abs_x+1
- bcc :wx_wait_rts       ; threshold_hi < abs_hi → abs still greater
- bne :waitxrev_done     ; threshold_hi > abs_hi → done
+ cmp script_x+1
+ bcc :wx_wait_rts       ; threshold_hi < script_hi → still greater
+ bne :waitxrev_done     ; threshold_hi > script_hi → done
  lda script_wait_val
- cmp abs_x
- bcc :wx_wait_rts       ; threshold_lo < abs_lo → still greater
+ cmp script_x
+ bcc :wx_wait_rts       ; threshold_lo < script_lo → still greater
 :waitxrev_done
-* DEBUG: 'WR xxxx=tttt' — abs_x vs threshold at the moment the op fires.
+* DEBUG: 'WR xxxx=tttt' — script_x vs threshold at fire.
  do DEBUG_PRINT
  lda #$D7              ; 'W'
  jsr dbg_print_char
@@ -1445,9 +1450,9 @@ run_script
  jsr dbg_print_char
  lda #$A0
  jsr dbg_print_char
- lda abs_x+1
+ lda script_x+1
  jsr dbg_print_hex8
- lda abs_x
+ lda script_x
  jsr dbg_print_hex8
  lda #$BD              ; '='
  jsr dbg_print_char
@@ -3021,6 +3026,47 @@ PAUSE_BW     = 26             ; erase rect width  (bytes = 52 px)
 PAUSE_BH     = 16             ; erase rect height (rows)
 
 pause_str ASC 'PAUSED',00
+
+*----------------------------------------------------------
+* compute_script_x - Stash the world-rightmost player position
+* into script_x. When Jimmy is inactive this is just abs_x.
+* When co-op is on, it's max(billy_world, jimmy_world) where
+* jimmy_world = world_offset + jimmy.xpos. OP_WAITX/OP_WAITXREV
+* compare against this so either player crossing the threshold
+* satisfies the wait, regardless of which one is doing the
+* scrolling. (abs_x stays Billy-tied so assert_abs_x — invariant
+* abs_x == world_offset + billy.xpos — keeps passing.)
+*----------------------------------------------------------
+compute_script_x
+ lda abs_x
+ sta script_x
+ lda abs_x+1
+ sta script_x+1
+ lda jimmy_active
+ beq :csx_done
+ clc
+ lda jimmy_sprite+2
+ adc world_offset
+ sta :csx_jwp
+ lda #0
+ adc world_offset+1
+ sta :csx_jwp+1
+ lda :csx_jwp+1
+ cmp script_x+1
+ bcc :csx_done
+ bne :csx_use_jwp
+ lda :csx_jwp
+ cmp script_x
+ bcc :csx_done
+ beq :csx_done
+:csx_use_jwp
+ lda :csx_jwp
+ sta script_x
+ lda :csx_jwp+1
+ sta script_x+1
+:csx_done
+ rts
+:csx_jwp ds 2
 
 *----------------------------------------------------------
 * check_pause - If ESC is in the keyboard register, toggle the
@@ -8478,6 +8524,18 @@ btn_action_jump
  cpx scroll_min_wo
  bcc :left_walk        ; (wo-4) low < min low → walk
 :left_scroll_ok
+* Co-op right-clamp: a left-scroll shifts the other player's
+* xpos RIGHT by 4 to keep them anchored to the same world
+* position. If their right edge (xpos + frame_x) would push
+* past PLAYER_MAX_X, walk instead.
+ lda jimmy_active
+ beq :lso_no_other
+ jsr co_op_other_xpos    ; A = other player's xpos
+ clc
+ adc #4                  ; +4 (post-scroll xpos)
+ cmp #PLAYER_MAX_X+1
+ bcs :left_walk          ; other would go past PLAYER_MAX_X
+:lso_no_other
 * Scroll world LEFT by 4 bytes
  jsr save_sprite
  jsl scroll_left
@@ -8501,6 +8559,13 @@ btn_action_jump
  lda world_offset+1
  sbc #0
  sta world_offset+1
+* Co-op: shift the OTHER player's xpos RIGHT by 4 so their
+* world position stays fixed while the scroller anchors at
+* the left edge.
+ lda jimmy_active
+ beq :lso_done
+ jsr co_op_shift_other_right
+:lso_done
  bra :finish_left
 :left_walk
  lda IMAGE01_XPOS
@@ -8718,6 +8783,42 @@ co_op_shift_other_left
  sta billy_sprite+34
  sec
  sbc #4
+ sta billy_sprite+2
+ lda billy_sprite+30
+ ora #$03
+ sta billy_sprite+30
+ rts
+
+*----------------------------------------------------------
+* co_op_shift_other_right - Mirror of co_op_shift_other_left
+* for the left-scroll path. Adds 4 to the OTHER player's xpos
+* so they stay anchored to the same world position while the
+* current player scrolls left. Caller must guarantee the new
+* xpos won't exceed PLAYER_MAX_X (the :lso_no_other gate does).
+*----------------------------------------------------------
+co_op_shift_other_right
+ lda info_ptr
+ cmp #<billy_sprite
+ bne :cosr_shift_billy
+ lda info_ptr+1
+ cmp #>billy_sprite
+ bne :cosr_shift_billy
+* Current is Billy → shift Jimmy right.
+ lda jimmy_sprite+2
+ sta jimmy_sprite+34
+ clc
+ adc #4
+ sta jimmy_sprite+2
+ lda jimmy_sprite+30
+ ora #$03
+ sta jimmy_sprite+30
+ rts
+:cosr_shift_billy
+* Current is Jimmy → shift Billy right.
+ lda billy_sprite+2
+ sta billy_sprite+34
+ clc
+ adc #4
  sta billy_sprite+2
  lda billy_sprite+30
  ora #$03
@@ -9244,6 +9345,10 @@ swap_out_jimmy
  sta jimmy_stash_grab_target+1
  lda billy_save_grab_target+1
  sta grab_target+1
+* Restore Billy's tracked abs_x. abs_x is Billy-tied (assert_abs_x
+* checks abs_x == world_offset + billy.xpos every frame). Script
+* opcode comparisons (OP_WAITX/OP_WAITXREV) take the rightmost
+* player into account at the comparison sites, not here.
  lda billy_save_abs_x
  sta abs_x
  lda billy_save_abs_x+1
@@ -9479,10 +9584,79 @@ advance_climb
  lda climb_toggle
  eor #$01
  sta climb_toggle
- lda #$08              ; BCLIMB1/2 width
+ lda #$08              ; BCLIMB1/2 width — same for Jimmy
  sta FRAME_X
  lda #$28              ; height
  sta FRAME_Y
+* Dispatch by current player. Billy ($01) gets bank-$02 BCLIMB;
+* Jimmy ($02 + pointer-match against jimmy_sprite) gets bank-$1D
+* JCLIMB. The compiled pipeline reads both DATA and MASK out of
+* sprite_bank, which load_sprite set from info+56 ($02 for Billy
+* / $1D for Jimmy) — so we just need to point FRAME_ADDR /
+* MASK_ADDR at the right cache pair for each player.
+ ldy #22
+ lda (info_ptr),y
+ cmp #$02
+ beq :ac_chk_jimmy
+ jmp :ac_billy_path
+:ac_chk_jimmy
+ lda info_ptr
+ cmp #<jimmy_sprite
+ beq :ac_chk_jimmy_hi
+ jmp :ac_billy_path
+:ac_chk_jimmy_hi
+ lda info_ptr+1
+ cmp #>jimmy_sprite
+ beq :ac_jimmy_path
+ jmp :ac_billy_path
+:ac_jimmy_path
+ lda climb_toggle
+ beq :ac_j_use_1
+* JCLIMB2 branch
+ lda IMAGE01_MIRROR
+ bne :ac_j_2_mirror
+ lda spr_jclimb2
+ sta FRAME_ADDR
+ lda spr_jclimb2+1
+ sta FRAME_ADDR+1
+ lda spr_jclimb2_mask
+ sta MASK_ADDR
+ lda spr_jclimb2_mask+1
+ sta MASK_ADDR+1
+ rts
+:ac_j_2_mirror
+ lda spr_jclimb2_data_mir
+ sta FRAME_ADDR
+ lda spr_jclimb2_data_mir+1
+ sta FRAME_ADDR+1
+ lda spr_jclimb2_mask_mir
+ sta MASK_ADDR
+ lda spr_jclimb2_mask_mir+1
+ sta MASK_ADDR+1
+ rts
+:ac_j_use_1
+ lda IMAGE01_MIRROR
+ bne :ac_j_1_mirror
+ lda spr_jclimb1
+ sta FRAME_ADDR
+ lda spr_jclimb1+1
+ sta FRAME_ADDR+1
+ lda spr_jclimb1_mask
+ sta MASK_ADDR
+ lda spr_jclimb1_mask+1
+ sta MASK_ADDR+1
+ rts
+:ac_j_1_mirror
+ lda spr_jclimb1_data_mir
+ sta FRAME_ADDR
+ lda spr_jclimb1_data_mir+1
+ sta FRAME_ADDR+1
+ lda spr_jclimb1_mask_mir
+ sta MASK_ADDR
+ lda spr_jclimb1_mask_mir+1
+ sta MASK_ADDR+1
+ rts
+:ac_billy_path
 * Pick BCLIMB1 vs BCLIMB2 (toggle), then non-mirror vs mirror data
 * + mask pair from IMAGE01_MIRROR. Compiled pipeline — both data
 * and mask pointers must be set in lockstep so dispatch in draw_all
@@ -19132,6 +19306,7 @@ MASK HEX 66
 script_state dfb SCRIPT_RUN
 script_wait_val ds 2          ; 16-bit threshold for WAITX (1 byte for WAITY)
 abs_x           ds 2          ; player's absolute X across all screens
+script_x        ds 2          ; rightmost player's world X (computed)
 
 
 **

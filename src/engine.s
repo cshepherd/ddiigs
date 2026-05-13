@@ -878,6 +878,15 @@ _scroll_up
  sta world_offset
  lda pending_snap_buf+1
  sta world_offset+1
+* Billy-tied snap (abs_x + xpos teleport) is what the level
+* script baked in for Billy's climb. When Jimmy is the one
+* climbing, leave Billy where he is and just recompute abs_x
+* against the new world_offset so the invariant (assert_abs_x:
+* abs_x == world_offset + billy.xpos) keeps holding. Also
+* mirror into billy_save_abs_x so swap_out_jimmy restores the
+* new value instead of the stale pre-snap one.
+ lda jimmy_active
+ bne :ps_jimmy_climber
  lda pending_snap_buf+2
  sta abs_x
  lda pending_snap_buf+3
@@ -886,6 +895,18 @@ _scroll_up
  sta IMAGE01_XPOS
  sta billy_sprite+2
  sta billy_sprite+34   ; prev_xpos = new xpos
+ bra :ps_billy_done
+:ps_jimmy_climber
+ clc
+ lda billy_sprite+2
+ adc pending_snap_buf+0
+ sta abs_x
+ sta billy_save_abs_x
+ lda #0
+ adc pending_snap_buf+1
+ sta abs_x+1
+ sta billy_save_abs_x+1
+:ps_billy_done
  lda pending_snap_buf+5
  sta current_screen
  lda pending_snap_buf+6
@@ -5574,6 +5595,31 @@ _init_jimmy
  ldy #118
  lda [$F0],y
  sta spr_jfallen
+* JCLIMB1/2 at +120 (4 entries each, compiled stride).
+ ldy #120
+ lda [$F0],y
+ sta spr_jclimb1
+ ldy #122
+ lda [$F0],y
+ sta spr_jclimb1_mask
+ ldy #124
+ lda [$F0],y
+ sta spr_jclimb1_data_mir
+ ldy #126
+ lda [$F0],y
+ sta spr_jclimb1_mask_mir
+ ldy #128
+ lda [$F0],y
+ sta spr_jclimb2
+ ldy #130
+ lda [$F0],y
+ sta spr_jclimb2_mask
+ ldy #132
+ lda [$F0],y
+ sta spr_jclimb2_data_mir
+ ldy #134
+ lda [$F0],y
+ sta spr_jclimb2_mask_mir
 
 * Patch Jimmy's action anims. Each compiled-stride frame slot
 * is 11 bytes: x/y/dur (3) + DATA / MASK / DATA_MIR / MASK_MIR

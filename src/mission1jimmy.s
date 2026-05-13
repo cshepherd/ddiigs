@@ -72,6 +72,11 @@ spr_addr_tbl
  dw JPUNCHED_DATA_MIRROR, JPUNCHED_MASK_MIRROR
  dw JFALL
  dw JFALLEN
+* Ladder-climb frames (compiled — BCLIMB1/2 equivalents).
+ dw JCLIMB1_DATA, JCLIMB1_MASK
+ dw JCLIMB1_DATA_MIRROR, JCLIMB1_MASK_MIRROR
+ dw JCLIMB2_DATA, JCLIMB2_MASK
+ dw JCLIMB2_DATA_MIRROR, JCLIMB2_MASK_MIRROR
 
 *----------------------------------------------------------
 * Sprite pixel data. Each compiled block is DATA + MASK +
