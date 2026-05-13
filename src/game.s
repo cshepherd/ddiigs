@@ -3342,6 +3342,33 @@ draw_game_over_text
 * to TITLE via the DDII.SYSTEM jump table at $1000. Mirrors the
 * OP_END play-once-then-stop pattern. Never returns.
 *----------------------------------------------------------
+*----------------------------------------------------------
+* maybe_game_over - Check both-players-dead. Jumps to game_over
+* (never returns) when neither Billy nor Jimmy is alive. RTSes
+* in every other case.
+*
+*   Billy alive = billy_fall_count < BILLY_MAX_FALLS
+*   Jimmy alive = jimmy_active != 0 AND
+*                 jimmy_stash_fall_count < BILLY_MAX_FALLS
+*
+* So if Jimmy never activated, Billy's death alone fires
+* game_over (single-player flow); once Jimmy is in the game
+* either player can keep play going for the other.
+*----------------------------------------------------------
+maybe_game_over
+ lda billy_fall_count
+ cmp #BILLY_MAX_FALLS
+ bcc :mgo_alive             ; Billy still alive
+ lda jimmy_active
+ beq :mgo_game_over         ; Jimmy never activated → only Billy
+ lda jimmy_stash_fall_count
+ cmp #BILLY_MAX_FALLS
+ bcs :mgo_game_over         ; Jimmy also at MAX
+:mgo_alive
+ rts
+:mgo_game_over
+ jmp game_over
+
 game_over
 * Re-enable SHR shadow so QuickDraw's writes to bank $01 reach
 * the screen at $E1. erase_all/draw_all could be running with
@@ -10751,26 +10778,84 @@ update_anims
  jmp :next
 
 :normal_end
-* Billy game-over check: BILLY_MAX_FALLS reached AND the anim
-* that just ended is Billy's fall_anim. game_over never returns
-* (draws overlay, waits, JMP $1000 to TITLE).
+* Player-death check. Either Billy ($01) or Jimmy ($02 + pointer
+* match) just finished their fall_anim with fall_count >= MAX.
+* In two-player co-op the game only ends when BOTH players are
+* dead — if either is alive, the dead one disappears (set the
+* $FFFF anim_ptr sentinel so erase_all next frame removes them
+* from sprite_table) and play continues.
  ldy #22
  lda (info_ptr),y
  cmp #$01
- bne :ne_not_billy_dead
+ beq :ne_chk_billy_death
+ cmp #$02
+ beq :ne_chk_jimmy_death
+ jmp :ne_not_player_dead
+:ne_chk_billy_death
  ldy #50
  lda (info_ptr),y
  cmp anim_ptr
- bne :ne_not_billy_dead
+ beq :ne_b_hi_chk
+ jmp :ne_not_player_dead
+:ne_b_hi_chk
  ldy #51
  lda (info_ptr),y
  cmp anim_ptr+1
- bne :ne_not_billy_dead
+ beq :ne_b_count_chk
+ jmp :ne_not_player_dead
+:ne_b_count_chk
  lda billy_fall_count
  cmp #BILLY_MAX_FALLS
- bcc :ne_not_billy_dead
- jmp game_over
-:ne_not_billy_dead
+ bcs :ne_player_dead
+ jmp :ne_not_player_dead
+:ne_chk_jimmy_death
+ lda info_ptr
+ cmp #<jimmy_sprite
+ beq :ne_jdc_hi
+ jmp :ne_not_player_dead
+:ne_jdc_hi
+ lda info_ptr+1
+ cmp #>jimmy_sprite
+ beq :ne_jdc_anim
+ jmp :ne_not_player_dead
+:ne_jdc_anim
+ ldy #50
+ lda (info_ptr),y
+ cmp anim_ptr
+ beq :ne_j_hi_chk
+ jmp :ne_not_player_dead
+:ne_j_hi_chk
+ ldy #51
+ lda (info_ptr),y
+ cmp anim_ptr+1
+ beq :ne_j_count_chk
+ jmp :ne_not_player_dead
+:ne_j_count_chk
+ lda jimmy_stash_fall_count
+ cmp #BILLY_MAX_FALLS
+ bcs :ne_jimmy_dead
+ jmp :ne_not_player_dead
+:ne_jimmy_dead
+* Jimmy specifically — deactivate him so swap_in_jimmy stops
+* loading his stashed state into Billy's globals.
+ stz jimmy_active
+:ne_player_dead
+* Co-op game-over policy: only fire when neither player is alive.
+* maybe_game_over JMPs to game_over (never returns) when both
+* are at fall_count >= MAX (or one is at MAX and the other is
+* inactive). Otherwise it rts here and we mark the dying player
+* with the $FFFF sentinel so erase_all wipes them.
+ jsr maybe_game_over
+ ldy #24
+ lda #$FF
+ sta (info_ptr),y     ; anim_ptr = $FFFF
+ iny
+ sta (info_ptr),y
+ ldy #30
+ lda #$03
+ sta (info_ptr),y     ; dirty = erase + (no redraw)
+ jmp :next
+:ne_not_player_dead
 * If the anim that just ended was a multi-frame fall_anim (so
 * we bumped ypos on entry to the fallen frame), un-bump now:
 * snapshot prev_ypos from the bumped current so erase_all clears
@@ -16046,6 +16131,25 @@ anim_juppercut
  dfb $0D,$2D,5       ; JUPPER3
   hex 0000
 
+anim_jpunched
+ dfb 1
+ dfb $0B
+ dfb $84             ; bit 7 compiled, bit 2 bank $1D
+ dfb $0B,$28,15      ; JPUNCHED: x, y, dur (matches anim_bpunched)
+  hex 0000
+  hex 0000
+  hex 0000
+  hex 0000
+
+anim_jfall
+ dfb 2
+ dfb $13
+ dfb $14             ; bit 4 fall trajectory + bit 2 bank $1D, legacy stride
+ dfb $11,$20,FALL_ARC_FRAMES ; JFALL: 17 wide, 32 tall, arc duration
+  hex 0000
+ dfb $13,$0D,60      ; JFALLEN: 19 wide, 13 tall, 60 VBLs
+  hex 0000
+
 * William walking cycle (WILLIAM1, 2, 3, 2). Looping, no
 * auto-advance — behavior code controls position. Compiled
 * (bank $1B) — patched by init_williams_compiled.
@@ -17292,14 +17396,35 @@ check_punch_hit
  fin
  beq :is_npc           ; controller=0 → enemy NPC, hit-check
  cmp #$01
- beq :tgt_billy        ; controller=1 → Billy, hit-check (with
-*                      ;   friendly-fire gate just below)
- jmp :advance          ; controller >= $02 → item / Jimmy, skip
+ beq :tgt_billy        ; controller=1 → Billy
+ cmp #$02
+ beq :tgt_chk_jimmy    ; controller=2 → maybe Jimmy, maybe item
+ jmp :advance          ; controller >= $03 → projectile / unknown, skip
+:tgt_chk_jimmy
+* Disambiguate Jimmy (player 2) from dropped items / projectiles:
+* both share controller=$02, so verify by pointer match against
+* jimmy_sprite. Items fall through to :advance (skip). Uses an
+* inverted branch + jmp because :advance is more than 128 bytes
+* away from here.
+ lda info_ptr
+ cmp #<jimmy_sprite
+ beq :tcj_lo_ok
+ jmp :advance
+:tcj_lo_ok
+ lda info_ptr+1
+ cmp #>jimmy_sprite
+ beq :tcj_is_jimmy
+ jmp :advance
+:tcj_is_jimmy
+* Fall through to the same friendly-fire gate Billy uses — NPCs
+* can hit Jimmy freely, but Billy's punches drop unless
+* friendly_fire is on.
+ bra :tgt_billy
 :tgt_billy
-* Friendly-fire gate: Billy can always be hit by an NPC puncher
-* (puncher_ctrl=0) but only by a player puncher (puncher_ctrl != 0,
-* i.e. Jimmy in co-op) when friendly_fire is non-zero. Keeps
-* Jimmy's joystick punches from clipping Billy in default co-op.
+* Friendly-fire gate: Billy / Jimmy can always be hit by an NPC
+* puncher (puncher_ctrl=0). Player-on-player hits drop unless
+* friendly_fire is non-zero. Keeps Jimmy's joystick punches from
+* clipping Billy in default co-op and vice versa.
  lda :puncher_ctrl
  beq :is_npc           ; NPC puncher → always allowed
  lda friendly_fire
@@ -17779,7 +17904,9 @@ check_punch_hit
  lda (info_ptr),y     ; punched_anim high
  sta anim_ptr+1
  ora anim_ptr
- bne :do_punched
+ beq :uf_no_punch_anim
+ jmp :do_punched
+:uf_no_punch_anim
  jmp :advance
 :use_fall
 * Fall — use fall_anim
@@ -17790,15 +17917,34 @@ check_punch_hit
  lda (info_ptr),y     ; fall_anim high
  sta anim_ptr+1
  ora anim_ptr
- beq :uf_no_anim
-* If target is Billy (controller=1), count this fall and reset
-* his punch_count so the next 3-hit cycle starts fresh. Without
-* the reset, punch_count would walk past 6 and hit the legacy
+ bne :uf_have_anim
+ jmp :uf_no_anim
+:uf_have_anim
+* If the target is a player, count the fall and reset their
+* punch_count so the next 3-hit cycle starts fresh. Without the
+* reset, punch_count would walk past 6 and hit the legacy
 * death branch in update_anims (which $FFFFs the sprite).
+* Branch by controller — Billy ($01) drains P1's health bar
+* (palette slots 1..4 + slot $A), Jimmy ($02 + pointer match)
+* drains P2's bar (slots 5..9).
  ldy #22
  lda (info_ptr),y
  cmp #$01
- bne :do_punched
+ beq :uf_target_billy
+ cmp #$02
+ beq :uf_chk_jimmy
+ jmp :do_punched
+:uf_chk_jimmy
+ lda info_ptr
+ cmp #<jimmy_sprite
+ beq :uf_chk_jimmy_hi
+ jmp :do_punched
+:uf_chk_jimmy_hi
+ lda info_ptr+1
+ cmp #>jimmy_sprite
+ beq :uf_target_jimmy
+ jmp :do_punched
+:uf_target_billy
  inc billy_fall_count
  lda #0
  ldy #48
@@ -17845,6 +17991,54 @@ check_punch_hit
  lda #0
  stal $019E54
  stal $019E55
+ jmp :do_punched
+:uf_target_jimmy
+* Mirror Billy's bookkeeping for Jimmy. fall_count lives in
+* jimmy_stash_fall_count (the swap stash for player 2).
+* Palette slots 5..9 are the P2 segments:
+*   fall 1 → slot 9 ($019E52)  P2 rightmost green
+*   fall 2 → slot 8 ($019E50)
+*   fall 3 → slot 7 ($019E4E)
+*   fall 4 → slot 6 ($019E4C)  yellow
+*   fall 5 → slot 5 ($019E4A)  deep red
+ inc jimmy_stash_fall_count
+ lda #0
+ ldy #48
+ sta (info_ptr),y
+ lda jimmy_stash_fall_count
+ cmp #1
+ bne :uf_jdep_2
+ lda #0
+ stal $019E52
+ stal $019E53
+ jmp :do_punched
+:uf_jdep_2
+ cmp #2
+ bne :uf_jdep_3
+ lda #0
+ stal $019E50
+ stal $019E51
+ jmp :do_punched
+:uf_jdep_3
+ cmp #3
+ bne :uf_jdep_4
+ lda #0
+ stal $019E4E
+ stal $019E4F
+ jmp :do_punched
+:uf_jdep_4
+ cmp #4
+ bne :uf_jdep_5
+ lda #0
+ stal $019E4C
+ stal $019E4D
+ jmp :do_punched
+:uf_jdep_5
+ cmp #5
+ bne :do_punched
+ lda #0
+ stal $019E4A
+ stal $019E4B
  jmp :do_punched
 :uf_no_anim
  jmp :advance
@@ -18761,12 +18955,12 @@ jimmy_sprite
                    ;     rejects Jimmy, so Billy's moves don't set
                    ;     Jimmy's dirty bit before activation)
   hex 0000 ; +38 prev_frame_y = 0
-  hex 0000 ; +40 punched_anim (none yet)
+  da anim_jpunched ; +40 punched_anim
   hex 0000 ; +42 idle_addr (patched: JIMMY01_DATA)
   hex 0900 ; +44 idle_x
   hex 2800 ; +46 idle_y
   hex 0000 ; +48 punch_count
-  hex 0000 ; +50 fall_anim (none yet)
+  da anim_jfall    ; +50 fall_anim
   hex 0000 ; +52 walk_anim (NPC slot, unused for player)
   hex 0000 ; +54 atk_anim (NPC slot, unused)
   hex 1D00 ; +56 frame_bank = $1D (Jimmy data lives in bank $1D)

@@ -5690,6 +5690,22 @@ _init_jimmy
  lda spr_jupper3
  sta anim_juppercut+16
 
+* anim_jpunched (compiled, 1 frame: JPUNCHED)
+ lda spr_jpunched
+ sta anim_jpunched+6
+ lda spr_jpunched_mask
+ sta anim_jpunched+8
+ lda spr_jpunched_data_mir
+ sta anim_jpunched+10
+ lda spr_jpunched_mask_mir
+ sta anim_jpunched+12
+
+* anim_jfall (legacy, 2 frames: JFALL + JFALLEN)
+ lda spr_jfall
+ sta anim_jfall+6
+ lda spr_jfallen
+ sta anim_jfall+11
+
  sec
  xce
  mx %11
