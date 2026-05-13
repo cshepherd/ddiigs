@@ -543,6 +543,7 @@ game_loop
  jsr draw_all
  jsr draw_overlay
  jsr draw_p1_score
+ jsr draw_p2_score
  jsr draw_debug_xy
 ; jsr draw_ladder_debug   ; outline ladders for debug
  bra game_loop
@@ -3394,6 +3395,12 @@ P1_SCORE_X   = 80             ; pixel x (just past "PLAYER 1: ")
 P1_SCORE_Y   = 195            ; pixel baseline (matches HUD line)
 P1_SCORE_LEN = 7              ; digit width (matches "0000000")
 
+* P2 sits in the same HUD line, right of P1's score + 7 spaces +
+* the "PLAYER 2: " prefix. ~7.7 px per char in the SHR system
+* font (P1_SCORE_X=80 = 3 + 77 px for "PLAYER 1: ").
+P2_SCORE_X   = 265
+P2_SCORE_Y   = 195
+
 *----------------------------------------------------------
 * draw_p1_score - If p1_score_dirty is non-zero, draw the
 * p1_score C-string directly via _DrawCString over the
@@ -3428,6 +3435,37 @@ draw_p1_score
 
  sec
  xce                    ; back to emulation
+ sep #$30
+ rts
+
+*----------------------------------------------------------
+* draw_p2_score - Same as draw_p1_score but for player 2.
+* No-op while p2_score_dirty is 0. Draws the live ASCII string
+* at p2_score over the static "0000000" in the HUD strip.
+*----------------------------------------------------------
+draw_p2_score
+ lda p2_score_dirty
+ bne :do_draw2
+ rts
+:do_draw2
+ clc
+ xce
+ rep $30
+
+ pea #P2_SCORE_X
+ pea #P2_SCORE_Y
+ ldx #$3a04
+ jsl $E10000
+
+ pea #$0000
+ pea p2_score
+ ldx #$A604
+ jsl $E10000
+
+ stz p2_score_dirty
+
+ sec
+ xce
  sep #$30
  rts
 
@@ -17628,15 +17666,26 @@ check_punch_hit
  clc
  adc :hit_damage
  sta (info_ptr),y
-* Award 100 points to player 1 and mark score for redraw.
-* Only when the target is an NPC — when an NPC lands a hit on
-* Billy, info_ptr points at billy_sprite and we shouldn't be
-* paying him for getting punched.
+* Award 100 points to whichever player landed the hit, and mark
+* the score for redraw. Skip when the target is also a player
+* (NPC punching Billy shouldn't pay anyone). :puncher_ctrl was
+* captured at check_punch_hit entry; $01 = Billy, $02 = Jimmy,
+* $00 = NPC (no points awarded).
  ldy #22
- lda (info_ptr),y      ; controller (0=NPC, 1=Billy)
+ lda (info_ptr),y      ; target controller
  cmp #$01
  beq :no_score
+ cmp #$02
+ beq :no_score
+ lda :puncher_ctrl
+ cmp #$01
+ bne :chk_p2_score
  jsr incp1s_hundreds
+ bra :no_score
+:chk_p2_score
+ cmp #$02
+ bne :no_score
+ jsr incp2s_hundreds
 :no_score
 * Increment low nibble of border color
 ; ldal $E0C034
@@ -17983,6 +18032,63 @@ incp1s_millions
   sta p1_score+6
 incp1s_ret
   inc p1_score_dirty
+  rts
+
+*----------------------------------------------------------
+* incp2s_hundreds / _thousands / ... — same carry ladder as
+* the p1 routines but operating on p2_score / p2_score_dirty.
+* Called when Jimmy lands a hit (puncher_ctrl=$02 in
+* check_punch_hit's score block).
+*----------------------------------------------------------
+  mx %11
+incp2s_hundreds
+  lda p2_score+4
+  inc
+  sta p2_score+4
+  cmp #$3a
+  blt incp2s_ret
+  lda #$30
+  sta p2_score+4
+incp2s_thousands
+  lda p2_score+3
+  inc
+  sta p2_score+3
+  cmp #$3a
+  blt incp2s_ret
+  lda #$30
+  sta p2_score+3
+incp2s_tenthousands
+  lda p2_score+2
+  inc
+  sta p2_score+2
+  cmp #$3a
+  blt incp2s_ret
+  lda #$30
+  sta p2_score+2
+incp2s_hundredthousands
+  lda p2_score+1
+  inc
+  sta p2_score+1
+  cmp #$3a
+  blt incp2s_ret
+  lda #$30
+  sta p2_score+1
+incp2s_millions
+  lda p2_score
+  inc
+  sta p2_score
+  cmp #$3a
+  blt incp2s_ret
+  lda #$30
+  sta p2_score
+  sta p2_score+1
+  sta p2_score+2
+  sta p2_score+3
+  sta p2_score+4
+  sta p2_score+5
+  sta p2_score+6
+incp2s_ret
+  inc p2_score_dirty
   rts
 
 *----------------------------------------------------------
