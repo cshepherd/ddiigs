@@ -855,6 +855,9 @@ _scroll_left
 * When scroll_up_off would go below 3, snap-transition: copy
 * the entire source bank to $18 and update current_screen.
 *----------------------------------------------------------
+SNAP_ALIGN_TOL = $10        ; co-op snap auto-aligns the non-climber to
+                            ; the canonical ladder column if they're
+                            ; already within this many bytes of it.
 _scroll_up
 * Phase 2 pipeline: shadow off while we stage on $01. Both the
 * incremental (:su_normal) and :snap_transition paths end with
@@ -878,13 +881,20 @@ _scroll_up
  sta world_offset
  lda pending_snap_buf+1
  sta world_offset+1
-* Dispatch by climber (info_ptr): teleport only the climber to
-* pending_snap_buf+4 (the canonical ladder column). The level
-* script authored this column for Billy's climb but it's the
-* ladder regardless of who climbs first. The OTHER player is
-* NOT teleported — they enter the ladder under their own
-* control. abs_x is recomputed against the new world_offset
-* using Billy's actual info+2 so assert_abs_x keeps passing.
+* Dispatch by climber (info_ptr): always teleport the climber
+* to pending_snap_buf+4 (the canonical ladder column). The
+* OTHER player is also teleported IF they're already close
+* enough to the canonical position (within SNAP_ALIGN_TOL =
+* $10 bytes); otherwise they're left where they were and
+* abs_x is recomputed against the new world_offset so the
+* assert_abs_x invariant holds.
+*
+* Rationale: when both players walk near the ladder before
+* the climb, the snap delta (pre-wo → new-wo) can leave the
+* non-climber a few bytes off the canonical column (visually
+* "16px left of billy"). Auto-aligning anyone close enough
+* fixes that without dragging a far-away partner onto the
+* ladder against their will.
  lda info_ptr
  cmp #<billy_sprite
  bne :ps_climber_jimmy
@@ -902,14 +912,51 @@ _scroll_up
  sta IMAGE01_XPOS
  sta billy_sprite+2
  sta billy_sprite+34
+* Jimmy alignment: if within tolerance, teleport him too.
+ lda jimmy_active
+ beq :ps_billy_done
+ sec
+ lda jimmy_sprite+2
+ sbc pending_snap_buf+4
+ bpl :ps_j_abs
+ eor #$FF
+ inc
+:ps_j_abs
+ cmp #SNAP_ALIGN_TOL
+ bcs :ps_billy_done           ; Jimmy too far → leave him
+ lda pending_snap_buf+4
+ sta jimmy_sprite+2
+ sta jimmy_sprite+34
  bra :ps_billy_done
 :ps_climber_jimmy
-* Climber = Jimmy. Teleport Jimmy; leave Billy in place.
-* abs_x = new_world_offset + Billy's (unchanged) info+2.
+* Climber = Jimmy. Teleport Jimmy to canonical column.
  lda pending_snap_buf+4
  sta IMAGE01_XPOS
  sta jimmy_sprite+2
  sta jimmy_sprite+34
+* Billy alignment: if within tolerance, teleport him too and
+* use the canonical abs_x. Else leave him and recompute abs_x
+* from new world_offset + Billy's (unchanged) info+2.
+ sec
+ lda billy_sprite+2
+ sbc pending_snap_buf+4
+ bpl :ps_b_abs
+ eor #$FF
+ inc
+:ps_b_abs
+ cmp #SNAP_ALIGN_TOL
+ bcs :ps_billy_kept
+ lda pending_snap_buf+2
+ sta abs_x
+ sta billy_save_abs_x
+ lda pending_snap_buf+3
+ sta abs_x+1
+ sta billy_save_abs_x+1
+ lda pending_snap_buf+4
+ sta billy_sprite+2
+ sta billy_sprite+34
+ bra :ps_billy_done
+:ps_billy_kept
  clc
  lda billy_sprite+2
  adc pending_snap_buf+0
@@ -1954,6 +2001,36 @@ _scroll_up
  ldy #30
  lda #$03
  sta (info_ptr),y       ; dirty = erase+draw
+* Co-op: also reposition the OTHER player to the same walkable
+* row. Otherwise their info+0 stays at whatever it was when the
+* climb-scroll ended, which can land them out-of-bounds on the
+* new screen ("jimmy stuck before the end of the ladder had to
+* jump around because he was outside of y bounds").
+ lda jimmy_active
+ beq :sl_no_other_y
+ lda info_ptr
+ cmp #<billy_sprite
+ bne :sl_other_is_billy
+ lda info_ptr+1
+ cmp #>billy_sprite
+ bne :sl_other_is_billy
+* Current climber = Billy → set Jimmy's ypos.
+ lda billy_sprite+0
+ sta jimmy_sprite+0
+ sta jimmy_sprite+32
+ lda jimmy_sprite+30
+ ora #$03
+ sta jimmy_sprite+30
+ bra :sl_no_other_y
+:sl_other_is_billy
+* Current climber = Jimmy → set Billy's ypos.
+ lda jimmy_sprite+0
+ sta billy_sprite+0
+ sta billy_sprite+32
+ lda billy_sprite+30
+ ora #$03
+ sta billy_sprite+30
+:sl_no_other_y
 * Reset Billy out of the climb animation into idle (IMAGE01).
 * Copy idle_addr/idle_x/idle_y (info+42/44/46) into
 * frame_addr/frame_x/frame_y (info+14/10/12) and sync globals.

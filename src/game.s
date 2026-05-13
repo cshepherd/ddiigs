@@ -1047,6 +1047,11 @@ run_script
  sta overlay_mask+1
  lda #1
  sta scroll_up_enabled
+* Fresh climb session: both players need to re-press together
+* for the first scroll to fire. Once they do, the session flags
+* unblock solo finishes after one walks off the ladder.
+ stz billy_climbed_session
+ stz jimmy_climbed_session
  lda #SCRIPT_WAITUP
  sta script_state
  lda script_pc
@@ -2296,12 +2301,14 @@ did_climb_this_frame dfb 0       ; set after :sn_done fires scroll_up so
                                   ; the second mover's :do_up_on_ladder
                                   ; doesn't double-scroll. Cleared each
                                   ; frame at top of process_input.
-billy_climb_pressed  dfb 0       ; set by Billy's :sn_done. Used by the
-                                  ; co-op climb-scroll gate so the scroll
-                                  ; only fires when both players are
-                                  ; pressing up — without it, one
-                                  ; player's press drags the other along.
-jimmy_climb_pressed  dfb 0       ; same idea for Jimmy.
+billy_climb_pressed  dfb 0       ; (unused, kept for binary compat)
+jimmy_climb_pressed  dfb 0       ; (unused, kept for binary compat)
+billy_climbed_session dfb 0      ; set when a joint scroll fires this
+                                  ; climb session (Billy contributed).
+                                  ; Lets Billy solo-finish if Jimmy
+                                  ; later walks off the ladder column.
+                                  ; Cleared at OP_UP.
+jimmy_climbed_session dfb 0      ; same for Jimmy.
 scroll_up_lbank      dfb $03     ; bank of upper screen's left neighbor
                                   ; (0 = sentinel, skip left-gap fill)
 scroll_up_rbank      dfb $03     ; bank of upper screen's right neighbor
@@ -8407,51 +8414,48 @@ btn_action_jump
 * they press up, even if the world isn't scrolling.
  jsr advance_climb
  jsr save_sprite
-* Set this frame's "pressed climb" flag for the current player.
-* The gate below uses both players' flags to decide whether the
-* scroll fires.
- lda info_ptr
- cmp #<billy_sprite
- bne :sn_flag_jimmy
- lda info_ptr+1
- cmp #>billy_sprite
- bne :sn_flag_jimmy
- lda #1
- sta billy_climb_pressed
- bra :sn_flag_done
-:sn_flag_jimmy
- lda #1
- sta jimmy_climb_pressed
-:sn_flag_done
-* Co-op gate. Single-player Billy bypasses entirely. With Jimmy
-* active the rule is: scroll fires if BOTH pressed climb this
-* frame, OR if OTHER has already ascended past the ladder floor
-* (their info+0 < UP_SCROLL_THRESH — meaning they're up on the
-* ladder / upper screen, so a solo climb won't leave them
-* behind). Otherwise OTHER is still at the floor below and the
-* scroll would drag them up — block.
+* Co-op gate.
+*   jimmy_active = 0          → single player, scroll always.
+*   OTHER pressing up         → both climbing, scroll. Set the
+*                                session flag on both so subsequent
+*                                solo finishes are allowed.
+*   OTHER not pressing AND
+*     OTHER session set AND
+*     OTHER off ladder column → other has walked off after
+*                                participating; allow solo so
+*                                this player can complete the
+*                                climb.
+*   Otherwise                 → block. Prevents drag when OTHER
+*                                is on the ladder column not
+*                                pressing, OR when OTHER never
+*                                joined the climb session.
  lda jimmy_active
  beq :sn_do_scroll
+ jsr co_op_other_pressing_up      ; C=0 if OTHER pressing
+ bcs :sn_other_not_pressing
+* Both pressing. Mark both as session-participants; future solo
+* finishes (after one walks off) are then unblocked.
+ lda #1
+ sta billy_climbed_session
+ sta jimmy_climbed_session
+ bra :sn_do_scroll
+:sn_other_not_pressing
+* OTHER not pressing. Only allow solo if OTHER has already
+* participated this session AND has walked off the ladder.
  lda info_ptr
  cmp #<billy_sprite
- bne :sn_other_is_billy
+ bne :sn_chk_billy_session
  lda info_ptr+1
  cmp #>billy_sprite
- bne :sn_other_is_billy
-* Current = Billy → OTHER = Jimmy.
- lda jimmy_climb_pressed
- ldx jimmy_sprite+0
- bra :sn_other_state
-:sn_other_is_billy
-* Current = Jimmy → OTHER = Billy.
- lda billy_climb_pressed
- ldx billy_sprite+0
-:sn_other_state
-* A = OTHER's pressed flag, X = OTHER's screen ypos.
- bne :sn_do_scroll                ; both pressing → scroll
-* OTHER didn't press. Did they already ascend?
- cpx #UP_SCROLL_THRESH
- bcs :sn_skip_scroll              ; still at floor → block (drag)
+ bne :sn_chk_billy_session
+ lda jimmy_climbed_session
+ bra :sn_session_have
+:sn_chk_billy_session
+ lda billy_climbed_session
+:sn_session_have
+ beq :sn_skip_scroll              ; session not set → block
+ jsr co_op_other_on_ladder        ; C=0 if OTHER on ladder column
+ bcc :sn_skip_scroll               ; on ladder + not pressing → drag, block
 :sn_do_scroll
 * Only the first mover this frame fires the world-scroll.
  lda did_climb_this_frame
@@ -9196,6 +9200,47 @@ co_op_carry_billy_right
  lda billy_sprite+30
  ora #$03
  sta billy_sprite+30
+ rts
+
+*----------------------------------------------------------
+* co_op_other_pressing_up - Returns C=0 if the OTHER player is
+* currently pressing up input this frame (Billy = 'w' held,
+* Jimmy = joystick Y axis past the up deadzone). Reads input
+* state directly so it doesn't depend on per-frame keyboard
+* auto-repeat strobes. Skips returning "pressing" if OTHER is
+* anim-blocked or (for Jimmy) the joystick isn't armed yet.
+* Preserves info_ptr.
+*----------------------------------------------------------
+co_op_other_pressing_up
+ lda info_ptr
+ cmp #<billy_sprite
+ bne :coup_curr_jimmy
+ lda info_ptr+1
+ cmp #>billy_sprite
+ bne :coup_curr_jimmy
+* Current = Billy → OTHER = Jimmy. Sample joystick.
+ lda jimmy_sprite+24
+ ora jimmy_sprite+25
+ bne :coup_no                ; Jimmy anim-blocked
+ lda joy_armed
+ beq :coup_no
+ jsr GetJoyXY                ; X = JoyX, Y = JoyY
+ cpy #JOY_DEAD_LO
+ bcs :coup_no                ; Y >= LO → not deflected up
+ clc
+ rts
+:coup_curr_jimmy
+* Current = Jimmy → OTHER = Billy. Check kb_held for 'W'.
+ lda billy_sprite+24
+ ora billy_sprite+25
+ bne :coup_no                ; Billy anim-blocked
+ lda #ADB_KEY_W
+ jsr key_held
+ beq :coup_no                ; not held
+ clc
+ rts
+:coup_no
+ sec
  rts
 
 *----------------------------------------------------------
