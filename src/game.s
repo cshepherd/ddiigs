@@ -36,6 +36,12 @@ NTPstreamsound          =   NinjaTrackerPlus+24
 * binary; 0 to strip them entirely (the dbg_print_* helpers
 * themselves still ship — only the call-site blocks vanish).
 DEBUG_PRINT equ 0
+* DEBUG_LSRC: gates instrumentation for the co-op left-scroll
+* black-bar regression. Prints at OP_LEFT entry, every scroll_left
+* call, and at sync_current_screen_right's lsrc-overwriting branch.
+* Also re-enables the assert_scroll_lsrc_off canary. Flip to 0 to
+* strip once the bug is found.
+DEBUG_LSRC  equ 1
 
 * Clear text screen so diagnostic prints start on a fresh page.
  sec
@@ -768,7 +774,9 @@ run_script
 
 :not_right
  cmp #OP_LEFT
- bne :not_left
+ beq :do_op_left
+ jmp :not_left
+:do_op_left
  ldy #1
  lda [script_pc],y
  sta scroll_left_screen
@@ -794,6 +802,72 @@ run_script
 :op_left_keep_off
  sta scroll_lsrc_bank
 :op_left_off_done
+* DEBUG_LSRC: 'LE T=tt B=bb O=oo CS=cs WO=wwww J=j'
+* — state at OP_LEFT firing. T=target screen, B/O = post-handler
+* lsrc bank/off, CS = current_screen, WO = world_offset, J =
+* jimmy_active. Tells us whether the keep_off branch fired with
+* the canonical $0B/$29 expected after a scr10 climb.
+ do DEBUG_LSRC
+ lda #$CC              ; 'L'
+ jsr dbg_print_char
+ lda #$C5              ; 'E'
+ jsr dbg_print_char
+ lda #$A0
+ jsr dbg_print_char
+ lda #$D4              ; 'T'
+ jsr dbg_print_char
+ lda #$BD              ; '='
+ jsr dbg_print_char
+ lda scroll_left_screen
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda #$C2              ; 'B'
+ jsr dbg_print_char
+ lda #$BD
+ jsr dbg_print_char
+ lda scroll_lsrc_bank
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda #$CF              ; 'O'
+ jsr dbg_print_char
+ lda #$BD
+ jsr dbg_print_char
+ lda scroll_lsrc_off
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda #$C3              ; 'C'
+ jsr dbg_print_char
+ lda #$D3              ; 'S'
+ jsr dbg_print_char
+ lda #$BD
+ jsr dbg_print_char
+ lda current_screen
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda #$D7              ; 'W'
+ jsr dbg_print_char
+ lda #$CF              ; 'O'
+ jsr dbg_print_char
+ lda #$BD
+ jsr dbg_print_char
+ lda world_offset+1
+ jsr dbg_print_hex8
+ lda world_offset
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda #$CA              ; 'J'
+ jsr dbg_print_char
+ lda #$BD
+ jsr dbg_print_char
+ lda jimmy_active
+ jsr dbg_print_hex8
+ jsr dbg_print_nl
+ fin
  lda #1
  sta scroll_left_enabled
 * Show POINT_RIGHT overlay on the left side (using pre-mirrored sprite)
@@ -1047,11 +1121,6 @@ run_script
  sta overlay_mask+1
  lda #1
  sta scroll_up_enabled
-* Fresh climb session: both players need to re-press together
-* for the first scroll to fire. Once they do, the session flags
-* unblock solo finishes after one walks off the ladder.
- stz billy_climbed_session
- stz jimmy_climbed_session
  lda #SCRIPT_WAITUP
  sta script_state
  lda script_pc
@@ -1435,10 +1504,17 @@ run_script
  jmp :exec_loop         ; condition met, resume executing
 
 :check_waitxrev
-* Compare rightmost player's world X against threshold (16-bit).
-* "rightmost <= threshold" means BOTH players have retreated past
-* the threshold — the right condition for a retreat-gated event.
- jsr compute_script_x
+* Compare LEFTMOST player's world X against threshold (16-bit).
+* Retreat gate semantics: whichever player is actually driving the
+* leftward scroll is the leftmost one. Using max (both retreated)
+* stalls the script forever when one player isn't pressing left —
+* their world-x stays anchored (co_op_shift_other_right
+* compensates so wo+xpos is constant), and OP_WAITXREV would never
+* fire even after the scroller had driven the world way past the
+* threshold. Mission1's "switch lsrc to scr9 before scr8 underflow
+* into scr7's empty margin" gate (mission1.s:410) is the concrete
+* breakage — co-op black bar bug.
+ jsr compute_script_x_min
  lda script_wait_val+1
  cmp script_x+1
  bcc :wx_wait_rts       ; threshold_hi < script_hi → still greater
@@ -2303,12 +2379,6 @@ did_climb_this_frame dfb 0       ; set after :sn_done fires scroll_up so
                                   ; frame at top of process_input.
 billy_climb_pressed  dfb 0       ; (unused, kept for binary compat)
 jimmy_climb_pressed  dfb 0       ; (unused, kept for binary compat)
-billy_climbed_session dfb 0      ; set when a joint scroll fires this
-                                  ; climb session (Billy contributed).
-                                  ; Lets Billy solo-finish if Jimmy
-                                  ; later walks off the ladder column.
-                                  ; Cleared at OP_UP.
-jimmy_climbed_session dfb 0      ; same for Jimmy.
 scroll_up_lbank      dfb $03     ; bank of upper screen's left neighbor
                                   ; (0 = sentinel, skip left-gap fill)
 scroll_up_rbank      dfb $03     ; bank of upper screen's right neighbor
@@ -2757,11 +2827,15 @@ sync_current_screen
 * scroll_src_bank — which would be wrong whenever the script
 * skips screens (e.g. screen 5 -> 7).
  lda transition_pending
- beq :no_change
+ bne :scr_xp_proceed
+ jmp :no_change
+:scr_xp_proceed
  stz transition_pending
  lda scroll_right_screen
  cmp current_screen
- beq :no_change
+ bne :scr_xp_change
+ jmp :no_change
+:scr_xp_change
  sta current_screen
  stz bounds_right_valid     ; neighbor table is for old screen now
  stz bounds_left_valid
@@ -2777,6 +2851,43 @@ sync_current_screen
  sta scroll_lsrc_bank
  lda #109
  sta scroll_lsrc_off
+* DEBUG_LSRC: 'SR B=bb O=oo CS=cs' — right-scroll sync clobbered
+* the lsrc state to the linear default. If this fires between an
+* OP_LEFT and the user's left-scroll, the canonical lsrc set by
+* OP_SNAPSTATE has been wiped → black bar.
+ do DEBUG_LSRC
+ lda #$D3              ; 'S'
+ jsr dbg_print_char
+ lda #$D2              ; 'R'
+ jsr dbg_print_char
+ lda #$A0
+ jsr dbg_print_char
+ lda #$C2              ; 'B'
+ jsr dbg_print_char
+ lda #$BD
+ jsr dbg_print_char
+ lda scroll_lsrc_bank
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda #$CF              ; 'O'
+ jsr dbg_print_char
+ lda #$BD
+ jsr dbg_print_char
+ lda scroll_lsrc_off
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda #$C3              ; 'C'
+ jsr dbg_print_char
+ lda #$D3              ; 'S'
+ jsr dbg_print_char
+ lda #$BD
+ jsr dbg_print_char
+ lda current_screen
+ jsr dbg_print_hex8
+ jsr dbg_print_nl
+ fin
  bra :loaded
 :no_left
  lda #$03
@@ -3084,6 +3195,47 @@ compute_script_x
 :csx_done
  rts
 :csx_jwp ds 2
+
+*----------------------------------------------------------
+* compute_script_x_min - Mirror of compute_script_x but returns
+* min(billy_world, jimmy_world) instead of max. Used by
+* OP_WAITXREV (retreat gate): the leading (leftmost) player is
+* the one driving the leftward scroll; if we waited for the
+* trailing player too, they'd stall the script forever when
+* they're not pressing left (their world-x is held constant by
+* co_op_shift_other_right). When jimmy_active=0 this collapses
+* to plain abs_x.
+*----------------------------------------------------------
+compute_script_x_min
+ lda abs_x
+ sta script_x
+ lda abs_x+1
+ sta script_x+1
+ lda jimmy_active
+ beq :csxn_done
+ clc
+ lda jimmy_sprite+2
+ adc world_offset
+ sta :csxn_jwp
+ lda #0
+ adc world_offset+1
+ sta :csxn_jwp+1
+ lda :csxn_jwp+1
+ cmp script_x+1
+ bcc :csxn_use_jwp
+ bne :csxn_done
+ lda :csxn_jwp
+ cmp script_x
+ bcc :csxn_use_jwp
+:csxn_done
+ rts
+:csxn_use_jwp
+ lda :csxn_jwp
+ sta script_x
+ lda :csxn_jwp+1
+ sta script_x+1
+ rts
+:csxn_jwp ds 2
 
 *----------------------------------------------------------
 * check_pause - If ESC is in the keyboard register, toggle the
@@ -8414,65 +8566,52 @@ btn_action_jump
 * they press up, even if the world isn't scrolling.
  jsr advance_climb
  jsr save_sprite
-* Co-op gate.
-*   jimmy_active = 0          → single player, scroll always.
-*   OTHER pressing up         → both climbing, scroll. Set the
-*                                session flag on both so subsequent
-*                                solo finishes are allowed.
-*   OTHER not pressing AND
-*     OTHER session set AND
-*     OTHER off ladder column → other has walked off after
-*                                participating; allow solo so
-*                                this player can complete the
-*                                climb.
-*   Otherwise                 → block. Prevents drag when OTHER
-*                                is on the ladder column not
-*                                pressing, OR when OTHER never
-*                                joined the climb session.
+* Co-op gate. Two outcomes encoded in :sn_shift_other:
+*   0 → scroll fires, but DO NOT shift OTHER. Either single-player
+*       or OTHER is actively trying to ascend (pressing up). In the
+*       latter case OTHER is already moving themselves; shifting
+*       them DOWN by 4 each scroll cancels their walk-up (-2 px) and
+*       traps them in the walking phase — the "leapfrog" bug.
+*   1 → scroll fires AND we shift OTHER down by 4 so they stay
+*       anchored to their world-y while the camera moves up. This
+*       is the "leave the other behind on the floor" case.
+* The "OTHER on ladder column but not pressing up" case still
+* blocks — without a shift the ladder art would slide DOWN past
+* them visually; with a shift they'd be dragged up against their
+* will. Block is the only sane choice.
+ stz :sn_shift_other
  lda jimmy_active
- beq :sn_do_scroll
- jsr co_op_other_pressing_up      ; C=0 if OTHER pressing
- bcs :sn_other_not_pressing
-* Both pressing. Mark both as session-participants; future solo
-* finishes (after one walks off) are then unblocked.
+ beq :sn_gate_pass               ; single player → scroll, no shift
+ jsr co_op_other_pressing_up     ; C=0 if OTHER pressing
+ bcc :sn_gate_pass               ; OTHER climbing → scroll, no shift
+ jsr co_op_other_on_ladder       ; C=0 if OTHER on ladder column
+ bcc :sn_skip_scroll             ; parked on ladder → block (no drag)
  lda #1
- sta billy_climbed_session
- sta jimmy_climbed_session
- bra :sn_do_scroll
-:sn_other_not_pressing
-* OTHER not pressing. Only allow solo if OTHER has already
-* participated this session AND has walked off the ladder.
- lda info_ptr
- cmp #<billy_sprite
- bne :sn_chk_billy_session
- lda info_ptr+1
- cmp #>billy_sprite
- bne :sn_chk_billy_session
- lda jimmy_climbed_session
- bra :sn_session_have
-:sn_chk_billy_session
- lda billy_climbed_session
-:sn_session_have
- beq :sn_skip_scroll              ; session not set → block
- jsr co_op_other_on_ladder        ; C=0 if OTHER on ladder column
- bcc :sn_skip_scroll               ; on ladder + not pressing → drag, block
-:sn_do_scroll
+ sta :sn_shift_other             ; OTHER off ladder, not climbing → shift
+:sn_gate_pass
 * Only the first mover this frame fires the world-scroll.
  lda did_climb_this_frame
  bne :sn_skip_scroll
+* y-bound only matters when we're about to shift OTHER. When OTHER
+* is climbing themselves their info+0 doesn't move from the scroll,
+* so they can't clip the bottom.
+ lda :sn_shift_other
+ beq :sn_y_ok
+ jsr co_op_other_would_clip_y    ; C=1 if OTHER would clip the bottom
+ bcs :sn_skip_scroll
+:sn_y_ok
  jsl scroll_up
  jsr load_sprite
  lda #1
  sta did_climb_this_frame
-* Mark the OTHER player dirty so erase_all + draw_all repaint
-* them after scroll_up's fast_blit_18_01 wiped bank $01.
- lda jimmy_active
- beq :sn_done_no_other
- jsr co_op_mark_other_dirty
-:sn_done_no_other
+ lda :sn_shift_other
+ beq :sn_no_shift
+ jsr co_op_shift_other_down
+:sn_no_shift
  rts
 :sn_skip_scroll
  rts
+:sn_shift_other dfb 0
 :sn_wx     ds 2
 :sn_cnt    dfb 0
 :sn_ctr    ds 2
@@ -8678,8 +8817,134 @@ btn_action_jump
  clc
  adc #4                  ; +4 (post-scroll xpos)
  cmp #PLAYER_MAX_X+1
- bcs :left_walk          ; other would go past PLAYER_MAX_X
+ bcc :lso_no_other       ; other still in bounds
+ jmp :left_walk          ; other would go past PLAYER_MAX_X
 :lso_no_other
+* DEBUG_LSRC: 'SL B=bb O=oo CS=cs WO=wwww X=xx P=p'
+* — every left-scroll, just before the engine fires. P = 1 if
+* current player is Billy, 2 if Jimmy (info_ptr match), so we
+* can see which player is driving the scroll. X = current xpos.
+ do DEBUG_LSRC
+ lda #$D3              ; 'S'
+ jsr dbg_print_char
+ lda #$CC              ; 'L'
+ jsr dbg_print_char
+ lda #$A0
+ jsr dbg_print_char
+ lda #$C2              ; 'B'
+ jsr dbg_print_char
+ lda #$BD
+ jsr dbg_print_char
+ lda scroll_lsrc_bank
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda #$CF              ; 'O'
+ jsr dbg_print_char
+ lda #$BD
+ jsr dbg_print_char
+ lda scroll_lsrc_off
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda #$C3              ; 'C'
+ jsr dbg_print_char
+ lda #$D3              ; 'S'
+ jsr dbg_print_char
+ lda #$BD
+ jsr dbg_print_char
+ lda current_screen
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda #$D7              ; 'W'
+ jsr dbg_print_char
+ lda #$CF              ; 'O'
+ jsr dbg_print_char
+ lda #$BD
+ jsr dbg_print_char
+ lda world_offset+1
+ jsr dbg_print_hex8
+ lda world_offset
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda #$D8              ; 'X'
+ jsr dbg_print_char
+ lda #$BD
+ jsr dbg_print_char
+ lda IMAGE01_XPOS
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda #$D0              ; 'P'
+ jsr dbg_print_char
+ lda #$BD
+ jsr dbg_print_char
+ lda info_ptr+1
+ cmp #>billy_sprite
+ bne :dbg_sl_jimmy
+ lda info_ptr
+ cmp #<billy_sprite
+ bne :dbg_sl_jimmy
+ lda #$01
+ jsr dbg_print_hex8
+ bra :dbg_sl_done
+:dbg_sl_jimmy
+ lda #$02
+ jsr dbg_print_hex8
+:dbg_sl_done
+* SRC=AA BB CC DD — the 4 source bytes the engine is about to
+* read from (scroll_lsrc_bank, scroll_lsrc_off-3..off). Reads
+* via long-indirect on a temporary $F0/$F1/$F2 pointer (in
+* emulation 8-bit, [dp],y is a 24-bit read). If these are zero
+* but bank $0B's scr8 art should be there, that's the smoking
+* gun for the data being clobbered. Save/restore $F0..$F2 so
+* we don't corrupt callers' pointer.
+ lda $F0
+ pha
+ lda $F1
+ pha
+ lda $F2
+ pha
+ lda scroll_lsrc_off
+ sec
+ sbc #3
+ sta $F0
+ lda #$20
+ sta $F1
+ lda scroll_lsrc_bank
+ sta $F2
+ lda #$A0
+ jsr dbg_print_char
+ lda #$D3              ; 'S'
+ jsr dbg_print_char
+ lda #$D2              ; 'R'
+ jsr dbg_print_char
+ lda #$C3              ; 'C'
+ jsr dbg_print_char
+ lda #$BD
+ jsr dbg_print_char
+ ldy #0
+ lda [$F0],y
+ jsr dbg_print_hex8
+ ldy #1
+ lda [$F0],y
+ jsr dbg_print_hex8
+ ldy #2
+ lda [$F0],y
+ jsr dbg_print_hex8
+ ldy #3
+ lda [$F0],y
+ jsr dbg_print_hex8
+ pla
+ sta $F2
+ pla
+ sta $F1
+ pla
+ sta $F0
+ jsr dbg_print_nl
+ fin
 * Scroll world LEFT by 4 bytes
  jsr save_sprite
  jsl scroll_left
@@ -9075,6 +9340,76 @@ co_op_shift_other_right
  lda billy_sprite+30
  ora #$03
  sta billy_sprite+30
+ rts
+
+*----------------------------------------------------------
+* co_op_shift_other_down - Vertical analogue of
+* co_op_shift_other_left/right for the climb-scroll path. Adds
+* 4 to the OTHER player's ypos so they stay anchored to their
+* world-y while the current player scrolls the camera up.
+* Caller must guarantee the new ypos won't push the sprite off
+* the playfield bottom (co_op_other_would_clip_y gates this).
+*----------------------------------------------------------
+co_op_shift_other_down
+ lda info_ptr
+ cmp #<billy_sprite
+ bne :cosd_shift_billy
+ lda info_ptr+1
+ cmp #>billy_sprite
+ bne :cosd_shift_billy
+* Current is Billy → shift Jimmy down.
+ lda jimmy_sprite+0
+ sta jimmy_sprite+32       ; prev_ypos
+ clc
+ adc #4
+ sta jimmy_sprite+0
+ lda jimmy_sprite+30
+ ora #$03                  ; dirty: erase + draw
+ sta jimmy_sprite+30
+ rts
+:cosd_shift_billy
+* Current is Jimmy → shift Billy down.
+ lda billy_sprite+0
+ sta billy_sprite+32
+ clc
+ adc #4
+ sta billy_sprite+0
+ lda billy_sprite+30
+ ora #$03
+ sta billy_sprite+30
+ rts
+
+*----------------------------------------------------------
+* co_op_other_would_clip_y - Return C=1 if shifting OTHER down
+* by 4 would push their sprite's bottom past playfield row 182.
+* Matches check_y_bounds' "proposed + frame_y > 183" clamp:
+* ypos + 4 + frame_y >= 184  ⇔  ypos + frame_y >= 180.
+*----------------------------------------------------------
+co_op_other_would_clip_y
+ lda info_ptr
+ cmp #<billy_sprite
+ bne :coey_curr_jimmy
+ lda info_ptr+1
+ cmp #>billy_sprite
+ bne :coey_curr_jimmy
+* Current = Billy → check Jimmy.
+ lda jimmy_sprite+0
+ clc
+ adc jimmy_sprite+12
+ cmp #180
+ bcc :coey_ok
+ sec
+ rts
+:coey_curr_jimmy
+ lda billy_sprite+0
+ clc
+ adc billy_sprite+12
+ cmp #180
+ bcc :coey_ok
+ sec
+ rts
+:coey_ok
+ clc
  rts
 
 *----------------------------------------------------------
@@ -16519,7 +16854,16 @@ assert_scroll_src_off
 * scr0); or when expected is out of the neighbor's valid range.
 *----------------------------------------------------------
 assert_scroll_lsrc_off
+* Re-enabled for DEBUG_LSRC. The original early-return was kept
+* around because earlier transition windows tripped it spuriously;
+* if it fires now during normal play, that's the signal that lsrc
+* state has drifted. Flip the rts back on (delete this comment +
+* the next four lines) once the co-op left-scroll bug is fixed.
+ do DEBUG_LSRC
+ bra :al_run
+ fin
 :al_skip rts
+:al_run
  lda scroll_lsrc_bank
  sec
  sbc #$03
