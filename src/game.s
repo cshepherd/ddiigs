@@ -517,10 +517,12 @@ game_loop
  bne :gl_paused_idle   ; frozen: skip all per-frame work
  jsr update_overlay
  jsr process_input
+ jsr process_input_jimmy
  jsr run_script
  jsr update_npcs       ; runs behavior state machines
  jsr update_anims
  jsr update_billy_y_off ; ramp Billy's parabolic jump arc
+ jsr update_jimmy_y_off ; same for Jimmy when he's active
 * Invariant check: abs_x must equal world_offset + IMAGE01_XPOS.
 * Placed after every position-mutating pass (process_input walks
 * and scrolls; update_anims advances xpos per VBL for jumps).
@@ -6338,10 +6340,18 @@ erase_all
  ldy #22
  lda (info_ptr),y
  cmp #$01
- bne :ea_no_off
+ bne :ea_chk_jimmy_off
  lda billy_prev_x_off
  sta :ea_prev_xeff
  lda billy_cur_x_off
+ sta :ea_cur_xeff
+ bra :ea_off_done
+:ea_chk_jimmy_off
+ cmp #$02
+ bne :ea_no_off
+ lda jimmy_prev_x_off
+ sta :ea_prev_xeff
+ lda jimmy_cur_x_off
  sta :ea_cur_xeff
  bra :ea_off_done
 :ea_no_off
@@ -6517,14 +6527,21 @@ erase_all
  beq :ea_disp_check
  jmp :ea_clr_dirty    ; gated out — clear bit and continue
 :ea_disp_check
-* Stage frame_x_off for this draw — same gating as draw_all. Only
-* Billy (controller=1) gets billy_cur_x_off; everything else
-* clears frame_x_off so the offset doesn't bleed into NPC draws.
+* Stage frame_x_off for this draw — same gating as draw_all.
+* Billy (controller=1) → billy_cur_x_off; Jimmy (controller=2) →
+* jimmy_cur_x_off; everything else clears so the offset doesn't
+* bleed into NPC draws.
  ldy #22
  lda (info_ptr),y
  cmp #$01
- bne :ea_draw_no_off
+ bne :ea_draw_chk_jimmy
  lda billy_cur_x_off
+ sta frame_x_off
+ bra :ea_draw_off_done
+:ea_draw_chk_jimmy
+ cmp #$02
+ bne :ea_draw_no_off
+ lda jimmy_cur_x_off
  sta frame_x_off
  bra :ea_draw_off_done
 :ea_draw_no_off
@@ -6638,15 +6655,20 @@ erase_all
 :ea_legacy
  jsr draw_sprite
 :ea_post_draw
-* Latch billy_cur_x_off → billy_prev_x_off after Billy's draw so
-* erase_all next frame clears the rect we just drew at the
-* shifted column.
+* Latch billy/jimmy_cur_x_off → *_prev_x_off after the draw so
+* erase_all next frame clears the rect at the shifted column.
  ldy #22
  lda (info_ptr),y
  cmp #$01
- bne :ea_clr_dirty
+ bne :ea_latch_chk_jimmy
  lda billy_cur_x_off
  sta billy_prev_x_off
+ bra :ea_clr_dirty
+:ea_latch_chk_jimmy
+ cmp #$02
+ bne :ea_clr_dirty
+ lda jimmy_cur_x_off
+ sta jimmy_prev_x_off
 :ea_clr_dirty
  ldy #30
  lda (info_ptr),y
@@ -6692,14 +6714,21 @@ draw_all
  beq :da_grab_chk_done
  jmp :da_drawn        ; clear dirty bit, skip draw
 :da_grab_chk_done
-* Stage frame_x_off for this draw. Only Billy uses an offset today
-* (punch lunge frames); NPCs and projectiles must see frame_x_off=0
-* so draw_sprite/draw_sprite_compiled don't shift them.
+* Stage frame_x_off for this draw. Billy (controller=1) →
+* billy_cur_x_off; Jimmy (controller=2) → jimmy_cur_x_off.
+* NPCs / projectiles see 0 so draw_sprite/draw_sprite_compiled
+* don't shift them.
  ldy #22
  lda (info_ptr),y
  cmp #$01
- bne :da_no_off
+ bne :da_chk_jimmy_off
  lda billy_cur_x_off
+ sta frame_x_off
+ bra :da_off_done
+:da_chk_jimmy_off
+ cmp #$02
+ bne :da_no_off
+ lda jimmy_cur_x_off
  sta frame_x_off
  bra :da_off_done
 :da_no_off
@@ -6727,9 +6756,15 @@ draw_all
  ldy #22
  lda (info_ptr),y
  cmp #$01
- bne :da_skip_latch
+ bne :da_latch_chk_jimmy
  lda billy_cur_x_off
  sta billy_prev_x_off
+ bra :da_skip_latch
+:da_latch_chk_jimmy
+ cmp #$02
+ bne :da_skip_latch
+ lda jimmy_cur_x_off
+ sta jimmy_prev_x_off
 :da_skip_latch
 * Clear bit 0 (needs_draw)
  ldy #30
@@ -7358,6 +7393,12 @@ process_input
  inc spr_ptr+1
  bra :find_player
 :found_player
+pi_action_dispatch
+* Global alias for :found_player so process_input_jimmy can JSR
+* in here after pre-setting info_ptr/IMAGE01_* to point at Jimmy.
+* Skips the find-player scan above so we don't end up running
+* Billy's logic twice in one frame.
+*
 * Mode toggle (Ctrl-J / Ctrl-K) is checked FIRST — before the
 * action-anim block — so the user can always switch modes and
 * recover if a stuck animation (e.g., anim_jump's auto-advance
@@ -7370,22 +7411,20 @@ process_input
  cmp #$8A              ; Ctrl-J
  bne :not_ctrl_j
  sta $c010             ; clear strobe
+* Ctrl-J no longer switches Billy's input source — keyboard
+* keeps controlling Billy. It just enables Jimmy and arms
+* joystick polling for him (joy_armed=0 → require centered
+* read once before accepting deflection, so a stuck KEGS
+* arrow doesn't slam Jimmy on activation).
+ stz joy_armed
  lda #1
- sta input_mode
- stz joy_armed         ; require centered read before accepting deflection
- jsr reset_input_state
- jsr cancel_action_anim
-* Activate Jimmy on Ctrl-J: install anim_walk_j as his anim_ptr
-* and request an initial draw. Idempotent — subsequent Ctrl-J
-* presses just rewrite the same values. Until this fires, his
-* anim_ptr / dirty are 0 so update_anims and draw_all skip him.
- lda #<anim_walk_j
- sta jimmy_sprite+24
- lda #>anim_walk_j
- sta jimmy_sprite+25
+ sta jimmy_active      ; process_input_jimmy gate
+ stz jimmy_sprite+24   ; anim_ptr = 0 (no action anim — input is
+ stz jimmy_sprite+25   ; not blocked, advance_walk drives walk
+                       ; frames just like for Billy)
  lda #$01
  sta jimmy_sprite+30   ; dirty bit 0 = needs_draw
- lda #$0F              ; white border = joystick mode
+ lda #$0F              ; white border = Jimmy active
  stal $E0C034
  rts
 :not_ctrl_j
@@ -7431,11 +7470,14 @@ process_input
  cmp #>anim_walk
  beq :accept_input
 :pi_chk_jump
+* Allow J+L through during the active player's jump anim so it
+* can trigger the spin-kick. active_jump_anim is anim_jump for
+* Billy / anim_jjump for Jimmy (swap_in_jimmy swaps it).
  lda anim_ptr
- cmp #<anim_jump
+ cmp active_jump_anim
  bne :blocked
  lda anim_ptr+1
- cmp #>anim_jump
+ cmp active_jump_anim+1
  beq :accept_input
 :blocked rts           ; other action animation, block all input
 
@@ -7773,7 +7815,26 @@ btn_action_fire
  jsr start_anim
  rts
 :baf_l_pickup
+* billy_try_pickup_weapon mutates info_ptr while scanning
+* sprite_table and unconditionally writes info_ptr=billy_sprite
+* before returning. Save/restore around the call so Jimmy's L
+* button doesn't end up dispatching :baf_punch/_kick against
+* billy_sprite's mirror flag.
+ lda info_ptr
+ pha
+ lda info_ptr+1
+ pha
  jsr billy_try_pickup_weapon
+ php                      ; preserve C across the restore
+ pla
+ sta :baf_save_p
+ pla
+ sta info_ptr+1
+ pla
+ sta info_ptr
+ lda :baf_save_p
+ pha
+ plp
  bcs :baf_l_done          ; pickup fired anim_bpickup, return
 :baf_dispatch
  ldy #4
@@ -7792,8 +7853,8 @@ btn_action_fire
 :baf_l_done
  rts
 :baf_kick
- lda #<anim_kick
- ldx #>anim_kick
+ lda active_kick_anim
+ ldx active_kick_anim+1
  jsr start_anim
  rts
 :baf_punch
@@ -7803,8 +7864,8 @@ btn_action_fire
  lda landing_window
  beq :baf_reg_punch
  stz landing_window
- lda #<anim_uppercut
- ldx #>anim_uppercut
+ lda active_uppercut_anim
+ ldx active_uppercut_anim+1
  jsr start_anim
  rts
 :baf_reg_punch
@@ -7812,41 +7873,44 @@ btn_action_fire
  eor #$01
  sta punch_toggle
  bne :baf_use_punch2
- lda #<anim_punch1
- ldx #>anim_punch1
+ lda active_punch1_anim
+ ldx active_punch1_anim+1
  jsr start_anim
  rts
 :baf_use_punch2
- lda #<anim_punch2
- ldx #>anim_punch2
+ lda active_punch2_anim
+ ldx active_punch2_anim+1
  jsr start_anim
  rts
-:baf_key dfb 0
+:baf_key    dfb 0
+:baf_save_p dfb 0
 
 *----------------------------------------------------------
 * btn_action_jump - both J and L pressed within the window.
 *----------------------------------------------------------
 btn_action_jump
-* If Billy is already mid-jump (anim_ptr == anim_jump) and the
-* J+L combo lands again, switch to the spin-kick: replace the
-* current animation with anim_bspinkick and trigger SND_SPINKICK.
+* If the current player is already mid-jump (anim_ptr ==
+* active_jump_anim) and the J+L combo lands again, switch to
+* the spin-kick. active_*_anim is swapped by swap_in_jimmy so
+* Jimmy compares against anim_jjump while Billy compares
+* against anim_jump.
  lda anim_ptr
- cmp #<anim_jump
+ cmp active_jump_anim
  bne :baj_normal
  lda anim_ptr+1
- cmp #>anim_jump
+ cmp active_jump_anim+1
  bne :baj_normal
  ldx #SND_SPINKICK
  jsr sound_trigger
- lda #<anim_bspinkick
- ldx #>anim_bspinkick
+ lda active_bspinkick_anim
+ ldx active_bspinkick_anim+1
  jsr start_anim
  rts
 :baj_normal
  ldx #SND_JUMP
  jsr sound_trigger
- lda #<anim_jump
- ldx #>anim_jump
+ lda active_jump_anim
+ ldx active_jump_anim+1
  jsr start_anim
  rts
 
@@ -8621,6 +8685,479 @@ snes_poll
  rts
 
 *----------------------------------------------------------
+* process_input_jimmy - Per-frame Jimmy input via context swap.
+*
+* Saves Billy's per-player globals (walk_step, billy_y_off,
+* abs_x, walk_addr_tbl, ...), loads Jimmy's stashed equivalents,
+* points info_ptr at jimmy_sprite, forces input_mode=1 (joystick),
+* JSRs into pi_action_dispatch — the action-dispatch core of
+* process_input — and then reverses the swap. The whole walk /
+* jump / punch / kick / grab pipeline reused as-is; Jimmy ends
+* up with his own independent state because the globals are
+* swapped under it.
+*
+* Scroll triggers are suppressed by zeroing scroll_*_enabled
+* during Jimmy's turn; Billy stays the one who scrolls the
+* world. abs_x is saved+zeroed so Jimmy's walks don't move
+* Billy's world position.
+*----------------------------------------------------------
+process_input_jimmy
+ lda jimmy_active
+ bne :pij_active
+ rts
+:pij_active
+
+ jsr swap_in_jimmy
+
+* Tick Jimmy's own copies of the per-frame timers that
+* process_input ticks at its top (we entered via the action-
+* dispatch label, so the top didn't run). landing_window and
+* punch_window are saved/restored across the swap so each
+* player has independent grab / uppercut windows; ditto
+* btn_pending_timer so the J/L (= joystick A/B) latch fires
+* under whichever player queued it.
+ lda landing_window
+ beq :pij_no_lw
+ dec landing_window
+:pij_no_lw
+ lda punch_window
+ beq :pij_no_pw
+ dec punch_window
+:pij_no_pw
+ lda btn_pending_timer
+ beq :pij_no_bp
+ dec btn_pending_timer
+ bne :pij_no_bp
+ lda #1
+ sta btn_pending_fire
+:pij_no_bp
+
+* Find Jimmy's CURRENT slot in sprite_table by pointer match —
+* resort_sprite_table re-orders entries by ypos every time a
+* sprite moves, so Jimmy doesn't stay pinned at slot 1.
+ lda #<sprite_table
+ sta spr_ptr
+ lda #>sprite_table
+ sta spr_ptr+1
+:pij_find_jimmy
+ ldy #0
+ lda (spr_ptr),y
+ sta info_ptr
+ iny
+ lda (spr_ptr),y
+ sta info_ptr+1
+ ora info_ptr
+ beq :pij_no_jimmy        ; null terminator — Jimmy not in table
+ lda info_ptr
+ cmp #<jimmy_sprite
+ bne :pij_jimmy_next
+ lda info_ptr+1
+ cmp #>jimmy_sprite
+ beq :pij_jimmy_found
+:pij_jimmy_next
+ lda spr_ptr
+ clc
+ adc #2
+ sta spr_ptr
+ bcc :pij_find_jimmy
+ inc spr_ptr+1
+ bra :pij_find_jimmy
+:pij_no_jimmy
+ jsr swap_out_jimmy       ; bail cleanly, restore Billy
+ rts
+:pij_jimmy_found
+ jsr load_sprite          ; spr_ptr now points at Jimmy's slot
+
+ jsr pi_action_dispatch
+
+* No extra save_sprite here — process_input's walk handlers
+* call save_sprite themselves at the right moment (BEFORE the
+* xpos delta) so prev_xpos lands on the old position. A second
+* save_sprite would re-snapshot prev from the *new* info+2,
+* destroying the erase rect.
+
+ jsr swap_out_jimmy
+ rts
+
+*----------------------------------------------------------
+* swap_in_jimmy - Stash Billy's per-player globals, load Jimmy's.
+*
+* Touches:
+*   - walk_step / walk_toggle / climb_toggle / punch_toggle
+*   - billy_y_off / billy_y_target / billy_cur_x_off / billy_prev_x_off
+*   - via_ladder
+*   - billy_fall_count
+*   - billy_pipe_armed / mace_armed / knife_armed
+*   - punch_window / landing_window / grab_punch_timer
+*   - last_hit_target / grab_target (2 bytes each)
+*   - jump_x_toggle
+*   - abs_x (2 bytes — zeroed for Jimmy so scroll edge checks
+*     never trip)
+*   - input_mode (forced to 1 = joystick)
+*   - walk_addr_tbl + mask + mirror pair (32 bytes total) —
+*     advance_walk reads these for the active player's walk
+*     frames; we install jimmy_walk_addr_tbl etc. here.
+*   - scroll_right_enabled / left_enabled / up_enabled —
+*     zeroed so Jimmy can't trigger a scroll.
+*----------------------------------------------------------
+swap_in_jimmy
+ lda walk_step
+ sta billy_save_walk_step
+ lda jimmy_stash_walk_step
+ sta walk_step
+ lda walk_toggle
+ sta billy_save_walk_toggle
+ lda jimmy_stash_walk_toggle
+ sta walk_toggle
+ lda climb_toggle
+ sta billy_save_climb_toggle
+ lda jimmy_stash_climb_toggle
+ sta climb_toggle
+ lda punch_toggle
+ sta billy_save_punch_toggle
+ lda jimmy_stash_punch_toggle
+ sta punch_toggle
+ lda billy_y_off
+ sta billy_save_y_off
+ lda jimmy_stash_y_off
+ sta billy_y_off
+ lda billy_y_target
+ sta billy_save_y_target
+ lda jimmy_stash_y_target
+ sta billy_y_target
+ lda billy_cur_x_off
+ sta billy_save_cur_x_off
+ lda jimmy_stash_cur_x_off
+ sta billy_cur_x_off
+ lda billy_prev_x_off
+ sta billy_save_prev_x_off
+ lda jimmy_stash_prev_x_off
+ sta billy_prev_x_off
+ lda via_ladder
+ sta billy_save_via_ladder
+ lda jimmy_stash_via_ladder
+ sta via_ladder
+ lda billy_fall_count
+ sta billy_save_fall_count
+ lda jimmy_stash_fall_count
+ sta billy_fall_count
+ lda billy_pipe_armed
+ sta billy_save_pipe_armed
+ lda jimmy_stash_pipe_armed
+ sta billy_pipe_armed
+ lda billy_mace_armed
+ sta billy_save_mace_armed
+ lda jimmy_stash_mace_armed
+ sta billy_mace_armed
+ lda billy_knife_armed
+ sta billy_save_knife_armed
+ lda jimmy_stash_knife_armed
+ sta billy_knife_armed
+ lda punch_window
+ sta billy_save_punch_window
+ lda jimmy_stash_punch_window
+ sta punch_window
+ lda landing_window
+ sta billy_save_landing_window
+ lda jimmy_stash_landing_window
+ sta landing_window
+ lda grab_punch_timer
+ sta billy_save_grab_punch_timer
+ lda jimmy_stash_grab_punch_timer
+ sta grab_punch_timer
+ lda jump_x_toggle
+ sta billy_save_jump_x_toggle
+ lda jimmy_stash_jump_x_toggle
+ sta jump_x_toggle
+ lda btn_pending_key
+ sta billy_save_btn_pending_key
+ lda jimmy_stash_btn_pending_key
+ sta btn_pending_key
+ lda btn_pending_timer
+ sta billy_save_btn_pending_timer
+ lda jimmy_stash_btn_pending_timer
+ sta btn_pending_timer
+ lda btn_pending_fire
+ sta billy_save_btn_pending_fire
+ lda jimmy_stash_btn_pending_fire
+ sta btn_pending_fire
+ lda joy_btn_a_prev
+ sta billy_save_joy_btn_a_prev
+ lda jimmy_stash_joy_btn_a_prev
+ sta joy_btn_a_prev
+ lda joy_btn_b_prev
+ sta billy_save_joy_btn_b_prev
+ lda jimmy_stash_joy_btn_b_prev
+ sta joy_btn_b_prev
+ lda last_hit_target
+ sta billy_save_last_hit_target
+ lda jimmy_stash_last_hit_target
+ sta last_hit_target
+ lda last_hit_target+1
+ sta billy_save_last_hit_target+1
+ lda jimmy_stash_last_hit_target+1
+ sta last_hit_target+1
+ lda grab_target
+ sta billy_save_grab_target
+ lda jimmy_stash_grab_target
+ sta grab_target
+ lda grab_target+1
+ sta billy_save_grab_target+1
+ lda jimmy_stash_grab_target+1
+ sta grab_target+1
+ lda abs_x
+ sta billy_save_abs_x
+ lda abs_x+1
+ sta billy_save_abs_x+1
+ stz abs_x
+ stz abs_x+1
+ lda input_mode
+ sta billy_save_input_mode
+ lda #1
+ sta input_mode
+ lda scroll_right_enabled
+ sta billy_save_scroll_right_en
+ stz scroll_right_enabled
+ lda scroll_left_enabled
+ sta billy_save_scroll_left_en
+ stz scroll_left_enabled
+ lda scroll_up_enabled
+ sta billy_save_scroll_up_en
+ stz scroll_up_enabled
+* Active anim pointers (point process_input's btn_action_* paths
+* at Jimmy's anim variants while he's the active player). Save
+* Billy's, install Jimmy's.
+ lda active_jump_anim
+ sta billy_save_active_jump_anim
+ lda active_jump_anim+1
+ sta billy_save_active_jump_anim+1
+ lda #<anim_jjump
+ sta active_jump_anim
+ lda #>anim_jjump
+ sta active_jump_anim+1
+ lda active_bspinkick_anim
+ sta billy_save_active_bspinkick_anim
+ lda active_bspinkick_anim+1
+ sta billy_save_active_bspinkick_anim+1
+ lda #<anim_jbspinkick
+ sta active_bspinkick_anim
+ lda #>anim_jbspinkick
+ sta active_bspinkick_anim+1
+ lda active_kick_anim
+ sta billy_save_active_kick_anim
+ lda active_kick_anim+1
+ sta billy_save_active_kick_anim+1
+ lda #<anim_jkick
+ sta active_kick_anim
+ lda #>anim_jkick
+ sta active_kick_anim+1
+ lda active_punch1_anim
+ sta billy_save_active_punch1_anim
+ lda active_punch1_anim+1
+ sta billy_save_active_punch1_anim+1
+ lda #<anim_jpunch1
+ sta active_punch1_anim
+ lda #>anim_jpunch1
+ sta active_punch1_anim+1
+ lda active_punch2_anim
+ sta billy_save_active_punch2_anim
+ lda active_punch2_anim+1
+ sta billy_save_active_punch2_anim+1
+ lda #<anim_jpunch2
+ sta active_punch2_anim
+ lda #>anim_jpunch2
+ sta active_punch2_anim+1
+ lda active_uppercut_anim
+ sta billy_save_active_uppercut_anim
+ lda active_uppercut_anim+1
+ sta billy_save_active_uppercut_anim+1
+ lda #<anim_juppercut
+ sta active_uppercut_anim
+ lda #>anim_juppercut
+ sta active_uppercut_anim+1
+ ldx #7
+:sij_tables
+ lda walk_addr_tbl,x
+ sta billy_save_walk_addr_tbl,x
+ lda jimmy_walk_addr_tbl,x
+ sta walk_addr_tbl,x
+ lda walk_mask_tbl,x
+ sta billy_save_walk_mask_tbl,x
+ lda jimmy_walk_mask_tbl,x
+ sta walk_mask_tbl,x
+ lda walk_addr_tbl_mirror,x
+ sta billy_save_walk_addr_tbl_mir,x
+ lda jimmy_walk_addr_tbl_mirror,x
+ sta walk_addr_tbl_mirror,x
+ lda walk_mask_tbl_mirror,x
+ sta billy_save_walk_mask_tbl_mir,x
+ lda jimmy_walk_mask_tbl_mirror,x
+ sta walk_mask_tbl_mirror,x
+ dex
+ bpl :sij_tables
+ rts
+
+*----------------------------------------------------------
+* swap_out_jimmy - Reverse swap_in_jimmy. Save Jimmy's modified
+* state to jimmy_stash_*, restore Billy's from billy_save_*.
+*----------------------------------------------------------
+swap_out_jimmy
+ lda walk_step
+ sta jimmy_stash_walk_step
+ lda billy_save_walk_step
+ sta walk_step
+ lda walk_toggle
+ sta jimmy_stash_walk_toggle
+ lda billy_save_walk_toggle
+ sta walk_toggle
+ lda climb_toggle
+ sta jimmy_stash_climb_toggle
+ lda billy_save_climb_toggle
+ sta climb_toggle
+ lda punch_toggle
+ sta jimmy_stash_punch_toggle
+ lda billy_save_punch_toggle
+ sta punch_toggle
+ lda billy_y_off
+ sta jimmy_stash_y_off
+ lda billy_save_y_off
+ sta billy_y_off
+ lda billy_y_target
+ sta jimmy_stash_y_target
+ lda billy_save_y_target
+ sta billy_y_target
+ lda billy_cur_x_off
+ sta jimmy_stash_cur_x_off
+ lda billy_save_cur_x_off
+ sta billy_cur_x_off
+ lda billy_prev_x_off
+ sta jimmy_stash_prev_x_off
+ lda billy_save_prev_x_off
+ sta billy_prev_x_off
+ lda via_ladder
+ sta jimmy_stash_via_ladder
+ lda billy_save_via_ladder
+ sta via_ladder
+ lda billy_fall_count
+ sta jimmy_stash_fall_count
+ lda billy_save_fall_count
+ sta billy_fall_count
+ lda billy_pipe_armed
+ sta jimmy_stash_pipe_armed
+ lda billy_save_pipe_armed
+ sta billy_pipe_armed
+ lda billy_mace_armed
+ sta jimmy_stash_mace_armed
+ lda billy_save_mace_armed
+ sta billy_mace_armed
+ lda billy_knife_armed
+ sta jimmy_stash_knife_armed
+ lda billy_save_knife_armed
+ sta billy_knife_armed
+ lda punch_window
+ sta jimmy_stash_punch_window
+ lda billy_save_punch_window
+ sta punch_window
+ lda landing_window
+ sta jimmy_stash_landing_window
+ lda billy_save_landing_window
+ sta landing_window
+ lda grab_punch_timer
+ sta jimmy_stash_grab_punch_timer
+ lda billy_save_grab_punch_timer
+ sta grab_punch_timer
+ lda jump_x_toggle
+ sta jimmy_stash_jump_x_toggle
+ lda billy_save_jump_x_toggle
+ sta jump_x_toggle
+ lda btn_pending_key
+ sta jimmy_stash_btn_pending_key
+ lda billy_save_btn_pending_key
+ sta btn_pending_key
+ lda btn_pending_timer
+ sta jimmy_stash_btn_pending_timer
+ lda billy_save_btn_pending_timer
+ sta btn_pending_timer
+ lda btn_pending_fire
+ sta jimmy_stash_btn_pending_fire
+ lda billy_save_btn_pending_fire
+ sta btn_pending_fire
+ lda joy_btn_a_prev
+ sta jimmy_stash_joy_btn_a_prev
+ lda billy_save_joy_btn_a_prev
+ sta joy_btn_a_prev
+ lda joy_btn_b_prev
+ sta jimmy_stash_joy_btn_b_prev
+ lda billy_save_joy_btn_b_prev
+ sta joy_btn_b_prev
+ lda last_hit_target
+ sta jimmy_stash_last_hit_target
+ lda billy_save_last_hit_target
+ sta last_hit_target
+ lda last_hit_target+1
+ sta jimmy_stash_last_hit_target+1
+ lda billy_save_last_hit_target+1
+ sta last_hit_target+1
+ lda grab_target
+ sta jimmy_stash_grab_target
+ lda billy_save_grab_target
+ sta grab_target
+ lda grab_target+1
+ sta jimmy_stash_grab_target+1
+ lda billy_save_grab_target+1
+ sta grab_target+1
+ lda billy_save_abs_x
+ sta abs_x
+ lda billy_save_abs_x+1
+ sta abs_x+1
+ lda billy_save_input_mode
+ sta input_mode
+ lda billy_save_scroll_right_en
+ sta scroll_right_enabled
+ lda billy_save_scroll_left_en
+ sta scroll_left_enabled
+ lda billy_save_scroll_up_en
+ sta scroll_up_enabled
+* Restore Billy's active anim pointers.
+ lda billy_save_active_jump_anim
+ sta active_jump_anim
+ lda billy_save_active_jump_anim+1
+ sta active_jump_anim+1
+ lda billy_save_active_bspinkick_anim
+ sta active_bspinkick_anim
+ lda billy_save_active_bspinkick_anim+1
+ sta active_bspinkick_anim+1
+ lda billy_save_active_kick_anim
+ sta active_kick_anim
+ lda billy_save_active_kick_anim+1
+ sta active_kick_anim+1
+ lda billy_save_active_punch1_anim
+ sta active_punch1_anim
+ lda billy_save_active_punch1_anim+1
+ sta active_punch1_anim+1
+ lda billy_save_active_punch2_anim
+ sta active_punch2_anim
+ lda billy_save_active_punch2_anim+1
+ sta active_punch2_anim+1
+ lda billy_save_active_uppercut_anim
+ sta active_uppercut_anim
+ lda billy_save_active_uppercut_anim+1
+ sta active_uppercut_anim+1
+ ldx #7
+:soj_tables
+ lda billy_save_walk_addr_tbl,x
+ sta walk_addr_tbl,x
+ lda billy_save_walk_mask_tbl,x
+ sta walk_mask_tbl,x
+ lda billy_save_walk_addr_tbl_mir,x
+ sta walk_addr_tbl_mirror,x
+ lda billy_save_walk_mask_tbl_mir,x
+ sta walk_mask_tbl_mirror,x
+ dex
+ bpl :soj_tables
+ rts
+
+*----------------------------------------------------------
 * cancel_action_anim - Emergency unstick. If Billy's anim_ptr
 * is non-zero, snapshot prev_* so the current frame's drawing
 * gets erased, clear anim_ptr/anim_frame, and restore the idle
@@ -8871,6 +9408,73 @@ walk_addr_tbl        ds 8  ; patched by init_level (IMAGE01,IMAGE02,IMAGE03,IMAG
 walk_mask_tbl        ds 8  ; companion mask addresses (compiled pipeline)
 walk_addr_tbl_mirror ds 8  ; mirror-baked data addresses
 walk_mask_tbl_mirror ds 8  ; mirror-baked mask addresses
+
+* Jimmy walk-frame tables — same layout/widths as Billy's
+* (JIMMY01/02/03/02 cycle), patched by init_jimmy from the
+* bank-$1D Jimmy sprite-address table. advance_jimmy_walk indexes
+* by jimmy_walk_step (0..3) and picks the mirror-bank pair from
+* jimmy_sprite+4.
+jimmy_walk_addr_tbl        ds 8
+jimmy_walk_mask_tbl        ds 8
+jimmy_walk_addr_tbl_mirror ds 8
+jimmy_walk_mask_tbl_mirror ds 8
+jimmy_walk_step    dfb 0
+jimmy_walk_toggle  dfb 0
+
+*----------------------------------------------------------
+* advance_jimmy_walk - Cycle Jimmy's walk frame. Called by
+* process_input_jimmy whenever the joystick produces a movement
+* this VBL. Same toggle/step pattern Billy uses in advance_walk:
+* steps 0..3 → JIMMY01, JIMMY02, JIMMY03, JIMMY02; frame swap
+* every 2nd call so the leg cadence matches the move rate.
+*
+* Writes frame_x, frame_y, frame_addr, and mask_addr directly
+* into jimmy_sprite — the next draw_all pulls these via
+* load_sprite. No anim_ptr involvement; Jimmy's walk doesn't
+* go through update_anims.
+*----------------------------------------------------------
+advance_jimmy_walk
+ lda jimmy_walk_toggle
+ eor #$01
+ sta jimmy_walk_toggle
+ beq :ajw_step
+ rts
+:ajw_step
+ inc jimmy_walk_step
+ lda jimmy_walk_step
+ cmp #4
+ bcc :ajw_ok
+ stz jimmy_walk_step
+ lda #0
+:ajw_ok tax
+ lda walk_x_tbl,x          ; reuse Billy's width table — JIMMY
+ sta jimmy_sprite+10       ; frames have the same per-step widths
+ lda walk_y_tbl,x
+ sta jimmy_sprite+12
+ txa
+ asl
+ tax                       ; x = byte offset into the addr tables
+ lda jimmy_sprite+4        ; mirror flag
+ bne :ajw_mir
+ lda jimmy_walk_addr_tbl,x
+ sta jimmy_sprite+14
+ lda jimmy_walk_addr_tbl+1,x
+ sta jimmy_sprite+15
+ lda jimmy_walk_mask_tbl,x
+ sta jimmy_sprite+60
+ lda jimmy_walk_mask_tbl+1,x
+ sta jimmy_sprite+61
+ rts
+:ajw_mir
+ lda jimmy_walk_addr_tbl_mirror,x
+ sta jimmy_sprite+14
+ lda jimmy_walk_addr_tbl_mirror+1,x
+ sta jimmy_sprite+15
+ lda jimmy_walk_mask_tbl_mirror,x
+ sta jimmy_sprite+60
+ lda jimmy_walk_mask_tbl_mirror+1,x
+ sta jimmy_sprite+61
+ rts
 
 *----------------------------------------------------------
 * resort_sprite_table - Rebuild sprite_table sorted by ypos.
@@ -9296,7 +9900,15 @@ set_anim_x_off
  ldy #22
  lda (info_ptr),y
  cmp #$01
- bne :sx_done           ; not Billy — leave globals alone
+ beq :sx_is_player      ; Billy
+ cmp #$02
+ beq :sx_is_player      ; Jimmy
+ jmp :sx_done
+:sx_is_player
+ sta :sx_ctrl           ; remember which player so :sx_store
+                        ;     routes to the right *_cur_x_off
+* Recognise both Billy's and Jimmy's punch anims (same wind-up
+* + lunge frame shape, so they share the offset table).
  lda anim_ptr
  cmp #<anim_punch1
  bne :sx_chk_p2
@@ -9306,17 +9918,32 @@ set_anim_x_off
 :sx_chk_p2
  lda anim_ptr
  cmp #<anim_punch2
- bne :sx_no_off
+ bne :sx_chk_jp1
  lda anim_ptr+1
  cmp #>anim_punch2
+ beq :sx_punch
+:sx_chk_jp1
+ lda anim_ptr
+ cmp #<anim_jpunch1
+ bne :sx_chk_jp2
+ lda anim_ptr+1
+ cmp #>anim_jpunch1
+ beq :sx_punch
+:sx_chk_jp2
+ lda anim_ptr
+ cmp #<anim_jpunch2
+ bne :sx_no_off
+ lda anim_ptr+1
+ cmp #>anim_jpunch2
  bne :sx_no_off
 :sx_punch
-* Index per-frame offset by anim_frame (info+26). punch1/punch2
-* both have the same wind-up→lunge shape, so they share tables.
+* Index per-frame offset by anim_frame (info+26). Both Billy
+* and Jimmy share the same wind-up→lunge shape on these anims,
+* so a single table per facing covers both.
  ldy #26
  lda (info_ptr),y
  tax
- cpx #2                 ; clamp out-of-range frame indices to 0
+ cpx #2
  bcc :sx_idx_ok
  ldx #0
 :sx_idx_ok
@@ -9330,9 +9957,19 @@ set_anim_x_off
 :sx_no_off
  lda #0
 :sx_store
+* A = computed offset. Route to the right player's slot. We
+* stashed which player into :sx_ctrl at entry (see :sx_player
+* branch above); store there, then dispatch.
+ ldx :sx_ctrl
+ cpx #$01
+ bne :sx_store_jimmy
  sta billy_cur_x_off
+ rts
+:sx_store_jimmy
+ sta jimmy_cur_x_off
 :sx_done
  rts
+:sx_ctrl dfb 0
 
 * Per-frame render-x offsets for the punch anims, indexed by
 * anim_frame (0 = wind-up, 1 = lunge). Signed bytes.
@@ -9366,19 +10003,25 @@ set_billy_y_target
  ldy #22
  lda (info_ptr),y
  cmp #$01
- bne :sy_done
+ beq :sy_is_player
+ cmp #$02
+ beq :sy_is_player
+ jmp :sy_done
+:sy_is_player
+* active_jump_anim / active_bspinkick_anim are swapped per
+* player by swap_in_jimmy, so this comparison works for both.
  lda anim_ptr
- cmp #<anim_jump
+ cmp active_jump_anim
  bne :sy_chk_spinkick
  lda anim_ptr+1
- cmp #>anim_jump
+ cmp active_jump_anim+1
  beq :sy_jump
 :sy_chk_spinkick
  lda anim_ptr
- cmp #<anim_bspinkick
+ cmp active_bspinkick_anim
  bne :sy_descend
  lda anim_ptr+1
- cmp #>anim_bspinkick
+ cmp active_bspinkick_anim+1
  bne :sy_descend
 :sy_jump
 * If we're already mid-jump (billy_y_target non-zero, i.e. an
@@ -9387,13 +10030,14 @@ set_billy_y_target
 * current (already-lifted) ypos would clamp the peak too low.
  lda billy_y_target
  bne :sy_done
-* Cap the peak so Billy can't go above the playfield top. Normal
-* peak is JUMP_PEAK_Y_OFF (-20), but if Billy is jumping from
-* high ground (rooftop, top of ladder) where ypos is small, that
-* would underflow ypos through 0. We need peak ypos >= JUMP_MIN_Y;
-* available rise = current ypos - JUMP_MIN_Y. Cap target at
-* -available_rise when that's smaller than 20.
- lda billy_sprite       ; current (grounded) ypos
+* Cap the peak so the player can't go above the playfield top.
+* Normal peak is JUMP_PEAK_Y_OFF (-20), but if they're jumping
+* from high ground (rooftop, top of ladder) where ypos is small,
+* that would underflow ypos through 0. Read the current ypos
+* through info_ptr so the cap is correct for whichever player
+* is being processed (Billy's billy_sprite or Jimmy's jimmy_sprite).
+ ldy #0
+ lda (info_ptr),y       ; current (grounded) ypos
  cmp #25                ; JUMP_MIN_Y(5) + 20 — if ypos >= 25, normal peak fits
  bcc :sy_jump_clamp
  lda #JUMP_PEAK_Y_OFF
@@ -9402,9 +10046,10 @@ set_billy_y_target
 :sy_jump_clamp
 * Available rise = ypos - JUMP_MIN_Y; target = -(available_rise)
 * expressed as (JUMP_MIN_Y - ypos) which is naturally negative.
+ ldy #0
  lda #JUMP_MIN_Y
  sec
- sbc billy_sprite
+ sbc (info_ptr),y
  sta billy_y_target
  bra :sy_done
 :sy_descend
@@ -9468,6 +10113,53 @@ update_billy_y_off
  ora #$03               ; needs_draw | needs_erase
  sta billy_sprite+30
 :uby_done
+ rts
+
+*----------------------------------------------------------
+* update_jimmy_y_off - Parallel of update_billy_y_off but for
+* Jimmy. Operates on jimmy_stash_y_off / jimmy_stash_y_target
+* (the swap holds Jimmy's values there while he isn't active)
+* and applies the ramp directly to jimmy_sprite+0 / +32 / +30.
+* No-op while jimmy_active is 0.
+*----------------------------------------------------------
+update_jimmy_y_off
+ lda jimmy_active
+ bne :ujy_check
+ rts
+:ujy_check
+ lda jimmy_stash_y_off
+ cmp jimmy_stash_y_target
+ beq :ujy_done
+* Snapshot prev_ypos before stepping
+ lda jimmy_sprite
+ sta jimmy_sprite+32
+ lda jimmy_stash_y_target
+ beq :ujy_descend
+* target = -20: rise. y_off and ypos both decrease by 2.
+ lda jimmy_stash_y_off
+ sec
+ sbc #2
+ sta jimmy_stash_y_off
+ lda jimmy_sprite
+ sec
+ sbc #2
+ sta jimmy_sprite
+ bra :ujy_dirty
+:ujy_descend
+* target = 0: descend. y_off and ypos both increase by 2.
+ lda jimmy_stash_y_off
+ clc
+ adc #2
+ sta jimmy_stash_y_off
+ lda jimmy_sprite
+ clc
+ adc #2
+ sta jimmy_sprite
+:ujy_dirty
+ lda jimmy_sprite+30
+ ora #$03
+ sta jimmy_sprite+30
+:ujy_done
  rts
 
 * Fallen-pose vertical offset. The frame 1 ("fallen") pose of
@@ -9796,17 +10488,35 @@ update_anims
  sta (info_ptr),y     ; anim_frame = 0
  jmp :load_frame
 :anim_done
-* Landing detection: if Billy's jump anim just ended, open the
-* uppercut window. Only Billy runs anim_jump so the anim_ptr
-* match is sufficient.
+* Landing detection: when the player's jump anim just ended,
+* open the uppercut window AND reset their y_target so the
+* matching update_*_y_off ramps them back down next frame. We
+* check both anim_jump (Billy) and anim_jjump (Jimmy) directly
+* — active_jump_anim is per-player but update_anims runs
+* OUTSIDE the swap, so it'd hold Billy's pointer during Jimmy's
+* iteration and miss the match.
  lda anim_ptr
  cmp #<anim_jump
- bne :ad_not_jump
+ bne :ad_chk_jjump
  lda anim_ptr+1
  cmp #>anim_jump
+ beq :ad_is_billy_jump
+:ad_chk_jjump
+ lda anim_ptr
+ cmp #<anim_jjump
  bne :ad_not_jump
+ lda anim_ptr+1
+ cmp #>anim_jjump
+ bne :ad_not_jump
+* Jimmy's jump just ended.
+ lda #UPPERCUT_WINDOW
+ sta jimmy_stash_landing_window
+ stz jimmy_stash_y_target
+ bra :ad_not_jump
+:ad_is_billy_jump
  lda #UPPERCUT_WINDOW
  sta landing_window
+ stz billy_y_target
 :ad_not_jump
 * === Burnov boss-death state machine ===
 * Triggered for any sprite whose frame_bank == $19 (legacy
@@ -10432,16 +11142,21 @@ update_anims
  sta (info_ptr),y     ; clear anim_ptr high
  ldy #26
  sta (info_ptr),y     ; clear anim_frame
-* Clear billy_cur_x_off when Billy's anim ends (idle has no
-* render-x offset). Skip for NPCs — they don't use the offset.
-* billy_prev_x_off stays at the punch's offset until draw_all
-* runs, which is correct: erase_all this same frame still needs
-* to clear the punch's drawn rect.
+* Clear billy_cur_x_off (or jimmy_cur_x_off) when the player's
+* anim ends — idle has no render-x offset. *_prev_x_off stays
+* at the punch's offset until draw_all runs, which is correct:
+* erase_all this same frame still needs to clear the punch's
+* drawn rect at the lunged column.
  ldy #22
  lda (info_ptr),y
  cmp #$01
- bne :ne_no_xoff_clear
+ bne :ne_xoff_chk_jimmy
  stz billy_cur_x_off
+ bra :ne_no_xoff_clear
+:ne_xoff_chk_jimmy
+ cmp #$02
+ bne :ne_no_xoff_clear
+ stz jimmy_cur_x_off
 :ne_no_xoff_clear
 * Restore idle frame from sprite block
  ldy #42
@@ -10478,7 +11193,11 @@ update_anims
  ldy #22
  lda (info_ptr),y
  cmp #$01
- bne :ne_npc_mask_restore
+ beq :ne_chk_billy_arm
+ cmp #$02
+ beq :ne_jimmy_idle_chk_mirror
+ jmp :ne_npc_mask_restore
+:ne_chk_billy_arm
  lda billy_pipe_armed
  ora billy_mace_armed
  ora billy_knife_armed
@@ -10512,6 +11231,28 @@ update_anims
  lda spr_image01_mask_mirror
  sta MASK_ADDR
  lda spr_image01_mask_mirror+1
+ sta MASK_ADDR+1
+ bra :ne_no_billy_mask
+:ne_jimmy_idle_chk_mirror
+* Same shape as Billy's idle restore but with Jimmy's bank-$1D
+* cache vars. mirror=0 → FRAME_ADDR is already idle_addr (forward
+* JIMMY01_DATA from the earlier idle restore); just install the
+* forward MASK. mirror=1 → swap both to the _MIRROR variants.
+ lda IMAGE01_MIRROR
+ bne :ne_jimmy_mirror
+ lda spr_jimmy01_mask
+ sta MASK_ADDR
+ lda spr_jimmy01_mask+1
+ sta MASK_ADDR+1
+ bra :ne_no_billy_mask
+:ne_jimmy_mirror
+ lda spr_jimmy01_data_mir
+ sta FRAME_ADDR
+ lda spr_jimmy01_data_mir+1
+ sta FRAME_ADDR+1
+ lda spr_jimmy01_mask_mir
+ sta MASK_ADDR
+ lda spr_jimmy01_mask_mir+1
  sta MASK_ADDR+1
  bra :ne_no_billy_mask
 :ne_npc_mask_restore
@@ -10738,22 +11479,26 @@ update_anims
 * very frame that frame is shown. set_anim_x_off no-ops for
 * anything that isn't Billy on a known offset-bearing anim.
  jsr set_anim_x_off
-* Last-frame descent trigger for jump-arc anims (anim_jump or
-* anim_bspinkick). When the final frame loads we set
-* billy_y_target = 0 so update_billy_y_off ramps Billy back down
-* to ground over the last frame's VBLs (and beyond, into idle).
-* Gated on controller==1 so an NPC ending a coincidentally-named
-* anim couldn't poke Billy's trajectory.
+* Last-frame descent trigger for jump-arc anims. When the final
+* frame of a player jump or spinkick loads we zero the
+* appropriate *_y_target so update_*_y_off ramps that player
+* back down during the last frame's VBLs (and beyond, into
+* idle). Branches by controller so Billy → billy_y_target and
+* Jimmy → jimmy_stash_y_target. NPCs are skipped entirely.
  ldy #22
  lda (info_ptr),y
  cmp #$01
- bne :lf_no_jump_descent
+ beq :lf_billy_jump_chk
+ cmp #$02
+ beq :lf_jimmy_jump_chk
+ jmp :lf_no_jump_descent
+:lf_billy_jump_chk
  lda anim_ptr
  cmp #<anim_jump
  bne :lf_chk_spin_last
  lda anim_ptr+1
  cmp #>anim_jump
- beq :lf_check_last_idx
+ beq :lf_check_last_idx_billy
 :lf_chk_spin_last
  lda anim_ptr
  cmp #<anim_bspinkick
@@ -10761,7 +11506,7 @@ update_anims
  lda anim_ptr+1
  cmp #>anim_bspinkick
  bne :lf_no_jump_descent
-:lf_check_last_idx
+:lf_check_last_idx_billy
  ldy #0
  lda (anim_ptr),y       ; num_frames
  sec
@@ -10772,6 +11517,32 @@ update_anims
  cmp :lf_lastfrm
  bne :lf_no_jump_descent
  stz billy_y_target
+ bra :lf_no_jump_descent
+:lf_jimmy_jump_chk
+ lda anim_ptr
+ cmp #<anim_jjump
+ bne :lf_chk_jspin_last
+ lda anim_ptr+1
+ cmp #>anim_jjump
+ beq :lf_check_last_idx_jimmy
+:lf_chk_jspin_last
+ lda anim_ptr
+ cmp #<anim_jbspinkick
+ bne :lf_no_jump_descent
+ lda anim_ptr+1
+ cmp #>anim_jbspinkick
+ bne :lf_no_jump_descent
+:lf_check_last_idx_jimmy
+ ldy #0
+ lda (anim_ptr),y       ; num_frames
+ sec
+ sbc #1                 ; last frame index
+ sta :lf_lastfrm
+ ldy #26
+ lda (info_ptr),y       ; anim_frame
+ cmp :lf_lastfrm
+ bne :lf_no_jump_descent
+ stz jimmy_stash_y_target
 :lf_no_jump_descent
 * Burnov-grab BNBILLY2 hit sound. anim_bngrab's odd frames
 * (1, 3, 5) are BNBILLY2 — the moment Burnov's punch lands on
@@ -10856,9 +11627,41 @@ update_anims
 :try_p2
  lda anim_ptr
  cmp #<anim_punch2
- bne :try_wp
+ bne :try_jp1
  lda anim_ptr+1
  cmp #>anim_punch2
+ bne :try_jp1
+ jmp :do_hit_now
+:try_jp1
+ lda anim_ptr
+ cmp #<anim_jpunch1
+ bne :try_jp2
+ lda anim_ptr+1
+ cmp #>anim_jpunch1
+ bne :try_jp2
+ jmp :do_hit_now
+:try_jp2
+ lda anim_ptr
+ cmp #<anim_jpunch2
+ bne :try_juc
+ lda anim_ptr+1
+ cmp #>anim_jpunch2
+ bne :try_juc
+ jmp :do_hit_now
+:try_juc
+ lda anim_ptr
+ cmp #<anim_juppercut
+ bne :try_jspin
+ lda anim_ptr+1
+ cmp #>anim_juppercut
+ bne :try_jspin
+ jmp :do_hit_now
+:try_jspin
+ lda anim_ptr
+ cmp #<anim_jbspinkick
+ bne :try_wp
+ lda anim_ptr+1
+ cmp #>anim_jbspinkick
  bne :try_wp
  jmp :do_hit_now
 :try_wp
@@ -10936,10 +11739,18 @@ update_anims
 :try_kick
  lda anim_ptr
  cmp #<anim_kick
- bne :no_punch_hit
+ bne :try_jkick
  lda anim_ptr+1
  cmp #>anim_kick
+ beq :do_kick_hit
+:try_jkick
+ lda anim_ptr
+ cmp #<anim_jkick
  bne :no_punch_hit
+ lda anim_ptr+1
+ cmp #>anim_jkick
+ bne :no_punch_hit
+:do_kick_hit
 * Back-kick: KICK2 renders Billy's foot opposite his facing.
 * Replace the hitbox with a BEHIND-only band so the kick can
 * only catch NPCs whose xpos is on Billy's back side, not
@@ -15093,6 +15904,110 @@ anim_bfall
  dfb $13,$0D,60      ; BFALLEN: 19 wide, 13 tall, 60 VBLs
   hex 0000             ; patched: BFALLEN
 
+*----------------------------------------------------------
+* Jimmy variants of Billy's player anims — same structure /
+* frame counts / durations, but flag bit 2 set so start_anim
+* writes frame_bank=$1D when Jimmy installs them. init_jimmy
+* patches the data/mask pointers from the bank-$1D spr_j*
+* cache vars.
+*----------------------------------------------------------
+anim_jjump
+ dfb 3
+ dfb $0F
+ dfb $85             ; bit 7 compiled, bit 2 bank $1D, bit 0 advance
+ dfb $0A,$28,3       ; JJUMP1
+  hex 0000
+  hex 0000
+  hex 0000
+  hex 0000
+ dfb $0F,$1E,12      ; JJUMP2
+  hex 0000
+  hex 0000
+  hex 0000
+  hex 0000
+ dfb $0D,$20,3       ; JJUMP3
+  hex 0000
+  hex 0000
+  hex 0000
+  hex 0000
+
+anim_jbspinkick
+ dfb 8
+ dfb $0F
+ dfb $04             ; bit 2 bank $1D, legacy stride (no bit 7)
+ dfb $0F,$28,4       ; JSPIN1
+  hex 0000
+ dfb $0F,$28,4       ; JSPIN2
+  hex 0000
+ dfb $0F,$28,4       ; JSPIN3
+  hex 0000
+ dfb $0F,$28,4       ; JSPIN2
+  hex 0000
+ dfb $0F,$28,4       ; JSPIN1
+  hex 0000
+ dfb $0F,$28,4       ; JSPIN2
+  hex 0000
+ dfb $0F,$28,4       ; JSPIN3
+  hex 0000
+ dfb $0F,$28,4       ; JSPIN2
+  hex 0000
+
+anim_jkick
+ dfb 2
+ dfb $14
+ dfb $84             ; bit 7 compiled, bit 2 bank $1D
+ dfb $09,$28,12      ; JKICK1
+  hex 0000
+  hex 0000
+  hex 0000
+  hex 0000
+ dfb $14,$22,12      ; JKICK2
+  hex 0000
+  hex 0000
+  hex 0000
+  hex 0000
+
+anim_jpunch1
+ dfb 2
+ dfb $10
+ dfb $84             ; bit 7 compiled, bit 2 bank $1D
+ dfb $0B,$28,6       ; JPUNCH11
+  hex 0000
+  hex 0000
+  hex 0000
+  hex 0000
+ dfb $10,$28,6       ; JPUNCH12
+  hex 0000
+  hex 0000
+  hex 0000
+  hex 0000
+
+anim_jpunch2
+ dfb 2
+ dfb $10
+ dfb $84             ; bit 7 compiled, bit 2 bank $1D
+ dfb $0A,$28,6       ; JPUNCH21
+  hex 0000
+  hex 0000
+  hex 0000
+  hex 0000
+ dfb $10,$28,6       ; JPUNCH22
+  hex 0000
+  hex 0000
+  hex 0000
+  hex 0000
+
+anim_juppercut
+ dfb 3
+ dfb $0F
+ dfb $04             ; legacy, bank $1D
+ dfb $0C,$25,5       ; JUPPER1
+  hex 0000
+ dfb $0F,$23,5       ; JUPPER2
+  hex 0000
+ dfb $0D,$2D,5       ; JUPPER3
+  hex 0000
+
 * William walking cycle (WILLIAM1, 2, 3, 2). Looping, no
 * auto-advance — behavior code controls position. Compiled
 * (bank $1B) — patched by init_williams_compiled.
@@ -16339,10 +17254,19 @@ check_punch_hit
  fin
  beq :is_npc           ; controller=0 → enemy NPC, hit-check
  cmp #$01
- beq :is_npc           ; controller=1 → Billy, hit-check (god_mode
-*                      ;   gating now happens at :hit so diagnostics
-*                      ;   still fire for invincible Billy)
- jmp :advance          ; controller >= $02 → item, skip
+ beq :tgt_billy        ; controller=1 → Billy, hit-check (with
+*                      ;   friendly-fire gate just below)
+ jmp :advance          ; controller >= $02 → item / Jimmy, skip
+:tgt_billy
+* Friendly-fire gate: Billy can always be hit by an NPC puncher
+* (puncher_ctrl=0) but only by a player puncher (puncher_ctrl != 0,
+* i.e. Jimmy in co-op) when friendly_fire is non-zero. Keeps
+* Jimmy's joystick punches from clipping Billy in default co-op.
+ lda :puncher_ctrl
+ beq :is_npc           ; NPC puncher → always allowed
+ lda friendly_fire
+ bne :is_npc           ; player puncher + FF on → allowed
+ jmp :advance          ; player puncher + FF off → skip
 :is_npc
 :not_god
 * DEBUG: 'TG <panim_lo> <panim_hi> <ctrl> <info_lo>' — every
@@ -16543,10 +17467,23 @@ check_punch_hit
 * iteration / facing / bbox diagnostic prints (TG / FC / HT) still
 * fire even when Billy is invincible. Only the actual hit dispatch
 * below is short-circuited.
+*
+* Same spot enforces the friendly-fire gate one more time as a
+* belt-and-braces check: if target is Billy and puncher is a
+* player (puncher_ctrl != 0), only let the hit register when
+* friendly_fire is non-zero. Without this, anything that bypasses
+* the controller filter above (e.g. future special-cased hit
+* paths) would still get caught here.
  ldy #22
  lda (info_ptr),y
  cmp #$01
- bne :god_skip          ; target isn't Billy — god_mode irrelevant
+ bne :god_skip          ; target isn't Billy — gates irrelevant
+ lda :puncher_ctrl
+ beq :hit_ff_done       ; NPC puncher → no FF gating
+ lda friendly_fire
+ bne :hit_ff_done       ; FF on → allow
+ jmp :advance           ; player puncher + FF off → drop hit
+:hit_ff_done
  lda god_mode
  beq :god_skip
  jmp :advance           ; god_mode on + target=Billy → no hit

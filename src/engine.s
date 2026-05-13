@@ -5381,6 +5381,315 @@ _init_jimmy
  lda spr_jimmy02_mask_mir
  sta anim_walk_j+45
 
+* Populate jimmy_walk_addr_tbl / _mask_tbl (+ mirrored pair) for
+* advance_jimmy_walk. Step cycle: 0→JIMMY01, 1→JIMMY02,
+* 2→JIMMY03, 3→JIMMY02. Same step→sprite mapping Billy uses in
+* walk_addr_tbl.
+ lda spr_jimmy01
+ sta jimmy_walk_addr_tbl
+ lda spr_jimmy01_mask
+ sta jimmy_walk_mask_tbl
+ lda spr_jimmy01_data_mir
+ sta jimmy_walk_addr_tbl_mirror
+ lda spr_jimmy01_mask_mir
+ sta jimmy_walk_mask_tbl_mirror
+ lda spr_jimmy02
+ sta jimmy_walk_addr_tbl+2
+ lda spr_jimmy02_mask
+ sta jimmy_walk_mask_tbl+2
+ lda spr_jimmy02_data_mir
+ sta jimmy_walk_addr_tbl_mirror+2
+ lda spr_jimmy02_mask_mir
+ sta jimmy_walk_mask_tbl_mirror+2
+ lda spr_jimmy03
+ sta jimmy_walk_addr_tbl+4
+ lda spr_jimmy03_mask
+ sta jimmy_walk_mask_tbl+4
+ lda spr_jimmy03_data_mir
+ sta jimmy_walk_addr_tbl_mirror+4
+ lda spr_jimmy03_mask_mir
+ sta jimmy_walk_mask_tbl_mirror+4
+ lda spr_jimmy02
+ sta jimmy_walk_addr_tbl+6
+ lda spr_jimmy02_mask
+ sta jimmy_walk_mask_tbl+6
+ lda spr_jimmy02_data_mir
+ sta jimmy_walk_addr_tbl_mirror+6
+ lda spr_jimmy02_mask_mir
+ sta jimmy_walk_mask_tbl_mirror+6
+
+* Continue reading the bank-$1D sprite-address table past the
+* walk entries. Layout: 24 bytes walk, then 24 bytes jjump
+* (3 compiled sprites x 4 entries x 2 bytes), then 16 bytes
+* jkick, 32 bytes jpunch, 6 bytes legacy spin, 6 bytes legacy
+* upper, 8 bytes jpunched (compiled), 2 bytes jfall, 2 bytes
+* jfallen. Y-offsets below assume that order.
+*
+* JJUMP1 entries at +24
+ ldy #24
+ lda [$F0],y
+ sta spr_jjump1
+ ldy #26
+ lda [$F0],y
+ sta spr_jjump1_mask
+ ldy #28
+ lda [$F0],y
+ sta spr_jjump1_data_mir
+ ldy #30
+ lda [$F0],y
+ sta spr_jjump1_mask_mir
+ ldy #32
+ lda [$F0],y
+ sta spr_jjump2
+ ldy #34
+ lda [$F0],y
+ sta spr_jjump2_mask
+ ldy #36
+ lda [$F0],y
+ sta spr_jjump2_data_mir
+ ldy #38
+ lda [$F0],y
+ sta spr_jjump2_mask_mir
+ ldy #40
+ lda [$F0],y
+ sta spr_jjump3
+ ldy #42
+ lda [$F0],y
+ sta spr_jjump3_mask
+ ldy #44
+ lda [$F0],y
+ sta spr_jjump3_data_mir
+ ldy #46
+ lda [$F0],y
+ sta spr_jjump3_mask_mir
+* JKICK1/2 entries at +48
+ ldy #48
+ lda [$F0],y
+ sta spr_jkick1
+ ldy #50
+ lda [$F0],y
+ sta spr_jkick1_mask
+ ldy #52
+ lda [$F0],y
+ sta spr_jkick1_data_mir
+ ldy #54
+ lda [$F0],y
+ sta spr_jkick1_mask_mir
+ ldy #56
+ lda [$F0],y
+ sta spr_jkick2
+ ldy #58
+ lda [$F0],y
+ sta spr_jkick2_mask
+ ldy #60
+ lda [$F0],y
+ sta spr_jkick2_data_mir
+ ldy #62
+ lda [$F0],y
+ sta spr_jkick2_mask_mir
+* JPUNCH11/12/21/22 entries at +64
+ ldy #64
+ lda [$F0],y
+ sta spr_jpunch11
+ ldy #66
+ lda [$F0],y
+ sta spr_jpunch11_mask
+ ldy #68
+ lda [$F0],y
+ sta spr_jpunch11_data_mir
+ ldy #70
+ lda [$F0],y
+ sta spr_jpunch11_mask_mir
+ ldy #72
+ lda [$F0],y
+ sta spr_jpunch12
+ ldy #74
+ lda [$F0],y
+ sta spr_jpunch12_mask
+ ldy #76
+ lda [$F0],y
+ sta spr_jpunch12_data_mir
+ ldy #78
+ lda [$F0],y
+ sta spr_jpunch12_mask_mir
+ ldy #80
+ lda [$F0],y
+ sta spr_jpunch21
+ ldy #82
+ lda [$F0],y
+ sta spr_jpunch21_mask
+ ldy #84
+ lda [$F0],y
+ sta spr_jpunch21_data_mir
+ ldy #86
+ lda [$F0],y
+ sta spr_jpunch21_mask_mir
+ ldy #88
+ lda [$F0],y
+ sta spr_jpunch22
+ ldy #90
+ lda [$F0],y
+ sta spr_jpunch22_mask
+ ldy #92
+ lda [$F0],y
+ sta spr_jpunch22_data_mir
+ ldy #94
+ lda [$F0],y
+ sta spr_jpunch22_mask_mir
+* Legacy: JSPIN1/2/3 at +96, JUPPER1/2/3 at +102.
+ ldy #96
+ lda [$F0],y
+ sta spr_jspin1
+ ldy #98
+ lda [$F0],y
+ sta spr_jspin2
+ ldy #100
+ lda [$F0],y
+ sta spr_jspin3
+ ldy #102
+ lda [$F0],y
+ sta spr_jupper1
+ ldy #104
+ lda [$F0],y
+ sta spr_jupper2
+ ldy #106
+ lda [$F0],y
+ sta spr_jupper3
+* JPUNCHED at +108 (compiled), JFALL at +116, JFALLEN at +118.
+ ldy #108
+ lda [$F0],y
+ sta spr_jpunched
+ ldy #110
+ lda [$F0],y
+ sta spr_jpunched_mask
+ ldy #112
+ lda [$F0],y
+ sta spr_jpunched_data_mir
+ ldy #114
+ lda [$F0],y
+ sta spr_jpunched_mask_mir
+ ldy #116
+ lda [$F0],y
+ sta spr_jfall
+ ldy #118
+ lda [$F0],y
+ sta spr_jfallen
+
+* Patch Jimmy's action anims. Each compiled-stride frame slot
+* is 11 bytes: x/y/dur (3) + DATA / MASK / DATA_MIR / MASK_MIR
+* (8). Header is 3 bytes (num_frames / max_width / flags), so
+* frame 0 starts at +3 (with DATA at +6), frame 1 at +14 (DATA
+* at +17), frame 2 at +25 (DATA at +28), frame 3 at +36 (DATA
+* at +39). Legacy stride is 5 bytes: x/y/dur (3) + DATA (2);
+* frame 0 DATA at +6, frame 1 at +11, frame 2 at +16, etc.
+
+* anim_jjump (compiled, 3 frames: JJUMP1/2/3)
+ lda spr_jjump1
+ sta anim_jjump+6
+ lda spr_jjump1_mask
+ sta anim_jjump+8
+ lda spr_jjump1_data_mir
+ sta anim_jjump+10
+ lda spr_jjump1_mask_mir
+ sta anim_jjump+12
+ lda spr_jjump2
+ sta anim_jjump+17
+ lda spr_jjump2_mask
+ sta anim_jjump+19
+ lda spr_jjump2_data_mir
+ sta anim_jjump+21
+ lda spr_jjump2_mask_mir
+ sta anim_jjump+23
+ lda spr_jjump3
+ sta anim_jjump+28
+ lda spr_jjump3_mask
+ sta anim_jjump+30
+ lda spr_jjump3_data_mir
+ sta anim_jjump+32
+ lda spr_jjump3_mask_mir
+ sta anim_jjump+34
+
+* anim_jkick (compiled, 2 frames: JKICK1/2)
+ lda spr_jkick1
+ sta anim_jkick+6
+ lda spr_jkick1_mask
+ sta anim_jkick+8
+ lda spr_jkick1_data_mir
+ sta anim_jkick+10
+ lda spr_jkick1_mask_mir
+ sta anim_jkick+12
+ lda spr_jkick2
+ sta anim_jkick+17
+ lda spr_jkick2_mask
+ sta anim_jkick+19
+ lda spr_jkick2_data_mir
+ sta anim_jkick+21
+ lda spr_jkick2_mask_mir
+ sta anim_jkick+23
+
+* anim_jpunch1 (compiled, 2 frames: JPUNCH11/12)
+ lda spr_jpunch11
+ sta anim_jpunch1+6
+ lda spr_jpunch11_mask
+ sta anim_jpunch1+8
+ lda spr_jpunch11_data_mir
+ sta anim_jpunch1+10
+ lda spr_jpunch11_mask_mir
+ sta anim_jpunch1+12
+ lda spr_jpunch12
+ sta anim_jpunch1+17
+ lda spr_jpunch12_mask
+ sta anim_jpunch1+19
+ lda spr_jpunch12_data_mir
+ sta anim_jpunch1+21
+ lda spr_jpunch12_mask_mir
+ sta anim_jpunch1+23
+
+* anim_jpunch2 (compiled, 2 frames: JPUNCH21/22)
+ lda spr_jpunch21
+ sta anim_jpunch2+6
+ lda spr_jpunch21_mask
+ sta anim_jpunch2+8
+ lda spr_jpunch21_data_mir
+ sta anim_jpunch2+10
+ lda spr_jpunch21_mask_mir
+ sta anim_jpunch2+12
+ lda spr_jpunch22
+ sta anim_jpunch2+17
+ lda spr_jpunch22_mask
+ sta anim_jpunch2+19
+ lda spr_jpunch22_data_mir
+ sta anim_jpunch2+21
+ lda spr_jpunch22_mask_mir
+ sta anim_jpunch2+23
+
+* anim_jbspinkick (legacy, 8 frames). Layout: 3-byte header +
+* 5-byte frames (x/y/dur + DATA at +3). Frame N DATA = anim+6+5*N.
+ lda spr_jspin1
+ sta anim_jbspinkick+6
+ lda spr_jspin2
+ sta anim_jbspinkick+11
+ lda spr_jspin3
+ sta anim_jbspinkick+16
+ lda spr_jspin2
+ sta anim_jbspinkick+21
+ lda spr_jspin1
+ sta anim_jbspinkick+26
+ lda spr_jspin2
+ sta anim_jbspinkick+31
+ lda spr_jspin3
+ sta anim_jbspinkick+36
+ lda spr_jspin2
+ sta anim_jbspinkick+41
+
+* anim_juppercut (legacy, 3 frames: JUPPER1/2/3)
+ lda spr_jupper1
+ sta anim_juppercut+6
+ lda spr_jupper2
+ sta anim_juppercut+11
+ lda spr_jupper3
+ sta anim_juppercut+16
+
  sec
  xce
  mx %11
