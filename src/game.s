@@ -8567,6 +8567,15 @@ btn_action_jump
  beq :right_scroll_ok  ; equal → ok (reaching exactly max)
  bcs :walk_right       ; (wo+4) low > max low → walk
 :right_scroll_ok
+* Co-op left-clamp: if Jimmy is active and the OTHER player is
+* within 4 px of xpos=0, a 4-byte right-scroll would push them
+* off the left edge of the playfield. Walk instead.
+ lda jimmy_active
+ beq :rso_no_other
+ jsr co_op_other_xpos   ; A = other player's xpos
+ cmp #4
+ bcc :walk_right        ; other too close to left edge
+:rso_no_other
 * Scroll world right by 4 bytes (8 pixels = 2 words)
  jsr save_sprite
  jsl scroll_right
@@ -8581,8 +8590,8 @@ btn_action_jump
  adc #0
  sta world_offset+1
 * abs_x advances by 4 bytes — matches world_offset += 4 so abs_x
-* represents the player's cumulative byte-displacement through
-* the world (1 per walk press, 4 per scroll, 1 per VBL of jump).
+* represents the scrolling player's cumulative byte-displacement
+* through the world.
  lda abs_x
  clc
  adc #4
@@ -8590,6 +8599,14 @@ btn_action_jump
  lda abs_x+1
  adc #0
  sta abs_x+1
+* Co-op: shift the OTHER player's xpos left by 4 so their world
+* position stays fixed while the scroller anchors at the right
+* edge. Marks them dirty so erase_all + draw_all rebuild the
+* shifted sprite next frame.
+ lda jimmy_active
+ beq :rso_done
+ jsr co_op_shift_other_left
+:rso_done
  bra :finish_right
 :walk_right
  lda IMAGE01_XPOS
@@ -8648,6 +8665,65 @@ btn_action_jump
 * mode switch. Called from Ctrl-J / Ctrl-K so a stuck axis,
 * held button, or pending edge from the previous mode can't
 * survive into the new one. Anim state is left alone.
+*----------------------------------------------------------
+
+*----------------------------------------------------------
+* co_op_other_xpos - Return (in A) the OTHER player's xpos.
+* Determines which player is currently processing via info_ptr
+* match against billy_sprite. Caller should only invoke this
+* when jimmy_active is non-zero. Preserves X / Y.
+*----------------------------------------------------------
+co_op_other_xpos
+ lda info_ptr
+ cmp #<billy_sprite
+ bne :cox_curr_is_jimmy
+ lda info_ptr+1
+ cmp #>billy_sprite
+ bne :cox_curr_is_jimmy
+* Current player is Billy → other is Jimmy.
+ lda jimmy_sprite+2
+ rts
+:cox_curr_is_jimmy
+* Current player is Jimmy → other is Billy.
+ lda billy_sprite+2
+ rts
+
+*----------------------------------------------------------
+* co_op_shift_other_left - Subtract 4 from the OTHER player's
+* xpos so they stay anchored to the SAME world position while
+* the current player scrolls right. Also snapshots prev_xpos
+* and flags the sprite dirty so erase_all + draw_all repaint.
+* Caller must guarantee xpos >= 4 (the :rso_no_other gate does).
+*----------------------------------------------------------
+co_op_shift_other_left
+ lda info_ptr
+ cmp #<billy_sprite
+ bne :cosl_shift_billy
+ lda info_ptr+1
+ cmp #>billy_sprite
+ bne :cosl_shift_billy
+* Current is Billy → shift Jimmy left.
+ lda jimmy_sprite+2
+ sta jimmy_sprite+34    ; prev_xpos
+ sec
+ sbc #4
+ sta jimmy_sprite+2
+ lda jimmy_sprite+30
+ ora #$03               ; dirty: erase + draw
+ sta jimmy_sprite+30
+ rts
+:cosl_shift_billy
+* Current is Jimmy → shift Billy left.
+ lda billy_sprite+2
+ sta billy_sprite+34
+ sec
+ sbc #4
+ sta billy_sprite+2
+ lda billy_sprite+30
+ ora #$03
+ sta billy_sprite+30
+ rts
+
 *----------------------------------------------------------
 reset_input_state
  stz btn_pending_key
@@ -8980,15 +9056,12 @@ swap_in_jimmy
  sta billy_save_input_mode
  lda #1
  sta input_mode
- lda scroll_right_enabled
- sta billy_save_scroll_right_en
- stz scroll_right_enabled
- lda scroll_left_enabled
- sta billy_save_scroll_left_en
- stz scroll_left_enabled
- lda scroll_up_enabled
- sta billy_save_scroll_up_en
- stz scroll_up_enabled
+* scroll_*_enabled are NOT swapped — they describe the world's
+* current scroll permissions (set by OP_RIGHT / OP_LEFT / OP_UP
+* in the level script) and apply to whichever player is at the
+* edge. Both Billy and Jimmy share them. Co-op shift logic in
+* :right_scroll_ok / :left_scroll_ok handles the "leave other
+* player behind" semantics.
 * Active anim pointers (point process_input's btn_action_* paths
 * at Jimmy's anim variants while he's the active player). Save
 * Billy's, install Jimmy's.
@@ -9177,12 +9250,8 @@ swap_out_jimmy
  sta abs_x+1
  lda billy_save_input_mode
  sta input_mode
- lda billy_save_scroll_right_en
- sta scroll_right_enabled
- lda billy_save_scroll_left_en
- sta scroll_left_enabled
- lda billy_save_scroll_up_en
- sta scroll_up_enabled
+* scroll_*_enabled stay shared between Billy and Jimmy (set by
+* the level script, not swapped per player).
 * Restore Billy's active anim pointers.
  lda billy_save_active_jump_anim
  sta active_jump_anim
