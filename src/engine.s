@@ -1983,11 +1983,16 @@ _scroll_up
  ldy #30
  lda #$03
  sta (info_ptr),y       ; dirty = erase+draw
-* Co-op: also reposition the OTHER player to the same walkable
-* row. Otherwise their info+0 stays at whatever it was when the
-* climb-scroll ended, which can land them out-of-bounds on the
-* new screen ("jimmy stuck before the end of the ladder had to
-* jump around because he was outside of y bounds").
+* Co-op: place OTHER on a walkable row on the new screen. Try
+* their pre-snap Y first; if blocked, scan outward (up then
+* down) for the nearest walkable row. Replaces the older
+* "OTHER.Y = climber.Y" reset, which caused a large visible
+* teleport when OTHER and climber had different valid Ys on
+* their respective source screens (e.g., Jimmy at scr9 Y=47,
+* on scr12 the walkable range is 52-79; old reset jumped him
+* to 79, now he goes to 52 — much smaller "drag" feel). With
+* OTHER on a walkable row, check_x_bounds_walk doesn't reject
+* his moves ("frozen on x" report).
  lda jimmy_active
  beq :sl_no_other_y
  lda info_ptr
@@ -1996,19 +2001,65 @@ _scroll_up
  lda info_ptr+1
  cmp #>billy_sprite
  bne :sl_other_is_billy
-* Current climber = Billy → set Jimmy's ypos.
- lda billy_sprite+0
- sta jimmy_sprite+0
- sta jimmy_sprite+32
+* Climber = Billy → OTHER = Jimmy. Scan for nearest walkable Y.
+ mx %11
+ ldx jimmy_sprite+0
+ lda bounds_tbl_hi,x
+ bne :sl_jimmy_y_ok
+ stx utmp                ; save orig Y
+:sl_jimmy_up
+ inx
+ cpx #200
+ beq :sl_jimmy_try_down
+ lda bounds_tbl_hi,x
+ beq :sl_jimmy_up
+ bra :sl_jimmy_y_ok
+:sl_jimmy_try_down
+ ldx utmp
+:sl_jimmy_down
+ cpx #0
+ beq :sl_jimmy_fallback
+ dex
+ lda bounds_tbl_hi,x
+ beq :sl_jimmy_down
+ bra :sl_jimmy_y_ok
+:sl_jimmy_fallback
+ ldx utmp
+:sl_jimmy_y_ok
+ stx jimmy_sprite+0
+ stx jimmy_sprite+32
  lda jimmy_sprite+30
  ora #$03
  sta jimmy_sprite+30
  bra :sl_no_other_y
 :sl_other_is_billy
-* Current climber = Jimmy → set Billy's ypos.
- lda jimmy_sprite+0
- sta billy_sprite+0
- sta billy_sprite+32
+* Climber = Jimmy → OTHER = Billy. Scan for nearest walkable Y.
+ mx %11
+ ldx billy_sprite+0
+ lda bounds_tbl_hi,x
+ bne :sl_billy_y_ok
+ stx utmp
+:sl_billy_up
+ inx
+ cpx #200
+ beq :sl_billy_try_down
+ lda bounds_tbl_hi,x
+ beq :sl_billy_up
+ bra :sl_billy_y_ok
+:sl_billy_try_down
+ ldx utmp
+:sl_billy_down
+ cpx #0
+ beq :sl_billy_fallback
+ dex
+ lda bounds_tbl_hi,x
+ beq :sl_billy_down
+ bra :sl_billy_y_ok
+:sl_billy_fallback
+ ldx utmp
+:sl_billy_y_ok
+ stx billy_sprite+0
+ stx billy_sprite+32
  lda billy_sprite+30
  ora #$03
  sta billy_sprite+30

@@ -8566,60 +8566,26 @@ btn_action_jump
 * they press up, even if the world isn't scrolling.
  jsr advance_climb
  jsr save_sprite
-* Co-op gate. Mirrors the horizontal scroll model: either player
-* can drive the scroll while the other gets carried along in
-* world coordinates. Two outcomes encoded in :sn_shift_other:
-*   0 → scroll fires, but DO NOT shift OTHER. Either single-player
-*       or OTHER is actively trying to ascend (pressing up). In
-*       the latter case OTHER is moving themselves; shifting them
-*       DOWN by 4 each scroll would cancel their walk-up.
-*   1 → scroll fires AND we shift OTHER down by 4 so they stay
-*       anchored to their world-y while the camera moves up. The
-*       y-bound check below halts the climb if continuing would
-*       push OTHER off the playfield. Applies whether OTHER is on
-*       the ladder column or off it — if they're parked on a rung
-*       not pressing up, they stay on that rung in world coords
-*       (which means they stay on the same visible rung as the
-*       ladder art shifts with them).
- stz :sn_shift_other
- lda jimmy_active
- beq :sn_gate_pass               ; single player → scroll, no shift
- jsr co_op_other_pressing_up     ; C=0 if OTHER pressing
- bcc :sn_gate_pass               ; OTHER climbing → scroll, no shift
- lda #1
- sta :sn_shift_other             ; OTHER not climbing → scroll + shift
-:sn_gate_pass
-* Only the first mover this frame fires the world-scroll.
+* Co-op gate: first mover this frame fires the scroll. OTHER's
+* info+0 is intentionally NOT shifted — the previous "shift OTHER
+* down by 4 per scroll" model (mirroring horizontal scroll's
+* xpos shift) pushes OTHER's Y onto a row that bounds_tbl shows
+* as fully blocked, because vertical scrolling doesn't update
+* bounds_tbl until snap_transition. Result was OTHER frozen on
+* the X axis (check_x_bounds_walk_left/right rejects every move
+* once their Y lands on a bmax=0 row). Leaving OTHER's info+0
+* alone means they ride the camera — fixed screen Y, world art
+* shifts past them — which both looks like climbing and keeps
+* their bounds row walkable.
  lda did_climb_this_frame
  bne :sn_skip_scroll
-* y-bound only matters when we're about to shift OTHER. When OTHER
-* is climbing themselves their info+0 doesn't move from the scroll,
-* so they can't clip the bottom.
- lda :sn_shift_other
- beq :sn_y_ok
- jsr co_op_other_would_clip_y    ; C=1 if OTHER would clip the bottom
- bcs :sn_skip_scroll
-:sn_y_ok
  jsl scroll_up
  jsr load_sprite
  lda #1
  sta did_climb_this_frame
-* If snap_transition fired during this scroll, scroll_up_enabled
-* was cleared and snap_transition already set OTHER's info+0 to
-* the climber's final y (engine.s :sl_other_is_billy etc.). Skip
-* the per-step shift; otherwise we'd add 4 to that just-reset
-* y and push OTHER off a narrow exit platform (the ladder-2
-* "1px-tall exit row" out-of-bounds bug).
- lda scroll_up_enabled
- beq :sn_no_shift
- lda :sn_shift_other
- beq :sn_no_shift
- jsr co_op_shift_other_down
-:sn_no_shift
  rts
 :sn_skip_scroll
  rts
-:sn_shift_other dfb 0
 :sn_wx     ds 2
 :sn_cnt    dfb 0
 :sn_ctr    ds 2
