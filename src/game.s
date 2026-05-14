@@ -2379,6 +2379,20 @@ did_climb_this_frame dfb 0       ; set after :sn_done fires scroll_up so
                                   ; frame at top of process_input.
 billy_climb_pressed  dfb 0       ; (unused, kept for binary compat)
 jimmy_climb_pressed  dfb 0       ; (unused, kept for binary compat)
+climb_hide_other     dfb 0       ; co-op: set to 1 when one player
+                                  ; enters a ladder so the other is
+                                  ; hidden (no input, no draw, no
+                                  ; erase) until the climb's
+                                  ; snap_transition completes. Avoids
+                                  ; the bounds-row / drag / teleport
+                                  ; issues from carrying both players
+                                  ; through a vertical scroll.
+climb_climber_ptr    ds 2        ; info_ptr of the active climber while
+                                  ; climb_hide_other=1. Used by gates
+                                  ; in pi_action_dispatch, draw_all,
+                                  ; erase_all, draw_other_sprite to
+                                  ; tell the climber from the hidden
+                                  ; other.
 scroll_up_lbank      dfb $03     ; bank of upper screen's left neighbor
                                   ; (0 = sentinel, skip left-gap fill)
 scroll_up_rbank      dfb $03     ; bank of upper screen's right neighbor
@@ -6815,6 +6829,28 @@ erase_all
  bne :ea_draw_check
  jmp :ea_draw_done
 :ea_draw_check
+* Co-op climb hide: skip the non-climber player's draw branch.
+* erase_all does an interleaved per-sprite draw (line 6868
+* onward) when bit 0 is set, so without this gate mark_overlapping
+* setting OTHER's needs_draw during the climb re-renders the
+* hidden player here ("not disappearing" report).
+ lda climb_hide_other
+ beq :ea_hide_chk_done
+ ldy #22
+ lda (info_ptr),y
+ cmp #$03
+ bcs :ea_hide_chk_done   ; controller >= 3, NPC, draw normally
+ cmp #$01
+ bcc :ea_hide_chk_done   ; controller < 1 (= 0), not a player
+ lda info_ptr
+ cmp climb_climber_ptr
+ bne :ea_hide_skip
+ lda info_ptr+1
+ cmp climb_climber_ptr+1
+ beq :ea_hide_chk_done   ; current = climber, draw normally
+:ea_hide_skip
+ jmp :ea_clr_dirty       ; current = hidden OTHER, skip draw
+:ea_hide_chk_done
 * Burnov-grab lock: skip Billy entirely while bn_grab_active
 * (his BNBILLY1/2/3 frames are the combined pose).
  ldy #22
@@ -7014,6 +7050,26 @@ draw_all
  sta (info_ptr),y
  jmp :skip_draw
 :da_active_chk_done
+* Co-op climb hide: skip the non-climber player while a climb
+* is in progress. Player sprites only (controller 1 or 2) —
+* NPCs draw normally.
+ lda climb_hide_other
+ beq :da_hide_chk_done
+ ldy #22
+ lda (info_ptr),y
+ cmp #$03                ; controller 1=Billy, 2=Jimmy, else NPC
+ bcs :da_hide_chk_done
+ cmp #$01
+ bcc :da_hide_chk_done   ; controller < 1 (= 0), NPC
+ lda info_ptr
+ cmp climb_climber_ptr
+ bne :da_hide_skip
+ lda info_ptr+1
+ cmp climb_climber_ptr+1
+ beq :da_hide_chk_done   ; current = climber, draw normally
+:da_hide_skip
+ jmp :skip_draw           ; current = hidden OTHER, skip
+:da_hide_chk_done
 * Draw if bit 0 set (needs_draw)
  ldy #30
  lda (info_ptr),y
@@ -7728,6 +7784,21 @@ pi_action_dispatch
 * in here after pre-setting info_ptr/IMAGE01_* to point at Jimmy.
 * Skips the find-player scan above so we don't end up running
 * Billy's logic twice in one frame.
+*
+* Co-op climb hide: if a climb is in progress AND the current
+* player is the non-climber, skip their input entirely. They're
+* invisible/inert until snap_transition completes the climb.
+ lda climb_hide_other
+ beq :pad_no_hide_gate
+ lda info_ptr
+ cmp climb_climber_ptr
+ bne :pad_hidden
+ lda info_ptr+1
+ cmp climb_climber_ptr+1
+ beq :pad_no_hide_gate    ; current = climber, process input
+:pad_hidden
+ rts                      ; current = hidden OTHER, skip
+:pad_no_hide_gate
 *
 * Mode toggle (Ctrl-J / Ctrl-K) is checked FIRST — before the
 * action-anim block — so the user can always switch modes and
@@ -8566,17 +8637,44 @@ btn_action_jump
 * they press up, even if the world isn't scrolling.
  jsr advance_climb
  jsr save_sprite
-* Co-op gate: first mover this frame fires the scroll. OTHER's
-* info+0 is intentionally NOT shifted — the previous "shift OTHER
-* down by 4 per scroll" model (mirroring horizontal scroll's
-* xpos shift) pushes OTHER's Y onto a row that bounds_tbl shows
-* as fully blocked, because vertical scrolling doesn't update
-* bounds_tbl until snap_transition. Result was OTHER frozen on
-* the X axis (check_x_bounds_walk_left/right rejects every move
-* once their Y lands on a bmax=0 row). Leaving OTHER's info+0
-* alone means they ride the camera — fixed screen Y, world art
-* shifts past them — which both looks like climbing and keeps
-* their bounds row walkable.
+* Co-op: first player to reach :sn_done captures the climb. The
+* OTHER player is hidden (no input, no draw, no erase) for the
+* rest of the climb. Avoids the carry/shift/bounds issues from
+* trying to render both players through a vertical scroll where
+* bounds_tbl isn't updated per-step. OTHER reappears at the
+* climber's exit position when snap_transition fires.
+ lda jimmy_active
+ beq :sn_no_hide
+ lda climb_hide_other
+ bne :sn_no_hide          ; already captured this climb
+ lda info_ptr
+ sta climb_climber_ptr
+ lda info_ptr+1
+ sta climb_climber_ptr+1
+ lda #1
+ sta climb_hide_other
+* Mark OTHER for one-time erase so erase_all later this frame
+* clears their stale sprite, then leaves info+30=0 so draw_all
+* and erase_all skip them on subsequent frames.
+ lda info_ptr+1
+ cmp #>billy_sprite
+ bne :sn_hide_other_billy
+ lda info_ptr
+ cmp #<billy_sprite
+ bne :sn_hide_other_billy
+* Climber = Billy → OTHER = Jimmy.
+ lda jimmy_sprite+30
+ and #$FE                 ; clear needs_draw
+ ora #$02                 ; set needs_erase
+ sta jimmy_sprite+30
+ bra :sn_no_hide
+:sn_hide_other_billy
+* Climber = Jimmy → OTHER = Billy.
+ lda billy_sprite+30
+ and #$FE
+ ora #$02
+ sta billy_sprite+30
+:sn_no_hide
  lda did_climb_this_frame
  bne :sn_skip_scroll
  jsl scroll_up
@@ -19799,6 +19897,12 @@ draw_other_sprite
  bne :dos_active
  rts
 :dos_active
+* Co-op climb hide: if a climb is in progress, OTHER is hidden.
+* No draw fires for them in the scroll pipeline.
+ lda climb_hide_other
+ beq :dos_not_hidden
+ rts
+:dos_not_hidden
  lda info_ptr
  pha
  lda info_ptr+1
