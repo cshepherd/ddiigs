@@ -77,6 +77,31 @@ spr_addr_tbl
  dw JCLIMB1_DATA_MIRROR, JCLIMB1_MASK_MIRROR
  dw JCLIMB2_DATA, JCLIMB2_MASK
  dw JCLIMB2_DATA_MIRROR, JCLIMB2_MASK_MIRROR
+* Armed frames (legacy stride, palette-shifted from Billy
+* equivalents). Walk frames for each weapon followed by attack
+* frames. init_jimmy patches the spr_j*walk* / spr_j*ace* /
+* spr_jknife* / spr_jpipew* / spr_jpipe* caches from these
+* entries.
+ dw JMWALK1
+ dw JMWALK2
+ dw JMWALK3
+ dw JMACE1
+ dw JMACE2
+ dw JMACE3
+ dw JMACE4
+ dw JKWALK1
+ dw JKWALK2
+ dw JKWALK3
+ dw JKNIFE1
+ dw JKNIFE2
+ dw JKNIFE3
+ dw JPIPEW1
+ dw JPIPEW2
+ dw JPIPEW3
+ dw JPIPE1
+ dw JPIPE2
+ dw JPIPE3
+ dw JPIPE4
 
 *----------------------------------------------------------
 * Sprite pixel data. Each compiled block is DATA + MASK +

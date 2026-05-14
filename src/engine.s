@@ -2044,11 +2044,52 @@ _scroll_up
  ldy #12
  sta (info_ptr),y
 * Restore compiled MASK_ADDR + override FRAME_ADDR with the mirror
-* variant if Billy is facing left. Without this, FRAME_ADDR is the
-* compiled IMAGE01_DATA but MASK_ADDR was cleared by advance_climb,
-* so dispatch routes to legacy and the $00 transparency slots in
-* the compiled data render as opaque black ("box around Billy" at
-* the top of the ladder).
+* variant if the climber is facing left. Without this, FRAME_ADDR is
+* the compiled IMAGE01_DATA but MASK_ADDR was cleared by
+* advance_climb, so dispatch routes to legacy and the $00
+* transparency slots in the compiled data render as opaque black
+* ("box around the climber" at the top of the ladder).
+*
+* Climber-aware: dispatch by info_ptr so we install Jimmy's
+* spr_jimmy01_mask (bank-$1D) when Jimmy is the climber. The old
+* code hardcoded spr_image01_mask + billy_sprite+60 regardless of
+* which player climbed — when Jimmy was the climber his info+60
+* stayed at whatever the pre-climb state held (e.g.
+* JPUNCHED_MASK_MIRROR from a hit), and his compiled draw then
+* paired JIMMY01_DATA (9 wide) with an 11-wide JPUNCHED mask →
+* per-row stride mismatch → diagonal stripes through the bg.
+ lda info_ptr
+ cmp #<jimmy_sprite
+ bne :st_climber_billy
+ lda info_ptr+1
+ cmp #>jimmy_sprite
+ bne :st_climber_billy
+* Climber = Jimmy.
+ lda IMAGE01_MIRROR
+ bne :st_jclimber_mirror
+ lda spr_jimmy01_mask
+ sta MASK_ADDR
+ sta jimmy_sprite+60
+ lda spr_jimmy01_mask+1
+ sta MASK_ADDR+1
+ sta jimmy_sprite+61
+ bra :st_mask_done
+:st_jclimber_mirror
+ lda spr_jimmy01_data_mir
+ sta FRAME_ADDR
+ sta jimmy_sprite+14
+ lda spr_jimmy01_data_mir+1
+ sta FRAME_ADDR+1
+ sta jimmy_sprite+15
+ lda spr_jimmy01_mask_mir
+ sta MASK_ADDR
+ sta jimmy_sprite+60
+ lda spr_jimmy01_mask_mir+1
+ sta MASK_ADDR+1
+ sta jimmy_sprite+61
+ bra :st_mask_done
+:st_climber_billy
+* Climber = Billy.
  lda IMAGE01_MIRROR
  bne :st_mirror
  lda spr_image01_mask
@@ -2082,26 +2123,47 @@ _scroll_up
 * rendered with the climb sprite on the flat exit platform
 * ("sprite corrupted" report). Reset OTHER explicitly.
  lda jimmy_active
- beq :st_other_reset_done
+ bne :st_have_jimmy
+ jmp :st_other_reset_done
+:st_have_jimmy
  lda info_ptr
  cmp #<billy_sprite
  bne :st_other_is_billy
  lda info_ptr+1
  cmp #>billy_sprite
  bne :st_other_is_billy
-* Climber = Billy → reset Jimmy.
- lda jimmy_sprite+42        ; idle_addr low
+* Climber = Billy → reset Jimmy. Restore canonical idle state:
+* idle_addr, idle_x/y, mask_addr, frame_bank all anchored on the
+* spr_jimmy01* cache vars (patched by init_jimmy from bank-$1D
+* spr_addr_tbl).
+ lda spr_jimmy01            ; frame_addr ← JIMMY01_DATA offset
  sta jimmy_sprite+14
- lda jimmy_sprite+43
+ sta jimmy_sprite+42
+ lda spr_jimmy01+1
  sta jimmy_sprite+15
- lda jimmy_sprite+44        ; idle_x
- sta jimmy_sprite+10
- lda jimmy_sprite+46        ; idle_y
- sta jimmy_sprite+12
- lda spr_jimmy01_mask
+ sta jimmy_sprite+43
+ lda spr_jimmy01_mask       ; mask_addr ← JIMMY01_MASK offset
  sta jimmy_sprite+60
+ sta jimmy_sprite+62
  lda spr_jimmy01_mask+1
  sta jimmy_sprite+61
+ sta jimmy_sprite+63
+ lda #$09                   ; frame_x = idle_x = 9
+ sta jimmy_sprite+10
+ sta jimmy_sprite+44
+ lda #$28                   ; frame_y = idle_y = 40
+ sta jimmy_sprite+12
+ sta jimmy_sprite+46
+ lda #$1D                   ; frame_bank ← $1D
+ sta jimmy_sprite+56
+ sta jimmy_sprite+58
+ lda #$00
+ sta jimmy_sprite+57
+ sta jimmy_sprite+59
+ sta jimmy_sprite+24        ; clear anim_ptr/frame/timer
+ sta jimmy_sprite+25
+ sta jimmy_sprite+26
+ sta jimmy_sprite+28
  bra :st_other_reset_done
 :st_other_is_billy
 * Climber = Jimmy → reset Billy using Billy's idle data and
@@ -2110,6 +2172,10 @@ _scroll_up
  sta billy_sprite+10
  lda billy_sprite+46        ; idle_y
  sta billy_sprite+12
+ lda #$02                   ; frame_bank low ← $02 (IMAGE01's bank)
+ sta billy_sprite+56
+ lda #$00
+ sta billy_sprite+57
  lda billy_sprite+4         ; Billy's mirror state
  bne :st_billy_mirror_other
  lda billy_sprite+42        ; non-mirror idle_addr
@@ -5759,6 +5825,130 @@ _init_jimmy
  ldy #134
  lda [$F0],y
  sta spr_jclimb2_mask_mir
+
+* Jimmy armed sprite caches (legacy stride, one address per
+* frame). Indices 136..174 in spr_addr_tbl. Order must match
+* mission1jimmy.s additions: JMWALK1-3, JMACE1-4, JKWALK1-3,
+* JKNIFE1-3, JPIPEW1-3, JPIPE1-4.
+ ldy #136
+ lda [$F0],y
+ sta spr_jmwalk1
+ ldy #138
+ lda [$F0],y
+ sta spr_jmwalk2
+ ldy #140
+ lda [$F0],y
+ sta spr_jmwalk3
+ ldy #142
+ lda [$F0],y
+ sta spr_jmace1
+ ldy #144
+ lda [$F0],y
+ sta spr_jmace2
+ ldy #146
+ lda [$F0],y
+ sta spr_jmace3
+ ldy #148
+ lda [$F0],y
+ sta spr_jmace4
+ ldy #150
+ lda [$F0],y
+ sta spr_jkwalk1
+ ldy #152
+ lda [$F0],y
+ sta spr_jkwalk2
+ ldy #154
+ lda [$F0],y
+ sta spr_jkwalk3
+ ldy #156
+ lda [$F0],y
+ sta spr_jknife1
+ ldy #158
+ lda [$F0],y
+ sta spr_jknife2
+ ldy #160
+ lda [$F0],y
+ sta spr_jknife3
+ ldy #162
+ lda [$F0],y
+ sta spr_jpipew1
+ ldy #164
+ lda [$F0],y
+ sta spr_jpipew2
+ ldy #166
+ lda [$F0],y
+ sta spr_jpipew3
+ ldy #168
+ lda [$F0],y
+ sta spr_jpipe1
+ ldy #170
+ lda [$F0],y
+ sta spr_jpipe2
+ ldy #172
+ lda [$F0],y
+ sta spr_jpipe3
+ ldy #174
+ lda [$F0],y
+ sta spr_jpipe4
+
+* Populate Jimmy's armed walk tables — parallel to the Billy
+* tables that init_billy fills. advance_walk dispatches on the
+* active player's controller (info+22) and reads the matching
+* set. Layout per Billy: 4 entries × 2 bytes per direction step.
+* For pipe/mace: 9×40 frames at indices 0/2/4/6 of the table
+* (frames 1,2,3,2 in walk_step order). For knife: same shape
+* using the BKWALK / JKWALK frames; jimmy_knife_walk_x_tbl
+* mirrors knife_walk_x_tbl (BKWALK1/3=11, BKWALK2=9).
+ lda spr_jpipew1
+ sta jimmy_pipe_walk_addr_tbl
+ lda spr_jpipew2
+ sta jimmy_pipe_walk_addr_tbl+2
+ lda spr_jpipew3
+ sta jimmy_pipe_walk_addr_tbl+4
+ lda spr_jpipew2
+ sta jimmy_pipe_walk_addr_tbl+6
+ lda spr_jmwalk1
+ sta jimmy_mace_walk_addr_tbl
+ lda spr_jmwalk2
+ sta jimmy_mace_walk_addr_tbl+2
+ lda spr_jmwalk3
+ sta jimmy_mace_walk_addr_tbl+4
+ lda spr_jmwalk2
+ sta jimmy_mace_walk_addr_tbl+6
+ lda spr_jkwalk1
+ sta jimmy_knife_walk_addr_tbl
+ lda spr_jkwalk2
+ sta jimmy_knife_walk_addr_tbl+2
+ lda spr_jkwalk3
+ sta jimmy_knife_walk_addr_tbl+4
+ lda spr_jkwalk2
+ sta jimmy_knife_walk_addr_tbl+6
+* Per-frame X for the knife walk (frames 1/3 are 11 bytes,
+* frame 2 is 9). Stride 1 byte/frame.
+ sep $20
+ mx %11
+ lda #$0B
+ sta jimmy_knife_walk_x_tbl
+ lda #$09
+ sta jimmy_knife_walk_x_tbl+1
+ lda #$0B
+ sta jimmy_knife_walk_x_tbl+2
+ lda #$09
+ sta jimmy_knife_walk_x_tbl+3
+ rep $20
+ mx %00
+
+* Patch anim_jpickup: 1 compiled frame (JJUMP3 hold, 11-byte
+* stride). Mirrors engine.s init_billy's anim_bpickup patch but
+* targets Jimmy's bank-$1D JJUMP3 caches.
+ lda spr_jjump3
+ sta anim_jpickup+6
+ lda spr_jjump3_mask
+ sta anim_jpickup+8
+ lda spr_jjump3_data_mir
+ sta anim_jpickup+10
+ lda spr_jjump3_mask_mir
+ sta anim_jpickup+12
 
 * Patch Jimmy's action anims. Each compiled-stride frame slot
 * is 11 bytes: x/y/dur (3) + DATA / MASK / DATA_MIR / MASK_MIR

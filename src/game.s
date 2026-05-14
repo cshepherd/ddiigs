@@ -10158,6 +10158,17 @@ swap_in_jimmy
  sta active_uppercut_anim
  lda #>anim_juppercut
  sta active_uppercut_anim+1
+* active_pickup_anim ← anim_jpickup so billy_try_pickup_weapon's
+* start_anim plays Jimmy's pickup pose while he's the keyboard's
+* active player.
+ lda active_pickup_anim
+ sta billy_save_active_pickup_anim
+ lda active_pickup_anim+1
+ sta billy_save_active_pickup_anim+1
+ lda #<anim_jpickup
+ sta active_pickup_anim
+ lda #>anim_jpickup
+ sta active_pickup_anim+1
  ldx #7
 :sij_tables
  lda walk_addr_tbl,x
@@ -10326,6 +10337,10 @@ swap_out_jimmy
  sta active_uppercut_anim
  lda billy_save_active_uppercut_anim+1
  sta active_uppercut_anim+1
+ lda billy_save_active_pickup_anim
+ sta active_pickup_anim
+ lda billy_save_active_pickup_anim+1
+ sta active_pickup_anim+1
  ldx #7
 :soj_tables
  lda billy_save_walk_addr_tbl,x
@@ -10431,13 +10446,19 @@ advance_walk
  lda #0
 :ok tax
 * Armed-with-knife uses a per-frame X table (BKWALK1/3=11,
-* BKWALK2=9) but a uniform 40-line height. Patch FRAME_X from
-* knife_walk_x_tbl and FRAME_Y from a literal #$28 before the
-* asl that converts walk_step → 2-byte index. Pipe and mace
-* stay on the uniform 9×40 walk_x/y_tbl.
+* BKWALK2=9) but a uniform 40-line height. Pipe and mace stay
+* on the uniform 9×40 walk_x/y_tbl. For Jimmy, use the parallel
+* jimmy_knife_walk_x_tbl (same values, different storage so
+* future tuning per player stays clean).
  lda billy_knife_armed
  beq :aw_norm_dims
+ jsr arm_is_jimmy
+ bcc :aw_knife_x_billy
+ lda jimmy_knife_walk_x_tbl,x
+ bra :aw_knife_x_set
+:aw_knife_x_billy
  lda knife_walk_x_tbl,x
+:aw_knife_x_set
  sta FRAME_X
  lda #$28
  sta FRAME_Y
@@ -10451,10 +10472,12 @@ advance_walk
  txa
  asl
  tax
-* Armed dispatch: if Billy is carrying a pipe, mace, or knife,
-* walk uses the matching armed walk table (legacy renderer in
-* bank $19). Clear MASK_ADDR + set sprite_bank = $19 so the
-* cross-bank long-indirect reads land on the right pixels.
+* Armed dispatch: if the active player is carrying a pipe, mace,
+* or knife, walk uses the matching armed walk table. Billy uses
+* the bank-$19 sprites; Jimmy uses bank-$1D. The flag check
+* works because swap_in_jimmy swaps billy_*_armed with Jimmy's
+* stash, so during Jimmy's input the flag reflects Jimmy's
+* armed state.
  lda billy_pipe_armed
  bne :aw_pipe
  lda billy_mace_armed
@@ -10463,18 +10486,42 @@ advance_walk
  bne :aw_knife
  bra :aw_unarmed
 :aw_pipe
+ jsr arm_is_jimmy
+ bcc :aw_pipe_billy
+ lda jimmy_pipe_walk_addr_tbl,x
+ sta FRAME_ADDR
+ lda jimmy_pipe_walk_addr_tbl+1,x
+ sta FRAME_ADDR+1
+ bra :aw_armed_common
+:aw_pipe_billy
  lda pipe_walk_addr_tbl,x
  sta FRAME_ADDR
  lda pipe_walk_addr_tbl+1,x
  sta FRAME_ADDR+1
  bra :aw_armed_common
 :aw_mace
+ jsr arm_is_jimmy
+ bcc :aw_mace_billy
+ lda jimmy_mace_walk_addr_tbl,x
+ sta FRAME_ADDR
+ lda jimmy_mace_walk_addr_tbl+1,x
+ sta FRAME_ADDR+1
+ bra :aw_armed_common
+:aw_mace_billy
  lda mace_walk_addr_tbl,x
  sta FRAME_ADDR
  lda mace_walk_addr_tbl+1,x
  sta FRAME_ADDR+1
  bra :aw_armed_common
 :aw_knife
+ jsr arm_is_jimmy
+ bcc :aw_knife_billy
+ lda jimmy_knife_walk_addr_tbl,x
+ sta FRAME_ADDR
+ lda jimmy_knife_walk_addr_tbl+1,x
+ sta FRAME_ADDR+1
+ bra :aw_armed_common
+:aw_knife_billy
  lda knife_walk_addr_tbl,x
  sta FRAME_ADDR
  lda knife_walk_addr_tbl+1,x
@@ -10483,7 +10530,13 @@ advance_walk
  lda #0
  sta MASK_ADDR
  sta MASK_ADDR+1
+ jsr arm_is_jimmy
+ bcc :aw_armed_billy_bank
+ lda #$1D
+ bra :aw_armed_bank_set
+:aw_armed_billy_bank
  lda #$19
+:aw_armed_bank_set
  sta sprite_bank
  stz sprite_bank+1
  rts
@@ -12097,18 +12150,26 @@ update_anims
  ldy #7
  sta (info_ptr),y
 :ne_not_wkthrow
-* Billy pickup hook: anim_bpickup just finished. Armed flag
-* and idle pose were already set at pickup time
-* (billy_try_pickup_weapon → billy_arm_pipe / billy_arm_mace);
-* all that's left is to drop the compiled JUMP3 mask so the
-* next draw routes Billy through the legacy renderer with the
-* armed walk frames.
+* Pickup hook: anim_bpickup OR anim_jpickup just finished.
+* Armed flag and idle pose were already set at pickup time
+* (billy_try_pickup_weapon → billy_arm_pipe/mace/knife), so
+* all that's left is to drop the compiled JUMP3/JJUMP3 mask so
+* the next draw routes through the legacy renderer with the
+* armed walk frames (bank $19 for Billy, bank $1D for Jimmy).
  lda anim_ptr
  cmp #<anim_bpickup
- bne :ne_not_bpickup
+ bne :ne_chk_jpickup
  lda anim_ptr+1
  cmp #>anim_bpickup
+ beq :ne_do_pickup
+:ne_chk_jpickup
+ lda anim_ptr
+ cmp #<anim_jpickup
  bne :ne_not_bpickup
+ lda anim_ptr+1
+ cmp #>anim_jpickup
+ bne :ne_not_bpickup
+:ne_do_pickup
  lda #0
  sta MASK_ADDR
  sta MASK_ADDR+1
@@ -12532,7 +12593,7 @@ update_anims
  sta (info_ptr),y
  iny
  sta (info_ptr),y
- bra :ne_no_billy_mask
+ jmp :ne_no_billy_mask
 :ne_billy_mask_chk_mirror
  lda IMAGE01_MIRROR
  bne :ne_billy_mirror
@@ -12558,6 +12619,32 @@ update_anims
 * cache vars. mirror=0 → FRAME_ADDR is already idle_addr (forward
 * JIMMY01_DATA from the earlier idle restore); just install the
 * forward MASK. mirror=1 → swap both to the _MIRROR variants.
+* Armed Jimmy (pipe/mace/knife): use the legacy renderer path
+* like armed Billy — clear MASK_ADDR + info+60 so the dispatch
+* doesn't route the legacy JMWALK/JKWALK/JPIPEW data through
+* the compiled pipeline (which mixed compiled mask with legacy
+* data and produced a discolored Jimmy).
+*
+* Read jimmy_stash_*_armed, not billy_*_armed — update_anims runs
+* OUTSIDE the swap_in_jimmy window, so billy_*_armed reflects
+* Billy's state here, not Jimmy's. With only Jimmy armed, the
+* billy_*_armed read returned 0 → fell into :ne_jimmy_unarmed →
+* installed the compiled spr_jimmy01_mask while Jimmy's idle_addr
+* pointed at legacy JMWALK1 → compiled+legacy mismatch on the very
+* first post-swing idle frame → discoloration.
+ lda jimmy_stash_pipe_armed
+ ora jimmy_stash_mace_armed
+ ora jimmy_stash_knife_armed
+ beq :ne_jimmy_unarmed
+ lda #0
+ sta MASK_ADDR
+ sta MASK_ADDR+1
+ ldy #60
+ sta (info_ptr),y
+ iny
+ sta (info_ptr),y
+ jmp :ne_no_billy_mask
+:ne_jimmy_unarmed
  lda IMAGE01_MIRROR
  bne :ne_jimmy_mirror
  lda spr_jimmy01_mask
@@ -14913,18 +15000,28 @@ spawn_dropped_pipe
 * On entry: info_ptr = billy_sprite. spr_ptr is clobbered.
 *----------------------------------------------------------
 billy_try_pickup_weapon
-* Snapshot Billy's bbox.
- lda billy_sprite        ; ypos
+* Save the active player's info_ptr so we can restore it after
+* the sprite_table scan below mutates it. Snapshot bbox from
+* the active player (Billy OR Jimmy), not hardcoded billy_sprite,
+* so Jimmy can pick up weapons when he presses L.
+ lda info_ptr
+ sta :tp_save_ip
+ lda info_ptr+1
+ sta :tp_save_ip+1
+ ldy #0
+ lda (info_ptr),y         ; ypos
  sta :tp_by
  clc
- adc #40                  ; billy_bottom (Billy's frame_y is 40)
+ ldy #12
+ adc (info_ptr),y         ; bottom = ypos + frame_y
  sta :tp_bbottom
- lda billy_sprite+2      ; xpos
+ ldy #2
+ lda (info_ptr),y         ; xpos
  sta :tp_bx
- lda billy_sprite+10     ; frame_x
+ ldy #10
  clc
- adc :tp_bx
- sta :tp_bright          ; billy_right = billy_x + billy_w
+ adc (info_ptr),y         ; right = xpos + frame_x (frame_x of active)
+ sta :tp_bright
 
 * Iterate sprite_table looking for a static item (controller=$02)
 * whose frame_addr matches one of the pickup-eligible weapons.
@@ -15039,14 +15136,17 @@ billy_try_pickup_weapon
  sta (info_ptr),y
  iny
  sta (info_ptr),y
-* Restore info_ptr to Billy. From here on writes target his block.
- lda #<billy_sprite
+* Restore info_ptr to the active player (Billy or Jimmy) that
+* triggered the pickup. From here on (info_ptr),y writes target
+* their block — billy_arm_* dispatch on info_ptr internally.
+ lda :tp_save_ip
  sta info_ptr
- lda #>billy_sprite
+ lda :tp_save_ip+1
  sta info_ptr+1
-* Arm Billy now (set flag + idle pose for the matching weapon).
-* anim_bpickup plays JUMP3 over this; idle restore at anim end
-* picks up the new BPIPEW1 / BMWALK1 idle frame automatically.
+* Arm the active player (set flag + idle pose for the matching
+* weapon). active_pickup_anim plays the pose (anim_bpickup for
+* Billy / anim_jpickup for Jimmy); idle restore at anim end
+* picks up the new BPIPEW1/JPIPEW1 / BMWALK1/JMWALK1 / etc.
  lda :tp_kind
  cmp #1
  bne :tp_arm_chk_mace
@@ -15060,8 +15160,8 @@ billy_try_pickup_weapon
 :tp_arm_knife
  jsr billy_arm_knife
 :tp_start_anim
- lda #<anim_bpickup
- ldx #>anim_bpickup
+ lda active_pickup_anim
+ ldx active_pickup_anim+1
  jsr start_anim
  sec                      ; pickup happened
  rts
@@ -15075,13 +15175,15 @@ billy_try_pickup_weapon
  inc spr_ptr+1
 :tp_jloop jmp :tp_loop
 :tp_no
- lda #<billy_sprite
+* Restore info_ptr to the caller's active player (saved at entry).
+ lda :tp_save_ip
  sta info_ptr
- lda #>billy_sprite
+ lda :tp_save_ip+1
  sta info_ptr+1
  clc                      ; no pickup
  rts
 
+:tp_save_ip ds 2
 :tp_by      dfb 0
 :tp_bx      dfb 0
 :tp_bright  dfb 0
@@ -15102,53 +15204,53 @@ billy_try_pickup_weapon
 billy_arm_pipe
  lda #1
  sta billy_pipe_armed
- lda spr_bpipew1
+ jsr arm_pick_pipew1     ; A.lo / X = pipew1 addr for active player
  ldy #42
  sta (info_ptr),y
- lda spr_bpipew1+1
- ldy #43
+ iny
+ txa
  sta (info_ptr),y
- jmp billy_arm_common
+ jmp arm_common_active   ; dispatch idle_bank by controller too
 
 *----------------------------------------------------------
 * billy_arm_mace - Symmetric to billy_arm_pipe. Sets
-* billy_mace_armed and points idle_addr at BMWALK1.
+* billy_mace_armed and points idle_addr at BMWALK1 / JMWALK1
+* depending on the active player.
 *----------------------------------------------------------
 billy_arm_mace
  lda #1
  sta billy_mace_armed
- lda spr_bmwalk1
+ jsr arm_pick_mwalk1
  ldy #42
  sta (info_ptr),y
- lda spr_bmwalk1+1
- ldy #43
+ iny
+ txa
  sta (info_ptr),y
- jmp billy_arm_common
+ jmp arm_common_active
 
 *----------------------------------------------------------
-* billy_arm_knife - Set billy_knife_armed and rewrite Billy's
-* idle pose to BKWALK1 (11×40, bank $19). advance_walk picks
-* up knife_walk_addr_tbl while the flag is set, and L throws
-* the knife (see btn_action_punch knife branch). Inlines the
-* idle dim/bank writes since BKWALK1 is 11 wide vs the 9 that
-* billy_arm_common assumes.
+* billy_arm_knife - Set billy_knife_armed and rewrite the
+* active player's idle pose to BKWALK1 / JKWALK1 (11×40,
+* legacy bank — $19 for Billy, $1D for Jimmy). advance_walk
+* picks up the matching walk table while the flag is set, and
+* L throws the knife (see btn_action_punch knife branch).
 *----------------------------------------------------------
 billy_arm_knife
  lda #1
  sta billy_knife_armed
- lda spr_bkwalk1
+ jsr arm_pick_kwalk1
  ldy #42
  sta (info_ptr),y
- lda spr_bkwalk1+1
- ldy #43
+ iny
+ txa
  sta (info_ptr),y
- lda #$0B               ; BKWALK1 width
+ lda #$0B               ; idle_x = 11 (BKWALK1/JKWALK1 width)
  ldy #44
  sta (info_ptr),y
- lda #$28               ; BKWALK1 height
+ lda #$28               ; idle_y = 40
  ldy #46
  sta (info_ptr),y
- lda #$19
+ jsr arm_pick_idle_bank
  ldy #58
  sta (info_ptr),y
  lda #0
@@ -15157,22 +15259,95 @@ billy_arm_knife
  rts
 
 *----------------------------------------------------------
-* billy_arm_common - Shared idle-state setup for armed Billy.
-* Both BPIPEW1 and BMWALK1 are 9×40 with bank $19.
+* arm_common_active - Shared idle-state setup for armed
+* players. Sets idle_x=9, idle_y=40, idle_bank dispatched per
+* player. BPIPEW1/BMWALK1 are 9×40 in bank $19; JPIPEW1/
+* JMWALK1 are 9×40 in bank $1D.
 *----------------------------------------------------------
-billy_arm_common
+arm_common_active
  lda #$09
  ldy #44
  sta (info_ptr),y
  lda #$28
  ldy #46
  sta (info_ptr),y
- lda #$19
+ jsr arm_pick_idle_bank
  ldy #58
  sta (info_ptr),y
  lda #0
  ldy #59
  sta (info_ptr),y
+ rts
+
+*----------------------------------------------------------
+* arm_pick_pipew1 / arm_pick_mwalk1 / arm_pick_kwalk1 -
+* Return the active player's pipew/mwalk/kwalk1 cache address
+* in A (low) and X (high). Active = info_ptr; Billy ($01) →
+* spr_b*, Jimmy ($02) → spr_j*, NPC defaults to Billy's.
+*----------------------------------------------------------
+arm_pick_pipew1
+ jsr arm_is_jimmy
+ bcs :api_jimmy
+ lda spr_bpipew1
+ ldx spr_bpipew1+1
+ rts
+:api_jimmy
+ lda spr_jpipew1
+ ldx spr_jpipew1+1
+ rts
+arm_pick_mwalk1
+ jsr arm_is_jimmy
+ bcs :amw_jimmy
+ lda spr_bmwalk1
+ ldx spr_bmwalk1+1
+ rts
+:amw_jimmy
+ lda spr_jmwalk1
+ ldx spr_jmwalk1+1
+ rts
+arm_pick_kwalk1
+ jsr arm_is_jimmy
+ bcs :akw_jimmy
+ lda spr_bkwalk1
+ ldx spr_bkwalk1+1
+ rts
+:akw_jimmy
+ lda spr_jkwalk1
+ ldx spr_jkwalk1+1
+ rts
+
+*----------------------------------------------------------
+* arm_pick_idle_bank - A = idle_bank for the active player's
+* armed sprite set. Billy uses bank $19 (BPIPEW/BMWALK/BKWALK);
+* Jimmy uses $1D (JPIPEW/JMWALK/JKWALK). Preserves X / Y.
+*----------------------------------------------------------
+arm_pick_idle_bank
+ jsr arm_is_jimmy
+ bcs :aib_jimmy
+ lda #$19
+ rts
+:aib_jimmy
+ lda #$1D
+ rts
+
+*----------------------------------------------------------
+* arm_is_jimmy - C=1 if info_ptr is jimmy_sprite, C=0 if not.
+* Preserves A / X / Y.
+*----------------------------------------------------------
+arm_is_jimmy
+ pha
+ lda info_ptr+1
+ cmp #>jimmy_sprite
+ bne :aij_not
+ lda info_ptr
+ cmp #<jimmy_sprite
+ bne :aij_not
+ pla
+ sec
+ rts
+:aij_not
+ pla
+ clc
  rts
 
 *----------------------------------------------------------
@@ -15234,6 +15409,64 @@ billy_disarm_weapon
  lda #0
  sta billy_sprite+57
  sta billy_sprite+59
+ rts
+
+*----------------------------------------------------------
+* jimmy_disarm_weapon - Mirror of billy_disarm_weapon for the
+* second player. Called from kill_objects when OP_KILLOBJ fires
+* while Jimmy is armed. Clears jimmy_stash_*_armed and restores
+* Jimmy's compiled JIMMY01 idle in bank $1D. Mirror selected
+* from jimmy_sprite+4 directly (not IMAGE01_MIRROR, since at
+* run_script time the swap has resolved back to Billy and the
+* global may not reflect Jimmy's actual facing).
+*----------------------------------------------------------
+jimmy_disarm_weapon
+ stz jimmy_stash_pipe_armed
+ stz jimmy_stash_mace_armed
+ stz jimmy_stash_knife_armed
+* idle_addr / idle mask point at canonical forward JIMMY01.
+ lda spr_jimmy01
+ sta jimmy_sprite+42
+ lda spr_jimmy01+1
+ sta jimmy_sprite+43
+ lda spr_jimmy01_mask
+ sta jimmy_sprite+62
+ lda spr_jimmy01_mask+1
+ sta jimmy_sprite+63
+* Pick live data + mask pair that matches Jimmy's actual mirror.
+ lda jimmy_sprite+4
+ bne :jdw_mirror
+ lda spr_jimmy01
+ sta jimmy_sprite+14
+ lda spr_jimmy01+1
+ sta jimmy_sprite+15
+ lda spr_jimmy01_mask
+ sta jimmy_sprite+60
+ lda spr_jimmy01_mask+1
+ sta jimmy_sprite+61
+ bra :jdw_dims
+:jdw_mirror
+ lda spr_jimmy01_data_mir
+ sta jimmy_sprite+14
+ lda spr_jimmy01_data_mir+1
+ sta jimmy_sprite+15
+ lda spr_jimmy01_mask_mir
+ sta jimmy_sprite+60
+ lda spr_jimmy01_mask_mir+1
+ sta jimmy_sprite+61
+:jdw_dims
+ lda #$09
+ sta jimmy_sprite+10
+ sta jimmy_sprite+44
+ lda #$28
+ sta jimmy_sprite+12
+ sta jimmy_sprite+46
+ lda #$1D
+ sta jimmy_sprite+56      ; frame_bank → $1D
+ sta jimmy_sprite+58      ; idle_bank → $1D
+ lda #0
+ sta jimmy_sprite+57
+ sta jimmy_sprite+59
  rts
 
 errorspot
@@ -17974,6 +18207,20 @@ anim_bpickup
   hex 0000             ; data_mir   (patched → spr_jump3_data_mirror)
   hex 0000             ; mask_mir   (patched → spr_jump3_mask_mirror)
 
+* anim_jpickup — Jimmy's pickup pose. Same structure as
+* anim_bpickup but the data points at JJUMP3 in bank $1D
+* (flags bit 2 set). init_jimmy patches the entries to
+* spr_jjump3 / spr_jjump3_mask / mir variants.
+anim_jpickup
+ dfb 1
+ dfb $0D              ; max_width (JJUMP3 is 13 wide)
+ dfb $84              ; flags: bit 7 compiled, bit 2 bank $1D
+ dfb $0D,$20,30       ; JJUMP3 — 13×32, 30 VBLs
+  hex 0000             ; data       (patched → spr_jjump3)
+  hex 0000             ; mask       (patched → spr_jjump3_mask)
+  hex 0000             ; data_mir   (patched → spr_jjump3_data_mir)
+  hex 0000             ; mask_mir   (patched → spr_jjump3_mask_mir)
+
 *----------------------------------------------------------
 * check_punch_hit - Check if the punching sprite (whose
 * state is in globals) hit any other sprite in the table.
@@ -18267,12 +18514,20 @@ kill_objects
  inc spr_ptr+1
  bra :ko_loop
 :ko_done
-* If Billy was carrying a weapon (pipe or mace), OP_KILLOBJ
-* also takes it away.
+* If either player was carrying a weapon (pipe or mace), strip
+* it. run_script runs in Billy's swap context so billy_*_armed
+* reflects Billy and jimmy_stash_*_armed reflects Jimmy.
  lda billy_pipe_armed
  ora billy_mace_armed
- beq :ko_real_done
+ beq :ko_chk_jimmy_arm
  jsr billy_disarm_weapon
+:ko_chk_jimmy_arm
+ lda jimmy_active
+ beq :ko_real_done
+ lda jimmy_stash_pipe_armed
+ ora jimmy_stash_mace_armed
+ beq :ko_real_done
+ jsr jimmy_disarm_weapon
 :ko_real_done
  rts
 
