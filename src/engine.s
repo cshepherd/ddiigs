@@ -535,6 +535,7 @@ _scroll_right
 * Step 4: Composite sprite + overlay directly on $01 (shadow off,
 * no per-write tax).
  jsl draw_active_sprite_l
+ jsl draw_other_sprite_l       ; 2-player: also draw non-active sprite
  jsl draw_overlay_l
 
 * Step 5: Re-enable shadow and propagate the staged $01 to $E1
@@ -830,6 +831,7 @@ _scroll_left
  sec
  xce
  jsl draw_active_sprite_l
+ jsl draw_other_sprite_l       ; 2-player: also draw non-active sprite
  jsl draw_overlay_l
  clc
  xce
@@ -912,50 +914,29 @@ _scroll_up
  sta IMAGE01_XPOS
  sta billy_sprite+2
  sta billy_sprite+34
-* Jimmy alignment: if within tolerance, teleport him too.
- lda jimmy_active
- beq :ps_billy_done
- sec
- lda jimmy_sprite+2
- sbc pending_snap_buf+4
- bpl :ps_j_abs
- eor #$FF
- inc
-:ps_j_abs
- cmp #SNAP_ALIGN_TOL
- bcs :ps_billy_done           ; Jimmy too far → leave him
- lda pending_snap_buf+4
- sta jimmy_sprite+2
- sta jimmy_sprite+34
- bra :ps_billy_done
+* OTHER (Jimmy here) gets no auto-teleport — the older code
+* aligned X (and at one point Y) to the climber's canonical
+* position, but every variant we tried introduced a lock: X-only
+* align landed Jimmy in a wall row when the canonical column
+* was bounds-blocked at his current Y; X+Y align put him inside
+* the ladder Y range where the climb-lock fires. Bounds-gated
+* X align still locked the user on ladder 2. Leaving Jimmy at
+* his walked-to position is the only configuration that lets
+* him navigate freely afterward (he can climb via :up_walk's
+* lenient ladder check). Visual cost: Jimmy may appear off the
+* canonical column briefly — accepted per user direction.
+ jmp :ps_billy_done
 :ps_climber_jimmy
 * Climber = Jimmy. Teleport Jimmy to canonical column.
  lda pending_snap_buf+4
  sta IMAGE01_XPOS
  sta jimmy_sprite+2
  sta jimmy_sprite+34
-* Billy alignment: if within tolerance, teleport him too and
-* use the canonical abs_x. Else leave him and recompute abs_x
-* from new world_offset + Billy's (unchanged) info+2.
- sec
- lda billy_sprite+2
- sbc pending_snap_buf+4
- bpl :ps_b_abs
- eor #$FF
- inc
-:ps_b_abs
- cmp #SNAP_ALIGN_TOL
- bcs :ps_billy_kept
- lda pending_snap_buf+2
- sta abs_x
- sta billy_save_abs_x
- lda pending_snap_buf+3
- sta abs_x+1
- sta billy_save_abs_x+1
- lda pending_snap_buf+4
- sta billy_sprite+2
- sta billy_sprite+34
- bra :ps_billy_done
+* OTHER (Billy here) gets no auto-teleport — see the matching
+* note in the climber=Billy branch above. Always fall through
+* to :ps_billy_kept which recomputes abs_x from new world_offset
+* + Billy's unchanged info+2, satisfying assert_abs_x without
+* moving Billy in screen space.
 :ps_billy_kept
  clc
  lda billy_sprite+2
@@ -1497,6 +1478,7 @@ _scroll_up
  sec
  xce
  jsl draw_active_sprite_l
+ jsl draw_other_sprite_l       ; 2-player: also draw non-active sprite
  jsl draw_overlay_l
  clc
  xce
@@ -2083,6 +2065,65 @@ _scroll_up
  sta MASK_ADDR+1
  sta billy_sprite+61
 :st_mask_done
+* 2-player: also reset OTHER (the non-climber) out of climb-anim.
+* The block above used (info_ptr),y to reset the climber and the
+* hardcoded billy_sprite+14/+60 writes used IMAGE01_MIRROR (the
+* climber's mirror) — neither resets OTHER's anim using OTHER's
+* own mirror. When Jimmy is the climber and Billy was walking up
+* the ladder column with via_ladder=1, Billy's frame_addr stays
+* at BCLIMB and his frame_x/y at the climb dimensions → Billy is
+* rendered with the climb sprite on the flat exit platform
+* ("sprite corrupted" report). Reset OTHER explicitly.
+ lda jimmy_active
+ beq :st_other_reset_done
+ lda info_ptr
+ cmp #<billy_sprite
+ bne :st_other_is_billy
+ lda info_ptr+1
+ cmp #>billy_sprite
+ bne :st_other_is_billy
+* Climber = Billy → reset Jimmy.
+ lda jimmy_sprite+42        ; idle_addr low
+ sta jimmy_sprite+14
+ lda jimmy_sprite+43
+ sta jimmy_sprite+15
+ lda jimmy_sprite+44        ; idle_x
+ sta jimmy_sprite+10
+ lda jimmy_sprite+46        ; idle_y
+ sta jimmy_sprite+12
+ lda spr_jimmy01_mask
+ sta jimmy_sprite+60
+ lda spr_jimmy01_mask+1
+ sta jimmy_sprite+61
+ bra :st_other_reset_done
+:st_other_is_billy
+* Climber = Jimmy → reset Billy using Billy's idle data and
+* Billy's mirror state.
+ lda billy_sprite+44        ; idle_x
+ sta billy_sprite+10
+ lda billy_sprite+46        ; idle_y
+ sta billy_sprite+12
+ lda billy_sprite+4         ; Billy's mirror state
+ bne :st_billy_mirror_other
+ lda billy_sprite+42        ; non-mirror idle_addr
+ sta billy_sprite+14
+ lda billy_sprite+43
+ sta billy_sprite+15
+ lda spr_image01_mask
+ sta billy_sprite+60
+ lda spr_image01_mask+1
+ sta billy_sprite+61
+ bra :st_other_reset_done
+:st_billy_mirror_other
+ lda spr_image01_data_mirror
+ sta billy_sprite+14
+ lda spr_image01_data_mirror+1
+ sta billy_sprite+15
+ lda spr_image01_mask_mirror
+ sta billy_sprite+60
+ lda spr_image01_mask_mirror+1
+ sta billy_sprite+61
+:st_other_reset_done
  stz climb_toggle       ; next climb starts on BCLIMB1
 * Disable the ladder Billy just climbed by locating it from his
 * current world_x and setting y_top=255 so check_ladder fails
@@ -2197,6 +2238,7 @@ _scroll_up
  sec
  xce
  jsl draw_active_sprite_l
+ jsl draw_other_sprite_l       ; 2-player: also draw non-active sprite
  jsl draw_overlay_l
  clc
  xce

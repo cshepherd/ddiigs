@@ -8566,28 +8566,28 @@ btn_action_jump
 * they press up, even if the world isn't scrolling.
  jsr advance_climb
  jsr save_sprite
-* Co-op gate. Two outcomes encoded in :sn_shift_other:
+* Co-op gate. Mirrors the horizontal scroll model: either player
+* can drive the scroll while the other gets carried along in
+* world coordinates. Two outcomes encoded in :sn_shift_other:
 *   0 → scroll fires, but DO NOT shift OTHER. Either single-player
-*       or OTHER is actively trying to ascend (pressing up). In the
-*       latter case OTHER is already moving themselves; shifting
-*       them DOWN by 4 each scroll cancels their walk-up (-2 px) and
-*       traps them in the walking phase — the "leapfrog" bug.
+*       or OTHER is actively trying to ascend (pressing up). In
+*       the latter case OTHER is moving themselves; shifting them
+*       DOWN by 4 each scroll would cancel their walk-up.
 *   1 → scroll fires AND we shift OTHER down by 4 so they stay
-*       anchored to their world-y while the camera moves up. This
-*       is the "leave the other behind on the floor" case.
-* The "OTHER on ladder column but not pressing up" case still
-* blocks — without a shift the ladder art would slide DOWN past
-* them visually; with a shift they'd be dragged up against their
-* will. Block is the only sane choice.
+*       anchored to their world-y while the camera moves up. The
+*       y-bound check below halts the climb if continuing would
+*       push OTHER off the playfield. Applies whether OTHER is on
+*       the ladder column or off it — if they're parked on a rung
+*       not pressing up, they stay on that rung in world coords
+*       (which means they stay on the same visible rung as the
+*       ladder art shifts with them).
  stz :sn_shift_other
  lda jimmy_active
  beq :sn_gate_pass               ; single player → scroll, no shift
  jsr co_op_other_pressing_up     ; C=0 if OTHER pressing
  bcc :sn_gate_pass               ; OTHER climbing → scroll, no shift
- jsr co_op_other_on_ladder       ; C=0 if OTHER on ladder column
- bcc :sn_skip_scroll             ; parked on ladder → block (no drag)
  lda #1
- sta :sn_shift_other             ; OTHER off ladder, not climbing → shift
+ sta :sn_shift_other             ; OTHER not climbing → scroll + shift
 :sn_gate_pass
 * Only the first mover this frame fires the world-scroll.
  lda did_climb_this_frame
@@ -8604,6 +8604,14 @@ btn_action_jump
  jsr load_sprite
  lda #1
  sta did_climb_this_frame
+* If snap_transition fired during this scroll, scroll_up_enabled
+* was cleared and snap_transition already set OTHER's info+0 to
+* the climber's final y (engine.s :sl_other_is_billy etc.). Skip
+* the per-step shift; otherwise we'd add 4 to that just-reset
+* y and push OTHER off a narrow exit platform (the ladder-2
+* "1px-tall exit row" out-of-bounds bug).
+ lda scroll_up_enabled
+ beq :sn_no_shift
  lda :sn_shift_other
  beq :sn_no_shift
  jsr co_op_shift_other_down
@@ -8623,7 +8631,38 @@ btn_action_jump
  sec
  sbc #1               ; proposed Y
  jsr check_y_bounds
+ bcc :up_walk_bounds_ok
+* Bounds rejected the proposed row. Lenient retry: if scroll_up
+* is enabled AND we're on a ladder x-range (Y ignored), allow the
+* walk-up with via_ladder=1. Lets a partner follow the climber
+* up the ladder column from a Y above the ladder's y_bottom — the
+* strict check_y_bounds rejects those Y values because the floor
+* row outside the ladder column is bounds-walkable while the row
+* above (the wall) is blocked, and check_ladder uses proposed Y
+* which sits above y_bottom for follow-up scenarios. (mission1
+* ladders have y_top=0, so prop_y=0 is always within range.)
+ lda scroll_up_enabled
+ beq :up_blocked_bounds
+ lda #0
+ jsr check_ladder
  bcs :up_blocked_bounds
+ lda #1
+ sta via_ladder
+ jmp :up_do_move
+:up_walk_bounds_ok
+* Ladder-column override: if we're on a ladder x-range with
+* scroll_up_enabled, force via_ladder=1 so walk-up uses climb
+* anim. Without this, a bounds-walkable ladder column (no walls
+* on the sides, step rule never fires) leaves via_ladder at 0
+* and the partner walks up in walk anim instead of climbing.
+ lda scroll_up_enabled
+ beq :up_walk_step
+ lda #0
+ jsr check_ladder
+ bcs :up_walk_step
+ lda #1
+ sta via_ladder
+:up_walk_step
 * Step rule: if the proposed row's bmax is less than the
 * current row's bmax, the row above is narrower — that's a
 * "step up into a wall," which should require a ladder. Catches
@@ -8640,14 +8679,14 @@ btn_action_jump
  cmp :up_cur_bmax
  bcs :up_no_step      ; proposed >= current → flat or widening
 * Proposed bmax < current → narrower row. Require an active
-* ladder + scroll_up_enabled.
- lda IMAGE01_YPOS
- sec
- sbc #1
- jsr check_ladder
- bcs :up_blocked_ladder
+* ladder + scroll_up_enabled. Use x-only ladder check so the
+* partner can pick up climb-anim from any starting Y, mirroring
+* the lenient retry above.
  lda scroll_up_enabled
  beq :up_blocked_ladder
+ lda #0
+ jsr check_ladder
+ bcs :up_blocked_ladder
  lda #1
  sta via_ladder       ; force climb anim
  jmp :up_do_move
@@ -16399,6 +16438,8 @@ shadow_on_l           jsr shadow_on
                       rtl
 draw_active_sprite_l  jsr draw_active_sprite
                       rtl
+draw_other_sprite_l   jsr draw_other_sprite
+                      rtl
 draw_overlay_l        jsr draw_overlay
                       rtl
 inc_border_l          jsr inc_border
@@ -19764,6 +19805,133 @@ draw_active_sprite
  jmp draw_sprite
 :das_compiled
  jmp draw_sprite_compiled
+
+*----------------------------------------------------------
+* draw_other_sprite - In 2-player, draw the non-active player
+* onto $01 during the scroll pipeline. Without this, only the
+* sprite owning the globals at scroll time (the player who
+* triggered the scroll) is drawn before push_band, leaving
+* OTHER absent on $E1 until the next frame's draw_all → a
+* one-frame blanking on every scroll = flicker for whichever
+* player isn't driving.
+*
+* Skips when jimmy_active=0. Otherwise: locate OTHER's slot in
+* sprite_table (Y-sorted, can't assume a fixed index), call
+* load_sprite to swap globals to OTHER, dispatch the draw on
+* MASK_ADDR (compiled vs legacy), then restore info_ptr +
+* spr_ptr so the caller can finish its scroll handling.
+*----------------------------------------------------------
+draw_other_sprite
+* Called from engine.s scroll pipeline in emulation 8-bit. Merlin
+* doesn't track xce/sep transitions across JSL boundaries, so we
+* assert the actual runtime state here — without this directive
+* `cmp #>billy_sprite` and other immediate compares get assembled
+* as 3-byte (16-bit A) instructions and execution lands on the
+* trailing zero byte → BRK at $00/A300.
+ mx %11
+ lda jimmy_active
+ bne :dos_active
+ rts
+:dos_active
+ lda info_ptr
+ pha
+ lda info_ptr+1
+ pha
+ lda spr_ptr
+ pha
+ lda spr_ptr+1
+ pha
+* Determine OTHER's info pointer.
+ lda info_ptr+1
+ cmp #>billy_sprite
+ bne :dos_target_jimmy
+ lda info_ptr
+ cmp #<billy_sprite
+ bne :dos_target_jimmy
+* Active = Billy → OTHER = Jimmy.
+ lda #<jimmy_sprite
+ sta :dos_target
+ lda #>jimmy_sprite
+ sta :dos_target+1
+ bra :dos_find
+:dos_target_jimmy
+* Active is something else (Jimmy or NPC) → OTHER = Billy.
+ lda #<billy_sprite
+ sta :dos_target
+ lda #>billy_sprite
+ sta :dos_target+1
+:dos_find
+ lda #<sprite_table
+ sta spr_ptr
+ lda #>sprite_table
+ sta spr_ptr+1
+:dos_loop
+ ldy #0
+ lda (spr_ptr),y
+ sta info_ptr
+ iny
+ lda (spr_ptr),y
+ sta info_ptr+1
+ ora info_ptr
+ beq :dos_not_found    ; null terminator
+ lda info_ptr
+ cmp :dos_target
+ bne :dos_next
+ lda info_ptr+1
+ cmp :dos_target+1
+ beq :dos_found
+:dos_next
+ lda spr_ptr
+ clc
+ adc #2
+ sta spr_ptr
+ bcc :dos_loop
+ inc spr_ptr+1
+ bra :dos_loop
+:dos_found
+ jsr load_sprite           ; globals ← OTHER
+* Stage frame_x_off per controller (mirrors draw_all's dispatch).
+ ldy #22
+ lda (info_ptr),y
+ cmp #$01
+ bne :dos_chk_off_j
+ lda billy_cur_x_off
+ sta frame_x_off
+ bra :dos_off_done
+:dos_chk_off_j
+ cmp #$02
+ bne :dos_off_zero
+ lda jimmy_cur_x_off
+ sta frame_x_off
+ bra :dos_off_done
+:dos_off_zero
+ stz frame_x_off
+:dos_off_done
+ lda MASK_ADDR
+ ora MASK_ADDR+1
+ bne :dos_compiled
+ jsr draw_sprite
+ bra :dos_drawn
+:dos_compiled
+ jsr draw_sprite_compiled
+:dos_drawn
+:dos_not_found
+ pla
+ sta spr_ptr+1
+ pla
+ sta spr_ptr
+ pla
+ sta info_ptr+1
+ pla
+ sta info_ptr
+* Reload active player's globals so the rest of the scroll
+* pipeline (draw_overlay, push_band) and any post-scroll game.s
+* code see consistent state — without this, globals stay as
+* OTHER's after the dispatch and a downstream consumer may render
+* with the wrong sprite's data ("scrambled sprites" report).
+ jsr load_sprite
+ rts
+:dos_target ds 2
 
 *----------------------------------------------------------
 * draw_sprite_compiled - AND/ORA pipeline draw for sprites
