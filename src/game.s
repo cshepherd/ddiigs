@@ -14179,10 +14179,13 @@ update_projectile
 
 * Hit-check. Dispatch based on the thrower marker at +8:
 * $01 = Billy threw it  → hits NPCs (auto-fall).
-* $02 = Jimmy threw it  → hits NPCs (auto-fall). Without this
-*                          branch Jimmy's knife fell through to
-*                          knife_hit_billy and only hit Billy.
-* anything else ($00 = williams etc.) → hits player(s).
+* $02 = Jimmy threw it  → hits NPCs (auto-fall).
+* anything else ($00 = williams etc.) → hits BOTH players;
+*                          knife_hit_jimmy short-circuits if the
+*                          knife was already tagged dead by
+*                          knife_hit_billy (both players standing
+*                          in the same column is rare but possible
+*                          — don't double-damage).
  ldy #8
  lda (info_ptr),y
  cmp #$01
@@ -14190,6 +14193,7 @@ update_projectile
  cmp #$02
  beq :up_hit_npc
  jsr knife_hit_billy
+ jsr knife_hit_jimmy
  rts
 :up_hit_npc
  jsr knife_hit_npc
@@ -14393,6 +14397,209 @@ knife_hit_billy
 :bb_h      dfb 0
 :bb_right  dfb 0
 :bb_bottom dfb 0
+
+*----------------------------------------------------------
+* knife_hit_jimmy - Mirror of knife_hit_billy for player 2.
+* Tests caller's projectile bbox against jimmy_sprite. On hit:
+*   - tag the projectile $FFFF in anim_ptr (death sentinel)
+*   - if Jimmy isn't already in his fall_anim, start anim_jfall
+*     via start_anim (so frame_bank/data/mask/dirty all settle)
+*   - deplete one P2 palette slot ($019E52..$019E4A) so the
+*     on-screen HP bar shortens
+* Gate: jimmy_active=0 → return immediately (player 2 inactive).
+* Caller's info_ptr is restored on exit.
+*----------------------------------------------------------
+knife_hit_jimmy
+ lda jimmy_active
+ bne :khj_on
+ rts
+:khj_on
+* Skip if knife already dead (e.g. knife_hit_billy already tagged
+* it this same call — both players overlapping is rare but
+* possible and we don't want double-damage from one projectile).
+ ldy #24
+ lda (info_ptr),y
+ cmp #$FF
+ bne :khj_alive
+ iny
+ lda (info_ptr),y
+ cmp #$FF
+ bne :khj_alive
+ rts
+:khj_alive
+ ldy #0
+ lda (info_ptr),y
+ sta :khj_y
+ ldy #2
+ lda (info_ptr),y
+ sta :khj_x
+ ldy #10
+ lda (info_ptr),y
+ sta :khj_w
+ ldy #12
+ lda (info_ptr),y
+ sta :khj_h
+
+* Knife edges
+ lda :khj_x
+ clc
+ adc :khj_w
+ sta :khj_right
+ lda :khj_y
+ clc
+ adc :khj_h
+ sec
+ sbc #1
+ sta :khj_bottom
+
+* Jimmy bbox from jimmy_sprite
+ lda jimmy_sprite
+ sta :jb_y
+ lda jimmy_sprite+2
+ sta :jb_x
+ lda jimmy_sprite+10
+ sta :jb_w
+ lda jimmy_sprite+12
+ sta :jb_h
+ clc
+ adc :jb_y
+ sec
+ sbc #1
+ sta :jb_bottom
+ lda :jb_x
+ clc
+ adc :jb_w
+ sta :jb_right
+
+* Horizontal overlap
+ lda :khj_right
+ cmp :jb_x
+ bcs :khj_h2
+ jmp :khj_no_hit
+:khj_h2
+ lda :khj_x
+ cmp :jb_right
+ beq :khj_vcheck
+ bcc :khj_vcheck
+ jmp :khj_no_hit
+:khj_vcheck
+* Vertical overlap
+ lda :khj_bottom
+ cmp :jb_y
+ bcs :khj_v2
+ jmp :khj_no_hit
+:khj_v2
+ lda :khj_y
+ cmp :jb_bottom
+ beq :khj_hit
+ bcc :khj_hit
+ jmp :khj_no_hit
+
+:khj_hit
+* Tag the knife dead.
+ lda #$FF
+ ldy #24
+ sta (info_ptr),y
+ iny
+ sta (info_ptr),y
+
+* Save info_ptr; switch to jimmy_sprite for fall_anim install.
+ lda info_ptr
+ pha
+ lda info_ptr+1
+ pha
+ lda #<jimmy_sprite
+ sta info_ptr
+ lda #>jimmy_sprite
+ sta info_ptr+1
+
+* Already in fall_anim? Compare anim_ptr (+24/+25) to fall_anim (+50/+51).
+ ldy #50
+ lda (info_ptr),y
+ ldy #24
+ cmp (info_ptr),y
+ bne :khj_do_fall
+ ldy #51
+ lda (info_ptr),y
+ ldy #25
+ cmp (info_ptr),y
+ bne :khj_do_fall
+ bra :khj_restore       ; already falling — knife passes (logically)
+
+:khj_do_fall
+* Start Jimmy's fall_anim via start_anim — same reasoning as the
+* knife_hit_billy path (start_anim sets frame_bank from anim flags
+* so bank-$1D anim_jfall pixels load from the right bank).
+ ldy #50
+ lda (info_ptr),y
+ pha
+ ldy #51
+ lda (info_ptr),y
+ tax
+ pla
+ jsr start_anim
+* Weapon hit = automatic fall. Mirror Billy's :uf bookkeeping for
+* Jimmy: zero punch_count, bump jimmy_stash_fall_count, deplete
+* one P2 palette slot.
+ lda #0
+ ldy #48
+ sta (info_ptr),y
+ inc jimmy_stash_fall_count
+ lda jimmy_stash_fall_count
+ cmp #1
+ bne :khj_dep_2
+ lda #0
+ stal $019E52
+ stal $019E53
+ bra :khj_restore
+:khj_dep_2
+ cmp #2
+ bne :khj_dep_3
+ lda #0
+ stal $019E50
+ stal $019E51
+ bra :khj_restore
+:khj_dep_3
+ cmp #3
+ bne :khj_dep_4
+ lda #0
+ stal $019E4E
+ stal $019E4F
+ bra :khj_restore
+:khj_dep_4
+ cmp #4
+ bne :khj_dep_5
+ lda #0
+ stal $019E4C
+ stal $019E4D
+ bra :khj_restore
+:khj_dep_5
+ cmp #5
+ bne :khj_restore
+ lda #0
+ stal $019E4A
+ stal $019E4B
+
+:khj_restore
+ pla
+ sta info_ptr+1
+ pla
+ sta info_ptr
+:khj_no_hit
+ rts
+
+:khj_x      dfb 0
+:khj_y      dfb 0
+:khj_w      dfb 0
+:khj_h      dfb 0
+:khj_right  dfb 0
+:khj_bottom dfb 0
+:jb_x       dfb 0
+:jb_y       dfb 0
+:jb_w       dfb 0
+:jb_h       dfb 0
+:jb_right   dfb 0
+:jb_bottom  dfb 0
 
 *----------------------------------------------------------
 * knife_hit_npc - Bbox overlap test of caller's projectile
