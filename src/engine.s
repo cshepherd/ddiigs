@@ -6081,6 +6081,27 @@ _init_jimmy
  lda spr_jfallen
  sta anim_jfall+11
 
+* anim_jpipeswing (legacy, 4 frames: JPIPE1-4). 5-byte stride.
+* Frame 0 DATA at +6, frame 1 at +11, frame 2 at +16, frame 3 at +21.
+ lda spr_jpipe1
+ sta anim_jpipeswing+6
+ lda spr_jpipe2
+ sta anim_jpipeswing+11
+ lda spr_jpipe3
+ sta anim_jpipeswing+16
+ lda spr_jpipe4
+ sta anim_jpipeswing+21
+
+* anim_jmaceswing (legacy, 4 frames: JMACE1-4). 5-byte stride.
+ lda spr_jmace1
+ sta anim_jmaceswing+6
+ lda spr_jmace2
+ sta anim_jmaceswing+11
+ lda spr_jmace3
+ sta anim_jmaceswing+16
+ lda spr_jmace4
+ sta anim_jmaceswing+21
+
  sec
  xce
  mx %11

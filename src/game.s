@@ -8182,37 +8182,61 @@ btn_action_fire
  bne :baf_dispatch
  lda billy_pipe_armed
  beq :baf_l_chk_mace
- lda #<anim_bpipeswing
- ldx #>anim_bpipeswing
+ lda active_pipe_swing_anim
+ ldx active_pipe_swing_anim+1
  jsr start_anim
  rts
 :baf_l_chk_mace
  lda billy_mace_armed
  beq :baf_l_chk_knife
- lda #<anim_bmaceswing
- ldx #>anim_bmaceswing
+ lda active_mace_swing_anim
+ ldx active_mace_swing_anim+1
  jsr start_anim
  rts
 :baf_l_chk_knife
  lda billy_knife_armed
  beq :baf_l_pickup
-* Throw: spawn_thrown_knife reads info_ptr's xpos / ypos / mirror
-* the same way it does for a williams thrower; Billy's block uses
-* the same offsets. Spawn first (still using BKNIFE1 idle), then
-* disarm to restore the compiled-IMAGE01 idle path so anim_punch1's
-* :normal_end leaves Billy unarmed.
- lda #<billy_sprite
- sta info_ptr
- lda #>billy_sprite
- sta info_ptr+1
+* Throw: spawn_thrown_knife reads info_ptr's xpos / ypos / mirror.
+* Preserve whatever info_ptr is on entry (Billy when called via
+* process_input, Jimmy when called via process_input_jimmy's swap
+* context) so each player throws from his own position. Then
+* dispatch disarm by the active player so the right *_armed flags
+* and idle pose get restored. active_punch1_anim is swapped to
+* anim_jpunch1 in Jimmy's context.
+ lda info_ptr
+ pha
+ lda info_ptr+1
+ pha
  jsr spawn_thrown_knife
- lda #<billy_sprite
- sta info_ptr
- lda #>billy_sprite
+ pla
  sta info_ptr+1
+ pla
+ sta info_ptr
+ lda info_ptr+1
+ cmp #>jimmy_sprite
+ bne :baf_disarm_billy
+ lda info_ptr
+ cmp #<jimmy_sprite
+ bne :baf_disarm_billy
+* Jimmy throw: we're inside swap_in_jimmy's context, so the
+* billy_*_armed globals are actually Jimmy's armed flags
+* (swap_in copied jimmy_stash_*_armed into them). Clear them
+* here BEFORE jimmy_disarm_weapon so swap_out_jimmy copies the
+* now-zero globals back into jimmy_stash_*_armed (otherwise
+* swap_out's `lda billy_knife_armed / sta jimmy_stash_knife_armed`
+* would write the stale 1 back, undoing jimmy_disarm's stash clear
+* — Jimmy stays "armed", walk keeps using knife frames, and the
+* next throw fires the knife branch again).
+ stz billy_pipe_armed
+ stz billy_mace_armed
+ stz billy_knife_armed
+ jsr jimmy_disarm_weapon
+ bra :baf_post_disarm
+:baf_disarm_billy
  jsr billy_disarm_weapon
- lda #<anim_punch1
- ldx #>anim_punch1
+:baf_post_disarm
+ lda active_punch1_anim
+ ldx active_punch1_anim+1
  jsr start_anim
  rts
 :baf_l_pickup
@@ -10169,6 +10193,25 @@ swap_in_jimmy
  sta active_pickup_anim
  lda #>anim_jpickup
  sta active_pickup_anim+1
+* Weapon-swing anims: Jimmy's pipe/mace swings live in bank $1D
+* (JPIPE1-4 / JMACE1-4). btn_action_fire's L-key dispatch reads
+* active_*_swing_anim so both players use their own palette.
+ lda active_pipe_swing_anim
+ sta billy_save_active_pipe_swing_anim
+ lda active_pipe_swing_anim+1
+ sta billy_save_active_pipe_swing_anim+1
+ lda #<anim_jpipeswing
+ sta active_pipe_swing_anim
+ lda #>anim_jpipeswing
+ sta active_pipe_swing_anim+1
+ lda active_mace_swing_anim
+ sta billy_save_active_mace_swing_anim
+ lda active_mace_swing_anim+1
+ sta billy_save_active_mace_swing_anim+1
+ lda #<anim_jmaceswing
+ sta active_mace_swing_anim
+ lda #>anim_jmaceswing
+ sta active_mace_swing_anim+1
  ldx #7
 :sij_tables
  lda walk_addr_tbl,x
@@ -10341,6 +10384,14 @@ swap_out_jimmy
  sta active_pickup_anim
  lda billy_save_active_pickup_anim+1
  sta active_pickup_anim+1
+ lda billy_save_active_pipe_swing_anim
+ sta active_pipe_swing_anim
+ lda billy_save_active_pipe_swing_anim+1
+ sta active_pipe_swing_anim+1
+ lda billy_save_active_mace_swing_anim
+ sta active_mace_swing_anim
+ lda billy_save_active_mace_swing_anim+1
+ sta active_mace_swing_anim+1
  ldx #7
 :soj_tables
  lda billy_save_walk_addr_tbl,x
@@ -13122,17 +13173,33 @@ update_anims
 :try_bpipe
  lda anim_ptr
  cmp #<anim_bpipeswing
- bne :try_bmace
+ bne :try_jpipe
  lda anim_ptr+1
  cmp #>anim_bpipeswing
+ bne :try_jpipe
+ jmp :do_hit_now
+:try_jpipe
+ lda anim_ptr
+ cmp #<anim_jpipeswing
+ bne :try_bmace
+ lda anim_ptr+1
+ cmp #>anim_jpipeswing
  bne :try_bmace
  jmp :do_hit_now
 :try_bmace
  lda anim_ptr
  cmp #<anim_bmaceswing
- bne :try_bspin
+ bne :try_jmace
  lda anim_ptr+1
  cmp #>anim_bmaceswing
+ bne :try_jmace
+ jmp :do_hit_now
+:try_jmace
+ lda anim_ptr
+ cmp #<anim_jmaceswing
+ bne :try_bspin
+ lda anim_ptr+1
+ cmp #>anim_jmaceswing
  bne :try_bspin
  jmp :do_hit_now
 :try_bspin
@@ -14111,16 +14178,21 @@ update_projectile
  sta (info_ptr),y      ; dirty
 
 * Hit-check. Dispatch based on the thrower marker at +8:
-* $01 = Billy threw it → only hits NPCs (auto-fall).
-* anything else (today: $00 = williams threw it) → only hits Billy.
+* $01 = Billy threw it  → hits NPCs (auto-fall).
+* $02 = Jimmy threw it  → hits NPCs (auto-fall). Without this
+*                          branch Jimmy's knife fell through to
+*                          knife_hit_billy and only hit Billy.
+* anything else ($00 = williams etc.) → hits player(s).
  ldy #8
  lda (info_ptr),y
  cmp #$01
- bne :up_hit_billy
- jsr knife_hit_npc
- rts
-:up_hit_billy
+ beq :up_hit_npc
+ cmp #$02
+ beq :up_hit_npc
  jsr knife_hit_billy
+ rts
+:up_hit_npc
+ jsr knife_hit_npc
  rts
 
 :up_die
@@ -18190,6 +18262,39 @@ anim_bmaceswing
  dfb $10,$28,6        ; BMACE4: 16×40
   hex 0000             ; patched
 
+* Jimmy-with-pipe swing — same shape as anim_bpipeswing but frames
+* live in bank $1D (JPIPE1-4). swap_in_jimmy points
+* active_pipe_swing_anim here while Jimmy is the active player.
+* Init_jimmy patches frame slots from spr_jpipe1-4.
+anim_jpipeswing
+ dfb 4
+ dfb $11              ; max_width (JPIPE2 is 17 wide)
+ dfb $04              ; flags: bit 2 = bank $1D
+ dfb $09,$28,6        ; JPIPE1
+  hex 0000             ; patched: spr_jpipe1
+ dfb $11,$28,6        ; JPIPE2
+  hex 0000             ; patched: spr_jpipe2
+ dfb $0F,$28,6        ; JPIPE3
+  hex 0000             ; patched: spr_jpipe3
+ dfb $0C,$28,6        ; JPIPE4
+  hex 0000             ; patched: spr_jpipe4
+
+* Jimmy-with-mace swing — same shape as anim_bmaceswing but frames
+* live in bank $1D (JMACE1-4). Init_jimmy patches frame slots
+* from spr_jmace1-4.
+anim_jmaceswing
+ dfb 4
+ dfb $19              ; max_width (JMACE2 is 25 wide)
+ dfb $04              ; flags: bit 2 = bank $1D
+ dfb $0F,$2C,6        ; JMACE1: 15×44
+  hex 0000             ; patched: spr_jmace1
+ dfb $19,$2E,6        ; JMACE2: 25×46
+  hex 0000             ; patched: spr_jmace2
+ dfb $14,$28,6        ; JMACE3: 20×40
+  hex 0000             ; patched: spr_jmace3
+ dfb $10,$28,6        ; JMACE4: 16×40
+  hex 0000             ; patched: spr_jmace4
+
 * Billy pipe-pickup pose — 1 frame (JUMP3 = crouch) held for
 * 30 VBLs (~½ s). Compiled (11-byte stride) so it renders
 * through the same draw_sprite_compiled path as Billy's normal
@@ -19229,7 +19334,7 @@ check_punch_hit
  cmp #>anim_uppercut
  bne :hit_chk_juc
  lda #3
- bra :hit_dmg_done
+ jmp :hit_dmg_done
 :hit_chk_juc
  lda :puncher_anim_lo
  cmp #<anim_juppercut
@@ -19238,25 +19343,43 @@ check_punch_hit
  cmp #>anim_juppercut
  bne :hit_chk_pipe
  lda #3
- bra :hit_dmg_done
+ jmp :hit_dmg_done
 :hit_chk_pipe
  lda :puncher_anim_lo
  cmp #<anim_bpipeswing
- bne :hit_chk_mace
+ bne :hit_chk_jpipe
  lda :puncher_anim_hi
  cmp #>anim_bpipeswing
+ bne :hit_chk_jpipe
+ lda #3
+ jmp :hit_dmg_done
+:hit_chk_jpipe
+ lda :puncher_anim_lo
+ cmp #<anim_jpipeswing
+ bne :hit_chk_mace
+ lda :puncher_anim_hi
+ cmp #>anim_jpipeswing
  bne :hit_chk_mace
  lda #3
- bra :hit_dmg_done
+ jmp :hit_dmg_done
 :hit_chk_mace
  lda :puncher_anim_lo
  cmp #<anim_bmaceswing
- bne :hit_chk_spin
+ bne :hit_chk_jmace
  lda :puncher_anim_hi
  cmp #>anim_bmaceswing
+ bne :hit_chk_jmace
+ lda #3
+ jmp :hit_dmg_done
+:hit_chk_jmace
+ lda :puncher_anim_lo
+ cmp #<anim_jmaceswing
+ bne :hit_chk_spin
+ lda :puncher_anim_hi
+ cmp #>anim_jmaceswing
  bne :hit_chk_spin
  lda #3
- bra :hit_dmg_done
+ jmp :hit_dmg_done
 :hit_chk_spin
  lda :puncher_anim_lo
  cmp #<anim_bspinkick
@@ -19265,7 +19388,7 @@ check_punch_hit
  cmp #>anim_bspinkick
  bne :hit_chk_jspin
  lda #3
- bra :hit_dmg_done
+ jmp :hit_dmg_done
 :hit_chk_jspin
  lda :puncher_anim_lo
  cmp #<anim_jbspinkick
@@ -19274,7 +19397,7 @@ check_punch_hit
  cmp #>anim_jbspinkick
  bne :hit_chk_lmace
  lda #3
- bra :hit_dmg_done
+ jmp :hit_dmg_done
 :hit_chk_lmace
  lda :puncher_anim_lo
  cmp #<anim_lmace
@@ -19283,7 +19406,7 @@ check_punch_hit
  cmp #>anim_lmace
  bne :hit_dmg1
  lda #3
- bra :hit_dmg_done
+ jmp :hit_dmg_done
 :hit_dmg1
  lda #1
 :hit_dmg_done
@@ -19344,17 +19467,33 @@ check_punch_hit
 :hit_chk2_pipe
  lda :puncher_anim_lo
  cmp #<anim_bpipeswing
- bne :hit_chk2_mace
+ bne :hit_chk2_jpipe
  lda :puncher_anim_hi
  cmp #>anim_bpipeswing
+ bne :hit_chk2_jpipe
+ jmp :use_fall
+:hit_chk2_jpipe
+ lda :puncher_anim_lo
+ cmp #<anim_jpipeswing
+ bne :hit_chk2_mace
+ lda :puncher_anim_hi
+ cmp #>anim_jpipeswing
  bne :hit_chk2_mace
  jmp :use_fall
 :hit_chk2_mace
  lda :puncher_anim_lo
  cmp #<anim_bmaceswing
- bne :hit_chk2_spin
+ bne :hit_chk2_jmace
  lda :puncher_anim_hi
  cmp #>anim_bmaceswing
+ bne :hit_chk2_jmace
+ jmp :use_fall
+:hit_chk2_jmace
+ lda :puncher_anim_lo
+ cmp #<anim_jmaceswing
+ bne :hit_chk2_spin
+ lda :puncher_anim_hi
+ cmp #>anim_jmaceswing
  bne :hit_chk2_spin
  jmp :use_fall
 :hit_chk2_spin
