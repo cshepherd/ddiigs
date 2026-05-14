@@ -5354,24 +5354,53 @@ enemy_set_held
 *----------------------------------------------------------
 billy_set_grab_frame
  sta :which
+* Dispatch by active player. Billy reads from spr_bgrab1/2 (bank
+* $02, BGRAB sprites in mission1.s). Jimmy reads from spr_jgrab1/2
+* (bank $1D, JGRAB sprites in mission1jimmy.s). The dimensions
+* are identical (14×40 active, 13×40 hold) so we use a single set
+* of W/H constants. Legacy renderer pulls pixel data from sprite_bank
+* = info+56 — Billy's info+56 is $02 at idle, Jimmy's is $1D, so
+* each player's grab pose loads from the right bank without extra
+* setup here.
+ jsr arm_is_jimmy
+ bcs :sgf_jimmy
+ lda :which
  bne :b1
  lda spr_bgrab2
  sta :addr_lo
  lda spr_bgrab2+1
  sta :addr_hi
- lda #BGRAB2_W
- sta :w
- lda #BGRAB2_H
- sta :h
- bra :write
+ bra :sgf_dims_hold
 :b1
  lda spr_bgrab1
  sta :addr_lo
  lda spr_bgrab1+1
  sta :addr_hi
+ bra :sgf_dims_active
+:sgf_jimmy
+ lda :which
+ bne :sgf_j1
+ lda spr_jgrab2
+ sta :addr_lo
+ lda spr_jgrab2+1
+ sta :addr_hi
+ bra :sgf_dims_hold
+:sgf_j1
+ lda spr_jgrab1
+ sta :addr_lo
+ lda spr_jgrab1+1
+ sta :addr_hi
+ bra :sgf_dims_active
+:sgf_dims_active
  lda #BGRAB1_W
  sta :w
  lda #BGRAB1_H
+ sta :h
+ bra :write
+:sgf_dims_hold
+ lda #BGRAB2_W
+ sta :w
+ lda #BGRAB2_H
  sta :h
 :write
  ldy #2

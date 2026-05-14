@@ -5890,6 +5890,12 @@ _init_jimmy
  ldy #174
  lda [$F0],y
  sta spr_jpipe4
+ ldy #176
+ lda [$F0],y
+ sta spr_jgrab1
+ ldy #178
+ lda [$F0],y
+ sta spr_jgrab2
 
 * Populate Jimmy's armed walk tables — parallel to the Billy
 * tables that init_billy fills. advance_walk dispatches on the

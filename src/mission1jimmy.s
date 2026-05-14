@@ -102,6 +102,11 @@ spr_addr_tbl
  dw JPIPE2
  dw JPIPE3
  dw JPIPE4
+* Head-grab frames (legacy — BGRAB1/2 equivalents). 14×40 active
+* strike + 13×40 hold pose. Sub-anim driven by billy_set_grab_frame;
+* init_jimmy patches spr_jgrab1/2 from these entries.
+ dw JGRAB1
+ dw JGRAB2
 
 *----------------------------------------------------------
 * Sprite pixel data. Each compiled block is DATA + MASK +
