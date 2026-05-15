@@ -5933,11 +5933,50 @@ start_grab_punch
  lda #0
  sta grab_target
  sta grab_target+1
-* Restore info_ptr to Billy.
+* Restore info_ptr to player.
  pla
  sta info_ptr+1
  pla
  sta info_ptr
+* Restore the player to idle. Without this the BGRAB1 strike pose
+* stays painted, grab_punch_timer keeps ticking, and grab_check
+* swallows every input (so the player can't even walk out). For
+* Jimmy it's permanent — process_input_jimmy doesn't tick
+* grab_punch_timer, so the swap keeps reloading the full duration.
+ stz grab_punch_timer
+ ldy #42
+ lda (info_ptr),y      ; idle_addr lo → frame_addr lo
+ ldy #14
+ sta (info_ptr),y
+ ldy #43
+ lda (info_ptr),y
+ ldy #15
+ sta (info_ptr),y
+ ldy #44
+ lda (info_ptr),y      ; idle_x → frame_x
+ ldy #10
+ sta (info_ptr),y
+ ldy #46
+ lda (info_ptr),y      ; idle_y → frame_y
+ ldy #12
+ sta (info_ptr),y
+ ldy #58
+ lda (info_ptr),y      ; idle_bank → frame_bank
+ ldy #56
+ sta (info_ptr),y
+ ldy #62
+ lda (info_ptr),y      ; idle_mask_addr → active_mask_addr + MASK_ADDR
+ sta MASK_ADDR
+ ldy #60
+ sta (info_ptr),y
+ ldy #63
+ lda (info_ptr),y
+ sta MASK_ADDR+1
+ ldy #61
+ sta (info_ptr),y
+ ldy #30
+ lda #$03
+ sta (info_ptr),y
  rts
 
 *----------------------------------------------------------
@@ -6068,6 +6107,13 @@ behav_flank
  beq :st_punch
  cmp #FL_COOLDOWN
  beq :st_cd
+* Grabbed by a player — try_enter_grab writes FO_GRABBED ($04)
+* to +7 regardless of the target's behavior, so behav_flank needs
+* the same suspend case as behav_faceoff. Without this, FL_ARC
+* falls through and ensure_walking reinstalls the walk anim,
+* overwriting enemy_set_held's held frame on the next tick.
+ cmp #FO_GRABBED
+ beq :st_grabbed
 * default: FL_ARC
  jmp fl_arc
 :st_close
@@ -6076,6 +6122,8 @@ behav_flank
  jmp fl_punch
 :st_cd
  jmp fl_cooldown
+:st_grabbed
+ rts
 
 *----------------------------------------------------------
 * behav_ladder - NPC descends the first ladder, then
@@ -7333,9 +7381,15 @@ load_sprite
  ldy #0
  lda (info_ptr),y     ; +0 ypos
  sta IMAGE01_YPOS
+ stz IMAGE01_YPOS+1   ; zero high byte — draw_sprite uses 16-bit
  ldy #2
  lda (info_ptr),y     ; +2 xpos
  sta IMAGE01_XPOS
+ stz IMAGE01_XPOS+1   ; same — without this, prior 16-bit STAs from
+                       ; draw_sprite's offset apply leak into the next
+                       ; sprite's IMAGE01_XPOS via the stale high byte
+                       ; (BPL bail in draw_sprite_compiled / _sprite
+                       ; sees negative and skips every subsequent draw).
  ldy #4
  lda (info_ptr),y     ; +4 mirror
  sta IMAGE01_MIRROR
@@ -8124,6 +8178,28 @@ pi_action_dispatch
 :ji_grab
  jsr grab_check
  bcc :ji_dispatch
+* grab_check swallowed input. If we're in grab state, also
+* sample joystick button A so the grab-punch can fire (the
+* button-polling block at :ji_buttons is gated behind the
+* dispatch and won't run when grab_check returns C=1).
+* joy_btn_a_prev is normally updated by :ji_save, which also
+* doesn't run here — update it inline so the next-frame edge
+* detector stays correct.
+ lda grab_target
+ ora grab_target+1
+ beq :ji_swallow_done
+ ldal $C062
+ and #$80
+ sta :joy_a_cur
+ lda :joy_a_cur
+ beq :ji_grab_a_no_edge
+ lda joy_btn_a_prev
+ bne :ji_grab_a_no_edge
+ jsr start_grab_punch
+:ji_grab_a_no_edge
+ lda :joy_a_cur
+ sta joy_btn_a_prev
+:ji_swallow_done
  rts
 :ji_dispatch
 
@@ -8244,6 +8320,26 @@ pi_action_dispatch
 :si_grab
  jsr grab_check
  bcc :si_dispatch
+* Same fix as :ji_grab: when grab_check swallows input, sample
+* SNES B (bit 7 of snes_b0) so grab-punch can fire. snes_b0_prev
+* is updated by :si_save which doesn't run here — update it
+* inline for next-frame edge detection.
+ lda grab_target
+ ora grab_target+1
+ beq :si_swallow_done
+ lda snes_b0
+ and #$80
+ beq :si_grab_b_no_edge
+ lda snes_b0_prev
+ and #$80
+ bne :si_grab_b_no_edge
+ jsr start_grab_punch
+:si_grab_b_no_edge
+ lda snes_b0
+ sta snes_b0_prev
+ lda snes_b1
+ sta snes_b1_prev
+:si_swallow_done
  rts
 :si_dispatch
 
@@ -20713,6 +20809,11 @@ draw_sprite PHB
  CLC
  ADC IMAGE01_XPOS
  STA IMAGE01_XPOS
+* Same bail as draw_sprite_compiled: negative effective xpos →
+* skip rather than wrap into the playfield.
+ BPL :ds_off_ok
+ JMP :FINDUMP
+:ds_off_ok
  LDA #$0001            ; destination bank $01 (shadowed to $E1)
  STA 2
  lda IMAGE01_YPOS  ; do our own multiplication by $a0 because address won't always be hardcoded
@@ -21113,6 +21214,15 @@ draw_sprite_compiled
  CLC
  ADC IMAGE01_XPOS
  STA IMAGE01_XPOS
+* Bail if the offset pushed effective xpos negative (frame_x_off
+* is signed; e.g. anim_punch2's -9 mirror lunge with xpos < 9).
+* Without this, the 16-bit wrap below adds $FFxx into the playfield
+* base and the sprite plots at random columns / rows. Skip the
+* draw entirely — prev_xpos is unchanged, so erase next frame still
+* targets the last successful draw position.
+ BPL :dsc_off_ok
+ JMP :dsc_done
+:dsc_off_ok
 * DP 0-1 = ypos * $A0 + $2000 + IMAGE01_XPOS
 * (Pre-adding IMAGE01_XPOS lets the inner loop use Y as a sprite-byte
 *  index from 0..FRAME_X-1 against all three pointers in lockstep.)
