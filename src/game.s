@@ -3652,9 +3652,14 @@ P1_SCORE_Y   = 195            ; pixel baseline (matches HUD line)
 P1_SCORE_LEN = 7              ; digit width (matches "0000000")
 
 * P2 sits in the same HUD line, right of P1's score + 7 spaces +
-* the "PLAYER 2: " prefix. ~7.7 px per char in the SHR system
-* font (P1_SCORE_X=80 = 3 + 77 px for "PLAYER 1: ").
-P2_SCORE_X   = 265
+* the "PLAYER 2: " prefix. QuickDraw's proportional font makes
+* the average-cell math ("PLAYER 2: " at ~7.7 px/char) overshoot
+* by one character — the spaces are narrower than the average so
+* the dynamic score landed one cell to the right of the static
+* backdrop, hiding the rightmost digit and leaving a leading
+* static '0' visible on the left ("0000600" stored displayed as
+* "0000060"). Empirical alignment: shift left by one digit cell.
+P2_SCORE_X   = 255
 P2_SCORE_Y   = 195
 
 *----------------------------------------------------------
