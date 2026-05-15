@@ -624,6 +624,7 @@ run_script
  bne :wait_song
  jsl NTPstop           ; full stop
 
+ jsr zero_health_palette
  jsr fade_palette_to_black
  sec
  xce
@@ -2782,11 +2783,61 @@ check_y_bounds
  rts
 :blocked sec
  rts
+
+*----------------------------------------------------------
+* check_y_bounds_strict - Same row-bounds test as check_y_bounds
+* but with NO ladder fallback. Used by NPC movement code so
+* enemies don't squeeze through ladder columns past the row
+* limits (which check_y_bounds intentionally permits so players
+* can climb). Input/output match check_y_bounds.
+*----------------------------------------------------------
+check_y_bounds_strict
+ stz via_ladder
+ sta :cyb_proposed
+* NPC floor gate: reject any Y below the screen's NPC floor row.
+* Prevents enemies from following players onto staircase / ladder
+* rows that the regular bounds table permits (because they're
+* meant for player traversal).
+ cmp npc_min_y
+ bcs :cybs_floor_ok
+ bra :cybs_blocked
+:cybs_floor_ok
+ clc
+ adc FRAME_Y
+ cmp #184
+ bcs :cybs_blocked
+ lda :cyb_proposed
+ tax
+ lda bounds_tbl_hi,x
+ beq :cybs_blocked
+ sta :cyb_bmax
+ lda bounds_tbl_lo,x
+ sta :cyb_bmin
+ lda chk_xpos
+ cmp :cyb_bmin
+ bcc :cybs_blocked
+ cmp :cyb_bmax
+ beq :cybs_ok
+ bcs :cybs_blocked
+:cybs_ok
+ clc
+ rts
+:cybs_blocked
+ sec
+ rts
+:cyb_proposed dfb 0
+:cyb_bmin     dfb 0
+:cyb_bmax     dfb 0
 :proposed dfb 0
 :bmin dfb 0
 via_ladder dfb 0
 :bmax dfb 0
 chk_xpos dfb 0
+* NPC minimum Y. Computed at load_screen_bounds: first row whose
+* bmax equals the floor bmax (= bmax[199]). Below this row are
+* staircases / ladder columns that the player can traverse but
+* NPCs shouldn't. check_y_bounds_strict gates on this.
+npc_min_y dfb 0
 bounds_base ds 2              ; bank $02 address of bounds_ptrs
 ladder_base ds 2              ; bank $02 address of global ladder list
 
@@ -2982,10 +3033,58 @@ load_screen_bounds
  cpx #200
  bcc :bcopy
 
+* Compute npc_min_y: first row whose bmax equals the LARGEST
+* bmax in the table (= the screen's "floor" — the widest walkable
+* band). NPCs are confined to Y >= npc_min_y so they can't follow
+* players up staircase rows (scr2's rising bmax 48..76) or into
+* ladder columns. Originally this used bmax[199] but that fails on
+* screens like scr5 where rows 180..199 are blocked (bmax[199]=0);
+* the algorithm would then set npc_min_y=199, stranding every NPC.
+* Two passes: pass 1 finds floor_bmax (max value), pass 2 finds the
+* first row where bmax == floor_bmax. If the whole table is zero
+* (transient state), fall back to npc_min_y=199.
+ sep $20
+ mx %10
+* Pass 1: find max bmax.
+ lda #0
+ sta :nmy_floor
+ ldx #0
+:nmy_max_scan
+ lda bounds_tbl_hi,x
+ cmp :nmy_floor
+ bcc :nmy_max_next
+ sta :nmy_floor
+:nmy_max_next
+ inx
+ cpx #200
+ bcc :nmy_max_scan
+ lda :nmy_floor
+ beq :nmy_block_all      ; entire table zero → block
+* Pass 2: find first row where bmax == floor_bmax.
+ ldx #0
+:nmy_scan
+ lda bounds_tbl_hi,x
+ cmp :nmy_floor
+ beq :nmy_found
+ inx
+ cpx #200
+ bcc :nmy_scan
+:nmy_block_all
+ lda #199
+ sta npc_min_y
+ bra :nmy_done
+:nmy_found
+ txa
+ sta npc_min_y
+:nmy_done
+ rep $20
+ mx %00
+
  sec
  xce                   ; back to emulation mode
  rts
 :scr_idx ds 2
+:nmy_floor dfb 0
 
 *----------------------------------------------------------
 * load_ladders - Copy the global ladder list from bank $02
@@ -3457,6 +3556,35 @@ setup_health_palette
  xce
  sep $30
  mx %11
+ rts
+
+*----------------------------------------------------------
+* zero_health_palette - Black out all 16 entries of SHR
+* palette 02 ($019E40..$019E5E). The health bars use slots
+* 1..10 of this palette, so zeroing it makes the bars vanish.
+* Called by OP_END just before fade_palette_to_black so the
+* HUD bars don't linger through the level-complete fade.
+*
+* Caller must be in native 16-bit mode (MX %00).
+*----------------------------------------------------------
+zero_health_palette
+ lda #$0000
+ stal $019E40
+ stal $019E42
+ stal $019E44
+ stal $019E46
+ stal $019E48
+ stal $019E4A
+ stal $019E4C
+ stal $019E4E
+ stal $019E50
+ stal $019E52
+ stal $019E54
+ stal $019E56
+ stal $019E58
+ stal $019E5A
+ stal $019E5C
+ stal $019E5E
  rts
 
 *----------------------------------------------------------
@@ -4293,7 +4421,7 @@ update_npcs
 SCROLL_THRESH = 80    ; player xpos at/over which walking scrolls right
 LEFT_SCROLL_THRESH = 30 ; player xpos at/under which walking scrolls left
 UP_SCROLL_THRESH = 90 ; player ypos at/under which walking-up scrolls
-KICK_BACK_EXT = 9      ; bytes the back-kick hitbox extends opposite
+KICK_BACK_EXT = 8      ; bytes the back-kick hitbox extends opposite
                        ; Billy's facing. Hitbox is BEHIND Billy only
                        ; (NPC xpos < billy_xpos when mirror=0, NPC
                        ; xpos > billy_xpos when mirror=1). Forward
@@ -4595,7 +4723,7 @@ fo_approach
 :rgt_no_pad
  ldy #0
  lda (info_ptr),y      ; current ypos
- jsr check_y_bounds
+ jsr check_y_bounds_strict
  bcs :x_at_target      ; blocked by row bounds
  ldy #2
  lda (info_ptr),y
@@ -4632,7 +4760,7 @@ fo_approach
 :lft_no_pad
  ldy #0
  lda (info_ptr),y      ; current ypos
- jsr check_y_bounds
+ jsr check_y_bounds_strict
  bcs :x_at_target
  ldy #2
  lda chk_xpos
@@ -4711,7 +4839,7 @@ fo_approach
  bcs :y_at_target
 :yd_call_check
  lda :yp_proposed
- jsr check_y_bounds
+ jsr check_y_bounds_strict
  bcs :y_at_target      ; blocked, skip Y move
  ldy #0
  lda (info_ptr),y
@@ -4724,7 +4852,7 @@ fo_approach
 * the bottom up, so the 200-clamp above isn't needed here.
  sec
  sbc #1
- jsr check_y_bounds
+ jsr check_y_bounds_strict
  bcs :y_at_target      ; blocked
  ldy #0
  lda (info_ptr),y
@@ -6268,7 +6396,7 @@ fl_step_y_to
 * Try Y + 1
  clc
  adc #1
- jsr check_y_bounds
+ jsr check_y_bounds_strict
  bcs :done            ; blocked
  ldy #0
  lda (info_ptr),y
@@ -6281,7 +6409,7 @@ fl_step_y_to
 * Try Y - 1
  sec
  sbc #1
- jsr check_y_bounds
+ jsr check_y_bounds_strict
  bcs :done            ; blocked
  ldy #0
  lda (info_ptr),y
@@ -8512,6 +8640,12 @@ btn_action_jump
  rts
 :dbg_wx dfb 0
 :up_cur_bmax dfb 0
+:up_as_propy dfb 0
+:up_as_bmin  dfb 0
+:up_as_bmax  dfb 0
+:dn_as_propy dfb 0
+:dn_as_bmin  dfb 0
+:dn_as_bmax  dfb 0
 :ns_not_space
  jmp :not_up              ; inverted — :not_up moved out of range
 :do_up
@@ -8752,6 +8886,34 @@ btn_action_jump
  lda IMAGE01_YPOS
  sec
  sbc #1               ; proposed Y
+ sta :up_as_propy
+* Auto-step: if proposed row is walkable but xpos sits outside
+* its bmin/bmax range, snap xpos onto the nearer edge. Fixes
+* ladder-top + scroll combos where the player lands in a wider
+* row (small bmin) below a narrower floor row and can't ascend
+* without first walking sideways.
+ tax
+ lda bounds_tbl_hi,x
+ beq :up_as_done
+ sta :up_as_bmax
+ lda bounds_tbl_lo,x
+ sta :up_as_bmin
+ lda IMAGE01_XPOS
+ cmp :up_as_bmin
+ bcs :up_as_chk_max
+ lda :up_as_bmin
+ sta IMAGE01_XPOS
+ sta chk_xpos
+ bra :up_as_done
+:up_as_chk_max
+ cmp :up_as_bmax
+ bcc :up_as_done
+ beq :up_as_done
+ lda :up_as_bmax
+ sta IMAGE01_XPOS
+ sta chk_xpos
+:up_as_done
+ lda :up_as_propy
  jsr check_y_bounds
  bcc :up_walk_bounds_ok
 * Bounds rejected the proposed row. Lenient retry: if scroll_up
@@ -8894,6 +9056,32 @@ btn_action_jump
  lda IMAGE01_YPOS
  clc
  adc #1               ; proposed Y
+ sta :dn_as_propy
+* Auto-step: see :up_walk auto-step — symmetric for walk-down so
+* a player at the edge of a wider row can descend onto a narrower
+* row below by sliding inward.
+ tax
+ lda bounds_tbl_hi,x
+ beq :dn_as_done
+ sta :dn_as_bmax
+ lda bounds_tbl_lo,x
+ sta :dn_as_bmin
+ lda IMAGE01_XPOS
+ cmp :dn_as_bmin
+ bcs :dn_as_chk_max
+ lda :dn_as_bmin
+ sta IMAGE01_XPOS
+ sta chk_xpos
+ bra :dn_as_done
+:dn_as_chk_max
+ cmp :dn_as_bmax
+ bcc :dn_as_done
+ beq :dn_as_done
+ lda :dn_as_bmax
+ sta IMAGE01_XPOS
+ sta chk_xpos
+:dn_as_done
+ lda :dn_as_propy
  jsr check_y_bounds
  bcs :skip_down       ; blocked
  inc IMAGE01_YPOS
@@ -11831,10 +12019,25 @@ update_anims
  bne :ftraj_check_frm
  jmp :no_ftraj
 :ftraj_check_frm
+* NPC below floor row: allow trajectory regardless of anim_frame so
+* a knocked-off-ladder enemy can descend visibly through both the
+* FALL pose (frame 0) and the FALLEN pose (frame 1) until they
+* reach npc_min_y. Players and on-floor NPCs use the standard
+* "frame 0 only" gate so the FALLEN pose stays put.
+ ldy #22
+ lda (info_ptr),y     ; controller
+ beq :ftraj_npc_chk   ; controller == 0 → NPC
+:ftraj_player_gate
  ldy #26
  lda (info_ptr),y     ; anim_frame
  beq :ftraj_proceed
- jmp :no_ftraj        ; only frame 0 (the FALL pose)
+ jmp :no_ftraj
+:ftraj_npc_chk
+ ldy #0
+ lda (info_ptr),y
+ cmp npc_min_y
+ bcc :ftraj_proceed   ; ypos < npc_min_y → trajectory active any frame
+ bra :ftraj_player_gate
 :ftraj_proceed
 * On the first VBL of the trajectory (timer still = FALL_ARC_FRAMES),
 * leave prev_xpos/ypos alone — start_anim left them pointing at the
@@ -11956,6 +12159,23 @@ update_anims
  dec abs_x
 :ftraj_dy
 * dy: rising while timer > FALL_ARC_PEAK, falling otherwise.
+* Override: NPC below floor row falls only (no rise) so the
+* trajectory makes net downward progress instead of returning to
+* the start Y. Without this, an NPC knocked off a ladder would
+* finish anim_lffall at the same out-of-bounds Y she started at.
+ ldy #22
+ lda (info_ptr),y
+ bne :ftraj_dy_arc       ; controller != 0 → player, normal arc
+ ldy #0
+ lda (info_ptr),y
+ cmp npc_min_y
+ bcs :ftraj_dy_arc       ; ypos >= npc_min_y → on floor, normal arc
+* NPC below floor: fall-only.
+ clc
+ adc #2
+ sta (info_ptr),y
+ bra :ftraj_done
+:ftraj_dy_arc
  ldy #28
  lda (info_ptr),y     ; current timer (counts down)
  cmp #FALL_ARC_PEAK+1
@@ -12619,6 +12839,33 @@ update_anims
  beq :ne_rescue_do
  jmp :ne_no_rescue
 :ne_rescue_do
+* NPC rescue (controller != 1 and != 2): clamp ypos UP to
+* npc_min_y so a knocked-off-ladder enemy lands on the floor,
+* not stuck on a staircase row where fo_approach's
+* check_y_bounds_strict will refuse to let them move.
+* Player rescue (controller 1 or 2): walks ypos up until a
+* non-blocked row — used when the fall trajectory drops them
+* just past a stepped-platform edge.
+ ldy #22
+ lda (info_ptr),y
+ cmp #$01
+ beq :ne_rescue_player
+ cmp #$02
+ beq :ne_rescue_player
+* NPC path: ypos = max(current_ypos, npc_min_y).
+ ldy #0
+ lda (info_ptr),y
+ cmp npc_min_y
+ bcs :ne_rescue_npc_keep
+ lda npc_min_y
+ bra :ne_rescue_npc_commit
+:ne_rescue_npc_keep
+* Already at or below the floor row — leave ypos unchanged.
+ lda (info_ptr),y
+:ne_rescue_npc_commit
+ tax
+ bra :ne_rescue_y_done
+:ne_rescue_player
 * Walk ypos up until row is non-blocked. Stop at row 0 if we
 * never find one (defensive — should always find a walkable row
 * somewhere above the fall position).
@@ -14024,7 +14271,7 @@ behav_knifer
  sta chk_xpos
  ldy #0
  lda (info_ptr),y
- jsr check_y_bounds
+ jsr check_y_bounds_strict
  bcs :kn_no_step
  ldy #2
  lda (info_ptr),y
@@ -14041,7 +14288,7 @@ behav_knifer
  sta chk_xpos
  ldy #0
  lda (info_ptr),y
- jsr check_y_bounds
+ jsr check_y_bounds_strict
  bcs :kn_no_step
  ldy #2
  lda chk_xpos
@@ -19891,8 +20138,8 @@ check_punch_hit
  beq :use_fall
  cmp #6
  beq :use_fall
-* Normal punch — use punched_anim. If the puncher is Billy doing
-* anim_punch1 or anim_punch2 (i.e. a regular ground punch),
+* Normal punch — use punched_anim. If the puncher is doing a
+* regular ground punch (Billy: anim_punch1/2; Jimmy: anim_jpunch1/2),
 * arm the grab window: pressing toward this target within
 * PUNCH_GRAB_WINDOW frames will trigger a grab. Skip for kicks /
 * NPC punches / uppercuts (uppercut already forces a fall).
@@ -19906,17 +20153,49 @@ check_punch_hit
 :try_grab_p2
  lda :puncher_anim_lo
  cmp #<anim_punch2
- bne :no_grab_arm
+ bne :try_grab_jp1
  lda :puncher_anim_hi
  cmp #>anim_punch2
+ bne :try_grab_jp1
+ bra :arm_grab
+:try_grab_jp1
+ lda :puncher_anim_lo
+ cmp #<anim_jpunch1
+ bne :try_grab_jp2
+ lda :puncher_anim_hi
+ cmp #>anim_jpunch1
+ bne :try_grab_jp2
+ bra :arm_grab
+:try_grab_jp2
+ lda :puncher_anim_lo
+ cmp #<anim_jpunch2
+ bne :no_grab_arm
+ lda :puncher_anim_hi
+ cmp #>anim_jpunch2
  bne :no_grab_arm
 :arm_grab
+* check_punch_hit runs in update_anims, OUTSIDE the swap_in_jimmy
+* context. Writing the global punch_window / last_hit_target here
+* would land Jimmy's grab arm in Billy's slot — and Jimmy's stash
+* would stay at 0, so his try_enter_grab would never fire. Route
+* by :puncher_ctrl ($02 = Jimmy) to the right player's slot.
+ lda :puncher_ctrl
+ cmp #$02
+ beq :arm_grab_jimmy
  lda #PUNCH_GRAB_WINDOW
  sta punch_window
  lda info_ptr
  sta last_hit_target
  lda info_ptr+1
  sta last_hit_target+1
+ bra :no_grab_arm
+:arm_grab_jimmy
+ lda #PUNCH_GRAB_WINDOW
+ sta jimmy_stash_punch_window
+ lda info_ptr
+ sta jimmy_stash_last_hit_target
+ lda info_ptr+1
+ sta jimmy_stash_last_hit_target+1
 :no_grab_arm
  ldy #40
  lda (info_ptr),y     ; punched_anim low
