@@ -8966,9 +8966,13 @@ btn_action_jump
 * Co-op right-clamp: a left-scroll shifts the other player's
 * xpos RIGHT by 4 to keep them anchored to the same world
 * position. If their right edge (xpos + frame_x) would push
-* past PLAYER_MAX_X, walk instead.
+* past PLAYER_MAX_X, walk instead. Alive gate added so a dead
+* other player's stale (last-known) info+2 doesn't block the
+* survivor from scrolling.
  lda jimmy_active
  beq :lso_no_other
+ jsr co_op_other_alive
+ bcc :lso_no_other       ; other dead → no clamp
  jsr co_op_other_xpos    ; A = other player's xpos
  clc
  adc #4                  ; +4 (post-scroll xpos)
@@ -9128,8 +9132,32 @@ btn_action_jump
 * world position stays fixed while the scroller anchors at
 * the left edge. If the OTHER is also pressing left, "carry"
 * them along — see :rso_curr_jimmy_std for the explanation.
+* Alive gate: same reasoning as the right-scroll block — a dead
+* other player's xpos must stay frozen so assert_abs_x doesn't
+* halt on the abs_x vs world_offset+billy.xpos invariant.
  lda jimmy_active
  beq :lso_done
+ jsr co_op_other_alive
+ bcs :lso_other_alive    ; other alive → normal shift path
+* Other dead: skip the shift, but if Jimmy is the current
+* scroller, decrement billy_save_abs_x by 4 (mirror of the
+* right-scroll bump). Keeps abs_x == world_offset + billy.xpos
+* after swap_out_jimmy restores abs_x from the stash.
+ lda info_ptr
+ cmp #<jimmy_sprite
+ bne :lso_done
+ lda info_ptr+1
+ cmp #>jimmy_sprite
+ bne :lso_done
+ lda billy_save_abs_x
+ sec
+ sbc #4
+ sta billy_save_abs_x
+ lda billy_save_abs_x+1
+ sbc #0
+ sta billy_save_abs_x+1
+ bra :lso_done
+:lso_other_alive
  lda info_ptr
  cmp #<billy_sprite
  bne :lso_curr_jimmy
@@ -9252,14 +9280,19 @@ btn_action_jump
  beq :right_scroll_ok  ; equal → ok (reaching exactly max)
  jmp :walk_right       ; (wo+4) low > max low → walk
 :right_scroll_ok
-* Co-op left-clamp: if Jimmy is active and the OTHER player is
-* within 4 px of xpos=0, a 4-byte right-scroll would push them
-* off the left edge of the playfield. Walk instead.
+* Co-op left-clamp: if Jimmy is active AND the other player is
+* still alive AND within 4 px of xpos=0, a 4-byte right-scroll
+* would push them off the left edge of the playfield. Walk instead.
+* Alive gate added so a dead other player's stale (last-known)
+* info+2 doesn't block the survivor from scrolling.
  lda jimmy_active
  beq :rso_no_other
- jsr co_op_other_xpos   ; A = other player's xpos
+ jsr co_op_other_alive
+ bcc :rso_no_other       ; other dead → no clamp
+ jsr co_op_other_xpos    ; A = other player's xpos
  cmp #4
- bcc :walk_right        ; other too close to left edge
+ bcs :rso_no_other       ; other not too close → continue
+ jmp :walk_right         ; other too close to left edge
 :rso_no_other
 * Scroll world right by 4 bytes (8 pixels = 2 words)
  jsr save_sprite
@@ -9292,8 +9325,37 @@ btn_action_jump
 * with the scroll: walk_boost when Jimmy is the other (consumed
 * by his upcoming pi_action_dispatch), or retroactive carry on
 * Billy when he's the other (his pi_action_dispatch already ran).
+*
+* Alive gate: when other is dead, skip the shift entirely. Their
+* xpos must stay frozen at the death position because abs_x is
+* still tied to billy.xpos via assert_abs_x — if we shift Billy
+* from his last live xpos, world_offset+billy.xpos no longer
+* matches abs_x and the assertion infinite-loops at $9547.
  lda jimmy_active
  beq :rso_done
+ jsr co_op_other_alive
+ bcs :rso_other_alive    ; other alive → normal shift path
+* Other dead: skip the shift, but if Jimmy is the current
+* scroller, bump billy_save_abs_x by 4. That's the abs_x value
+* swap_out_jimmy will restore at end of his pi_action_dispatch.
+* Without this bump, world_offset advanced by 4 but billy.xpos
+* stayed frozen (no shift), so post-swap-out the assertion
+* abs_x == world_offset + billy.xpos breaks by 4 per scroll.
+ lda info_ptr
+ cmp #<jimmy_sprite
+ bne :rso_done
+ lda info_ptr+1
+ cmp #>jimmy_sprite
+ bne :rso_done
+ lda billy_save_abs_x
+ clc
+ adc #4
+ sta billy_save_abs_x
+ lda billy_save_abs_x+1
+ adc #0
+ sta billy_save_abs_x+1
+ bra :rso_done
+:rso_other_alive
  lda info_ptr
  cmp #<billy_sprite
  bne :rso_curr_jimmy
@@ -9424,6 +9486,67 @@ co_op_other_xpos
 :cox_curr_is_jimmy
 * Current player is Jimmy → other is Billy.
  lda billy_sprite+2
+ rts
+
+*----------------------------------------------------------
+* co_op_other_alive - C=1 if the OTHER player is still alive,
+* C=0 if dead or inactive. Active player is identified by info_ptr.
+*
+* "Alive" here = "is a meaningful constraint on scrolling". The
+* test that matters is: did this player get the $FFFF death
+* sentinel written to their anim_ptr (info+24/+25)? That sentinel
+* is the trigger erase_all uses to remove the sprite from
+* sprite_table; once set, the player's info+2 is stale forever
+* and shouldn't block the survivor. Fall_count alone isn't
+* enough — it can sit below BILLY_MAX_FALLS while the sentinel
+* is set by paths like cutscene cleanup or partial-state resets
+* that happen before/after the fall_count update.
+*
+* Used by the scroll co-op clamps so a dead other player's stale
+* info+2 doesn't block the survivor from pushing the scroll.
+*----------------------------------------------------------
+co_op_other_alive
+ lda info_ptr
+ cmp #<billy_sprite
+ bne :coa_curr_is_jimmy
+ lda info_ptr+1
+ cmp #>billy_sprite
+ bne :coa_curr_is_jimmy
+* Current = Billy → other = Jimmy. Dead if jimmy_active=0 OR
+* jimmy_stash_fall_count >= MAX OR anim_ptr == $FFFF.
+ lda jimmy_active
+ beq :coa_dead
+ lda jimmy_stash_fall_count
+ cmp #BILLY_MAX_FALLS
+ bcs :coa_dead
+ lda jimmy_sprite+24
+ cmp #$FF
+ bne :coa_alive
+ lda jimmy_sprite+25
+ cmp #$FF
+ beq :coa_dead
+ bra :coa_alive
+:coa_curr_is_jimmy
+* Current = Jimmy → other = Billy. Dead if billy_fall_count >= MAX
+* OR anim_ptr == $FFFF. fall_count alone catches the case where
+* Billy hits MAX but his anim_ptr is still the in-progress fall anim
+* (not yet replaced by the $FFFF death sentinel). Death sentinel
+* alone catches paths where the sentinel is set without fall_count
+* reaching MAX (cutscene cleanup, boss-grab kill, etc.).
+ lda billy_fall_count
+ cmp #BILLY_MAX_FALLS
+ bcs :coa_dead
+ lda billy_sprite+24
+ cmp #$FF
+ bne :coa_alive
+ lda billy_sprite+25
+ cmp #$FF
+ beq :coa_dead
+:coa_alive
+ sec
+ rts
+:coa_dead
+ clc
  rts
 
 *----------------------------------------------------------
