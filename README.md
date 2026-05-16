@@ -18,10 +18,7 @@ You should check out camera_drift_problem.md if you want to know about the major
 
 We have a solid game engine with a great graphics pipeline; Make no mistake, the hard part is done and Mission 1 will likely ship in under a month! But boy-oh-boy there's plenty more stuff to do:
 - Perfectly scripted encounters
-- Fix jumps
-- Fix headlocks
 - Fix NPC behaviors including Burnov
-- Sprite alignment issues like billy appearing to move backwards during a punch
 
 Please understand this my philosophy here was to sprint to completion first, and follow along with quality later. I'm aware of all the bugs, the unoptimized code paths, the unnecessary instructions, all of it. And it won't get better until I'm satisfied that every asset, every encounter, and every behavior, is a good port.
 
@@ -89,7 +86,7 @@ Boot the disk image. BASIC.SYSTEM will load and you can run the programs:
 
 As with the NES version, the attack in the direction you're facing is a punch. In the direction you're not, it's a backward kick. Holding both is a jump. Landing a jump followed by a punch is an uppercut. There's lots of small details like this and they're all comin' over.
 
-CTRL-J - Changes to joystick controls
+CTRL-J - ~~Changes to joystick controls~~ Enables player 2 (Jimmy) on the Joystick
 CTRL-N - Changes to SNES MAX controls
 
 ## Credits
