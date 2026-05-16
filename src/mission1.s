@@ -36,13 +36,17 @@ OP_KILLOBJ  EQU 20 ; remove all non-player, non-NPC objects (e.g. dropped items)
 ; NOTE OP_NPC params are: sprite_ptr (2b), xpos (1b), ypos (1b), orient (1b), behavior (1b)
 
 ; NPC behavior IDs (used in OP_NPC parameter)
-BEHAV_NONE    EQU 0 ; just stand there
-BEHAV_FACEOFF EQU 1 ; approach player to 5px and punch
-BEHAV_FLANK   EQU 2 ; approach player from behind (TBD)
-BEHAV_LURK    EQU 3 ; stay on opposite side of screen (TBD)
-BEHAV_LADDER  EQU 4 ; descend ladder, then face off
-BEHAV_KNIFER  EQU 5 ; williams_knife: backpedal to 12px, throw knife,
-                    ; then transform to regular williams + BEHAV_FACEOFF
+BEHAV_NONE     EQU 0 ; just stand there
+BEHAV_FACEOFF  EQU 1 ; approach player to 5px and punch (targets Billy
+                     ; first, falls back to Jimmy if Billy is dead)
+BEHAV_FLANK    EQU 2 ; approach player from behind (Billy-first)
+BEHAV_LURK     EQU 3 ; stay on opposite side of screen (TBD)
+BEHAV_LADDER   EQU 4 ; descend ladder, then face off
+BEHAV_KNIFER   EQU 5 ; williams_knife: backpedal to 12px, throw knife,
+                     ; then transform to regular williams + BEHAV_FACEOFF
+BEHAV_FACEOFF2 EQU 6 ; same as BEHAV_FACEOFF but targets Jimmy first,
+                     ; falls back to Billy if Jimmy is dead/inactive
+BEHAV_FLANK2   EQU 7 ; same as BEHAV_FLANK but Jimmy-first targeting
 
 *==========================================================
 * Level header
@@ -213,7 +217,7 @@ level_script
     db $58,$5f,$01,BEHAV_FACEOFF  ; xpos, ypos, orientation, behavior
     db OP_NPC           ; William2
     dw william_sprite
-    db $58,$84,$01,BEHAV_FLANK     ; xpos, ypos, orientation, behavior
+    db $58,$84,$01,BEHAV_FACEOFF2     ; xpos, ypos, orientation, behavior
     db OP_WAITCLR       ; wait for player to defeat NPCs
     db OP_NPC           ; William3
     dw william_sprite
@@ -230,7 +234,7 @@ level_script
     db $58,$5f,$01,BEHAV_FACEOFF  ; xpos, ypos, orientation, behavior
     db OP_NPC           ; Roper running in frm left edge
     dw roper_sprite
-    db $01,$5f,$00,BEHAV_FLANK     ; xpos, ypos, orientation, behavior
+    db $01,$5f,$00,BEHAV_FACEOFF2     ; xpos, ypos, orientation, behavior
     db OP_WAITNPC,$01
     db OP_NPC           ; Final Roper near right edge
     dw roper_sprite
@@ -259,7 +263,7 @@ level_script
      db $58,$5f,$01,BEHAV_FACEOFF
      db OP_NPC           ; William from left
      dw william_sprite
-     db $01,$5f,$00,BEHAV_FLANK
+     db $01,$5f,$00,BEHAV_FACEOFF2
      db OP_WAITNPC,$01
      db OP_NPC           ; William from right
      dw william_sprite

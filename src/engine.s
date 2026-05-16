@@ -5190,6 +5190,45 @@ _init_mission14
  ldy #182
  lda [$F0],y
  sta spr_bnfallenc_mask_mir
+* BNJIMMY1/2/3 — appended to spr_addr_tbl after BNFALLEN. Offsets
+* 184-206. Patched into anim_bnjgrab by init_burnov_combat_compiled
+* (alongside the BNBILLY → anim_bngrab patching).
+ ldy #184
+ lda [$F0],y
+ sta spr_bnjimmy1c_data
+ ldy #186
+ lda [$F0],y
+ sta spr_bnjimmy1c_mask
+ ldy #188
+ lda [$F0],y
+ sta spr_bnjimmy1c_data_mir
+ ldy #190
+ lda [$F0],y
+ sta spr_bnjimmy1c_mask_mir
+ ldy #192
+ lda [$F0],y
+ sta spr_bnjimmy2c_data
+ ldy #194
+ lda [$F0],y
+ sta spr_bnjimmy2c_mask
+ ldy #196
+ lda [$F0],y
+ sta spr_bnjimmy2c_data_mir
+ ldy #198
+ lda [$F0],y
+ sta spr_bnjimmy2c_mask_mir
+ ldy #200
+ lda [$F0],y
+ sta spr_bnjimmy3c_data
+ ldy #202
+ lda [$F0],y
+ sta spr_bnjimmy3c_mask
+ ldy #204
+ lda [$F0],y
+ sta spr_bnjimmy3c_data_mir
+ ldy #206
+ lda [$F0],y
+ sta spr_bnjimmy3c_mask_mir
  sec
  xce
  mx %11
@@ -5273,6 +5312,50 @@ init_burnov_combat_compiled
  sta anim_bngrab+76
  lda spr_bnbilly3c_mask_mir
  sta anim_bngrab+78
+
+* anim_bnjgrab: same 7-frame BNJIMMY1/2/1/2/1/2/3 layout as
+* anim_bngrab. Offsets in the descriptor are identical because the
+* Jimmy frames have the same dims/duration as the Billy ones.
+ lda spr_bnjimmy1c_data
+ sta anim_bnjgrab+6
+ sta anim_bnjgrab+28
+ sta anim_bnjgrab+50
+ lda spr_bnjimmy1c_mask
+ sta anim_bnjgrab+8
+ sta anim_bnjgrab+30
+ sta anim_bnjgrab+52
+ lda spr_bnjimmy1c_data_mir
+ sta anim_bnjgrab+10
+ sta anim_bnjgrab+32
+ sta anim_bnjgrab+54
+ lda spr_bnjimmy1c_mask_mir
+ sta anim_bnjgrab+12
+ sta anim_bnjgrab+34
+ sta anim_bnjgrab+56
+ lda spr_bnjimmy2c_data
+ sta anim_bnjgrab+17
+ sta anim_bnjgrab+39
+ sta anim_bnjgrab+61
+ lda spr_bnjimmy2c_mask
+ sta anim_bnjgrab+19
+ sta anim_bnjgrab+41
+ sta anim_bnjgrab+63
+ lda spr_bnjimmy2c_data_mir
+ sta anim_bnjgrab+21
+ sta anim_bnjgrab+43
+ sta anim_bnjgrab+65
+ lda spr_bnjimmy2c_mask_mir
+ sta anim_bnjgrab+23
+ sta anim_bnjgrab+45
+ sta anim_bnjgrab+67
+ lda spr_bnjimmy3c_data
+ sta anim_bnjgrab+72      ; frame 6 = BNJIMMY3
+ lda spr_bnjimmy3c_mask
+ sta anim_bnjgrab+74
+ lda spr_bnjimmy3c_data_mir
+ sta anim_bnjgrab+76
+ lda spr_bnjimmy3c_mask_mir
+ sta anim_bnjgrab+78
 
 * anim_bnpunched: 1 frame BNFALL1 (placeholder reaction).
  lda spr_bnfall1c_data

@@ -3565,8 +3565,16 @@ setup_health_palette
 * Called by OP_END just before fade_palette_to_black so the
 * HUD bars don't linger through the level-complete fade.
 *
-* Caller must be in native 16-bit mode (MX %00).
+* Caller must be in native 16-bit mode (MX %00). The mx
+* directive below is critical: without it Merlin assembles
+* `lda #$0000` as 8-bit (preceding setup_health_palette ended
+* with mx %11), emitting only ONE immediate byte. At runtime
+* with M=0 the CPU reads 2 immediate bytes — the second is
+* the next opcode byte, and execution falls off into a stray
+* RTI ($40) that pops 4 garbage bytes as an interrupt frame
+* and jumps to wherever the stack happened to point. Crash.
 *----------------------------------------------------------
+ mx %00
 zero_health_palette
  lda #$0000
  stal $019E40
@@ -3586,6 +3594,7 @@ zero_health_palette
  stal $019E5C
  stal $019E5E
  rts
+ mx %11                  ; restore 8-bit context for following routines
 
 *----------------------------------------------------------
 * draw_health_bar - Paint two segmented health bars across SHR
@@ -4373,7 +4382,10 @@ update_npcs
  jsr update_projectile
  bra :skip
 :is_npc
-* Dispatch by behavior at offset +6
+* Dispatch by behavior at offset +6. The "2" variants route to the
+* same behavior routine as the base value — they only differ in the
+* player-targeting preference, which fo_find_player resolves by
+* reading info+6 directly.
  ldy #6
  lda (info_ptr),y
  cmp #BEHAV_FACEOFF
@@ -4381,11 +4393,21 @@ update_npcs
  jsr behav_faceoff
  bra :skip
 :nbf
+ cmp #BEHAV_FACEOFF2
+ bne :nbf2
+ jsr behav_faceoff
+ bra :skip
+:nbf2
  cmp #BEHAV_FLANK
  bne :nbfl
  jsr behav_flank
  bra :skip
 :nbfl
+ cmp #BEHAV_FLANK2
+ bne :nbfl2
+ jsr behav_flank
+ bra :skip
+:nbfl2
  cmp #BEHAV_LADDER
  bne :nbld
  jsr behav_ladder
@@ -4476,6 +4498,21 @@ behav_faceoff
 * Returns Z=0 if found, Z=1 if not.
 *----------------------------------------------------------
 fo_find_player
+* Two-pass player search. Preferred controller is derived from the
+* NPC's behavior byte at info+6:
+*   BEHAV_FACEOFF / BEHAV_FLANK     → Billy first ($01), Jimmy fallback
+*   BEHAV_FACEOFF2 / BEHAV_FLANK2   → Jimmy first ($02), Billy fallback
+*   anything else                   → Billy first (default)
+*
+* "Found" means in sprite_table AND anim_ptr != $FFFF (= alive). The
+* $02 controller scan additionally requires jimmy_active != 0 so a
+* never-activated Jimmy can't be targeted.
+*
+* On exit: Z=0 (A=$01) if a target was selected — fo_plr_y/x/facing/w
+* hold its fields. Z=1 (A=$00) means neither player is alive; caller
+* should treat as "no action this tick".
+*
+* Preserves spr_ptr / info_ptr across the call.
  lda spr_ptr
  sta fo_save_spr
  lda spr_ptr+1
@@ -4484,32 +4521,32 @@ fo_find_player
  sta fo_save_info
  lda info_ptr+1
  sta fo_save_info+1
-
- lda #<sprite_table
- sta spr_ptr
- lda #>sprite_table
- sta spr_ptr+1
-:fpl
- ldy #0
- lda (spr_ptr),y
- sta info_ptr
- iny
- lda (spr_ptr),y
- sta info_ptr+1
- ora info_ptr
+* Derive preference from caller's behavior byte (info+6 still points
+* at the NPC because save_info above just snapshotted it).
+ ldy #6
+ lda (info_ptr),y
+ cmp #BEHAV_FACEOFF2
+ beq :ffp_pref_j
+ cmp #BEHAV_FLANK2
+ beq :ffp_pref_j
+ lda #$01
+ bra :ffp_pref_set
+:ffp_pref_j
+ lda #$02
+:ffp_pref_set
+ sta :ffp_pref
+* Pass 1: try preferred controller.
+ lda :ffp_pref
+ jsr :ffp_find_ctrl
+ bne :ffp_resolved
+* Pass 2: fall back to the OTHER controller.
+ lda :ffp_pref
+ eor #$03                   ; $01 ↔ $02
+ jsr :ffp_find_ctrl
  beq :notfound
- ldy #22
- lda (info_ptr),y      ; controller
- cmp #$01
- beq :found
- lda spr_ptr
- clc
- adc #2
- sta spr_ptr
- bcc :fpl
- inc spr_ptr+1
- bra :fpl
-:found
+:ffp_resolved
+* info_ptr now points at the chosen player. Snapshot the fields the
+* AI consumers want.
  ldy #0
  lda (info_ptr),y
  sta fo_plr_y
@@ -4544,6 +4581,68 @@ fo_find_player
  sta info_ptr+1
  lda #0                ; Z=1: not found
  rts
+
+:ffp_find_ctrl
+* A = controller value to search for. Returns A=$01 / Z=0 with
+* info_ptr pointing at the matched (alive) sprite, or A=$00 / Z=1
+* if no live sprite with that controller exists. For controller $02
+* additionally requires jimmy_active != 0.
+ cmp #$02
+ bne :ffc_save_target
+ pha
+ lda jimmy_active
+ bne :ffc_pull_ok
+ pla
+ lda #0
+ rts                       ; Jimmy not activated → fail this pass
+:ffc_pull_ok
+ pla
+:ffc_save_target
+ sta :ffc_target
+ lda #<sprite_table
+ sta spr_ptr
+ lda #>sprite_table
+ sta spr_ptr+1
+:ffc_loop
+ ldy #0
+ lda (spr_ptr),y
+ sta info_ptr
+ iny
+ lda (spr_ptr),y
+ sta info_ptr+1
+ ora info_ptr
+ beq :ffc_done_nf
+ ldy #22
+ lda (info_ptr),y
+ cmp :ffc_target
+ bne :ffc_next
+* Controller matches; reject if anim_ptr == $FFFF (death sentinel).
+ ldy #24
+ lda (info_ptr),y
+ cmp #$FF
+ bne :ffc_alive
+ ldy #25
+ lda (info_ptr),y
+ cmp #$FF
+ bne :ffc_alive
+ bra :ffc_next            ; both $FF → dead, skip
+:ffc_alive
+ lda #$01
+ rts
+:ffc_next
+ lda spr_ptr
+ clc
+ adc #2
+ sta spr_ptr
+ bcc :ffc_loop
+ inc spr_ptr+1
+ bra :ffc_loop
+:ffc_done_nf
+ lda #0
+ rts
+
+:ffp_pref   dfb 0
+:ffc_target dfb 0
 
 *----------------------------------------------------------
 * fo_approach - Walk toward player. When within FO_RANGE
@@ -7061,15 +7160,20 @@ erase_all
 :ea_hide_skip
  jmp :ea_clr_dirty       ; current = hidden OTHER, skip draw
 :ea_hide_chk_done
-* Burnov-grab lock: skip Billy entirely while bn_grab_active
-* (his BNBILLY1/2/3 frames are the combined pose).
+* Burnov-grab lock: skip whichever player is being held while
+* Burnov's combined-pose anim is playing. bn_grab_active is a
+* tri-state: 0=none, 1=Billy grabbed, 2=Jimmy grabbed. The grabbed
+* player's body lives inside Burnov's BNBILLY/BNJIMMY frames, so
+* drawing the standalone sprite would overlap it.
  ldy #22
  lda (info_ptr),y
- cmp #$01
+ cmp bn_grab_active
  bne :ea_disp_check
+* controller matches bn_grab_active — but only if bn_grab_active
+* is non-zero (otherwise this would gate every controller==0 NPC).
  lda bn_grab_active
  beq :ea_disp_check
- jmp :ea_clr_dirty    ; gated out — clear bit and continue
+ jmp :ea_clr_dirty
 :ea_disp_check
 * Stage frame_x_off for this draw — same gating as draw_all.
 * Billy (controller=1) → billy_cur_x_off; Jimmy (controller=2) →
@@ -7285,16 +7389,16 @@ draw_all
  lda (info_ptr),y
  and #$01
  beq :skip_draw
-* Burnov-grab lock: skip Billy entirely while bn_grab_active.
-* Burnov's BNBILLY1/2/3 frames are the combined "holding Billy"
-* pose, so Billy's own sprite must not draw.
+* Burnov-grab lock: skip whichever player Burnov is holding.
+* bn_grab_active tri-state: 0=none, 1=Billy, 2=Jimmy. Same gate
+* as :ea_hide_chk_done above; this is the main draw_all pass.
  ldy #22
  lda (info_ptr),y
- cmp #$01
+ cmp bn_grab_active
  bne :da_grab_chk_done
  lda bn_grab_active
  beq :da_grab_chk_done
- jmp :da_drawn        ; clear dirty bit, skip draw
+ jmp :da_drawn
 :da_grab_chk_done
 * Stage frame_x_off for this draw. Billy (controller=1) →
 * billy_cur_x_off; Jimmy (controller=2) → jimmy_cur_x_off.
@@ -7611,15 +7715,22 @@ SCRIPT_WAITXREV = 7   ; waiting for abs_x <= threshold
 SCRIPT_WAIT    = 8    ; waiting N frames (script_wait_val = countdown)
 
 * NPC behaviors (must match mission1.s definitions)
-BEHAV_NONE    = 0
-BEHAV_FACEOFF = 1
-BEHAV_FLANK   = 2
-BEHAV_LURK    = 3
-BEHAV_LADDER  = 4
-BEHAV_KNIFER  = 5     ; williams_knife: backpedal to 12px (= 6 byte
+BEHAV_NONE     = 0
+BEHAV_FACEOFF  = 1
+BEHAV_FLANK    = 2
+BEHAV_LURK     = 3
+BEHAV_LADDER   = 4
+BEHAV_KNIFER   = 5    ; williams_knife: backpedal to 12px (= 6 byte
                       ; xpos units), throw KNIFE2/4 projectile, then
                       ; transform to regular williams + BEHAV_FACEOFF.
                       ; Falling mid-elude drops the knife and downgrades.
+* Jimmy-priority variants — same behavior routines as the base
+* values, but fo_find_player picks Jimmy as the preferred target and
+* falls back to Billy if Jimmy is dead/inactive. Lets level scripts
+* spawn two NPCs simultaneously and have each immediately engage a
+* different player.
+BEHAV_FACEOFF2 = 6
+BEHAV_FLANK2   = 7
 
 * Knife-thrower tunables
 KN_RANGE      = 30    ; xpos bytes (= 60 px in 320 mode) — minimum gap
@@ -7892,10 +8003,14 @@ ADB_KEY_L = $25
 * If an action animation is playing, ignore all input.
 *----------------------------------------------------------
 process_input
-* Burnov-grab lock: while bn_grab_active is set, swallow all
-* input. Billy can't defend the BNBILLY pummel sequence.
+* Burnov-grab lock for Billy: bn_grab_active=$01 means Billy is
+* currently held in Burnov's BNBILLY pummel sequence. Swallow
+* Billy's input until the grab ends. (=$02 means Jimmy is held —
+* process_input is Billy's pipeline so Billy retains input, Jimmy's
+* swap context handles the symmetric lock for his side.)
  lda bn_grab_active
- beq :pi_not_grabbed
+ cmp #$01
+ bne :pi_not_grabbed
  rts
 :pi_not_grabbed
 * Clear any stale co-op walk-boost so Billy doesn't pick it up
@@ -8670,10 +8785,14 @@ btn_action_jump
  lda last_key
  cmp #'r'
  bne :not_scroll
+* SEI guard — see :rso_no_other comment for the NTP-IRQ leak.
+ php
+ sei
  jsr save_sprite
  jsl scroll_right
  jsr load_sprite
  jsr sync_current_screen
+ plp
 * world_offset += 4 (4 bytes scrolled into the world)
  lda world_offset
  clc
@@ -8965,8 +9084,12 @@ btn_action_jump
 :sn_no_hide
  lda did_climb_this_frame
  bne :sn_skip_scroll
+* SEI guard — see :rso_no_other comment for the NTP-IRQ leak.
+ php
+ sei
  jsl scroll_up
  jsr load_sprite
+ plp
  lda #1
  sta did_climb_this_frame
  rts
@@ -9394,11 +9517,15 @@ btn_action_jump
  sta $F0
  jsr dbg_print_nl
  fin
-* Scroll world LEFT by 4 bytes
+* Scroll world LEFT by 4 bytes.
+* SEI guard — see :rso_no_other comment for the NTP-IRQ leak.
+ php
+ sei
  jsr save_sprite
  jsl scroll_left
  jsr load_sprite
  jsr sync_current_screen_left
+ plp
 * abs_x retreats by 4 bytes — matches world_offset -= 4 so abs_x
 * represents the player's cumulative byte-displacement through
 * the world (1 per walk press, 4 per scroll, 1 per VBL of jump).
@@ -9583,11 +9710,20 @@ btn_action_jump
  bcs :rso_no_other       ; other not too close → continue
  jmp :walk_right         ; other too close to left edge
 :rso_no_other
-* Scroll world right by 4 bytes (8 pixels = 2 words)
+* Scroll world right by 4 bytes (8 pixels = 2 words).
+* SEI around the scroll dispatch — NTP's IRQ handler appears to
+* rarely leak 2 stack bytes (~1-in-20 plays), and if the IRQ lands
+* inside scroll_right's nested JSL/RTL chain the outermost RTL
+* pops a corrupted return → BRK in a zero-fill bank like $07/031x.
+* Masking IRQs across the dispatch is the simplest way to confirm
+* the hypothesis; PHP/PLP preserves the caller's I flag.
+ php
+ sei
  jsr save_sprite
  jsl scroll_right
  jsr load_sprite
  jsr sync_current_screen
+ plp
 * world_offset += 4 (4 bytes scrolled into the world)
  lda world_offset
  clc
@@ -10357,6 +10493,15 @@ process_input_jimmy
  bne :pij_active
  rts
 :pij_active
+* Burnov-grab lock for Jimmy: bn_grab_active=$02 means Jimmy is
+* currently held in Burnov's BNJIMMY pummel sequence. Swallow
+* Jimmy's input until the grab ends. Mirrors process_input's
+* gate for Billy.
+ lda bn_grab_active
+ cmp #$02
+ bne :pij_not_grabbed
+ rts
+:pij_not_grabbed
 
  jsr swap_in_jimmy
 
@@ -12702,41 +12847,64 @@ update_anims
  iny
  sta (info_ptr),y
 :ne_not_bpickup
-* Burnov-grab end hook: anim_bngrab just finished (last frame
-* was BNBILLY3, the release pose). Clear the active flag,
-* re-mark Billy as needing draw, and start his fall_anim from
-* his pre-grab position (which billy_sprite still holds —
-* nothing modified it during the grab since input/walk were
-* gated off).
+* Burnov-grab end hook: anim_bngrab (Billy variant) or anim_bnjgrab
+* (Jimmy variant) just finished (last frame is BNBILLY3/BNJIMMY3,
+* the release pose). Clear the active flag, re-mark the grabbed
+* player as needing draw, and start their fall_anim from their
+* pre-grab position (billy_sprite / jimmy_sprite still hold those
+* coords — input was gated off during the grab so nothing modified
+* them).
  lda anim_ptr
  cmp #<anim_bngrab
- beq :ne_grab_chk_hi
- jmp :ne_not_bngrab
-:ne_grab_chk_hi
+ bne :ne_chk_bnjgrab
  lda anim_ptr+1
  cmp #>anim_bngrab
  beq :ne_grab_do
+:ne_chk_bnjgrab
+ lda anim_ptr
+ cmp #<anim_bnjgrab
+ bne :ne_not_bngrab_jmp
+ lda anim_ptr+1
+ cmp #>anim_bnjgrab
+ beq :ne_grab_do
+:ne_not_bngrab_jmp
  jmp :ne_not_bngrab
 :ne_grab_do
+* Snapshot which player is being released; bn_grab_active holds
+* their controller value ($01 Billy / $02 Jimmy) — set by
+* check_punch_hit's grab trigger. Use a local scratch so the
+* clear can fire immediately without losing the dispatch info.
+ lda bn_grab_active
+ sta :ne_grab_who
  stz bn_grab_active
-* Save Burnov's info_ptr; switch to billy_sprite to start his
-* fall_anim. start_anim handles all of Billy's frame setup.
+* Save Burnov's info_ptr; switch to the released player's block
+* for start_anim. Pick by :ne_grab_who.
  lda info_ptr
  pha
  lda info_ptr+1
  pha
+ lda :ne_grab_who
+ cmp #$02
+ beq :ne_grab_load_jimmy
  lda #<billy_sprite
  sta info_ptr
  lda #>billy_sprite
  sta info_ptr+1
-* Mirror Billy so he faces Burnov (so the trajectory dx and
-* fall pose orient correctly). Burnov's mirror was already
-* loaded above (anim_bngrab's last frame).
+ bra :ne_grab_loaded
+:ne_grab_load_jimmy
+ lda #<jimmy_sprite
+ sta info_ptr
+ lda #>jimmy_sprite
+ sta info_ptr+1
+:ne_grab_loaded
+* Mirror the player so they face Burnov (so the trajectory dx and
+* fall pose orient correctly). Burnov's mirror was already loaded
+* above (final frame of the grab anim).
  lda IMAGE01_MIRROR
  eor #$01
  ldy #4
- sta (info_ptr),y     ; opposite of Burnov's facing
-* Load Billy's globals for start_anim.
+ sta (info_ptr),y
+* Load the player's globals for start_anim.
  ldy #0
  lda (info_ptr),y
  sta IMAGE01_YPOS
@@ -12766,15 +12934,18 @@ update_anims
  tax
  pla
  jsr start_anim
-* Count this as one of Billy's 5 falls. Mirrors the cascade in
-* check_punch_hit :use_fall and knife_hit_billy: zero
-* punch_count, bump billy_fall_count, deplete one palette-02
-* slot. check_punch_hit's grab branch jumped to :done before
-* hitting :use_fall, so this is the only place the grab's
-* fall is accounted for.
+* Count this as one of the released player's falls and deplete a
+* palette segment. Mirror of the cascade in check_punch_hit's
+* :use_fall path; check_punch_hit's grab branch jumped to :done
+* before hitting :use_fall, so this is the only place the grab's
+* fall is accounted for. Dispatch by :ne_grab_who.
  lda #0
  ldy #48
- sta (info_ptr),y     ; reset Billy's punch_count
+ sta (info_ptr),y     ; reset punch_count on the player block
+ lda :ne_grab_who
+ cmp #$02
+ beq :ne_grab_dep_jimmy
+* Billy: increment billy_fall_count and deplete P1 slots.
  inc billy_fall_count
  lda billy_fall_count
  cmp #1
@@ -12810,6 +12981,46 @@ update_anims
  lda #0
  stal $019E54
  stal $019E55
+ jmp :ne_grab_dep_done
+:ne_grab_dep_jimmy
+* Jimmy: mirrors :uf_target_jimmy. P2 palette slots 5..9 deplete
+* in the same fall1→5 order as P1. fall_count for Jimmy lives in
+* jimmy_stash_fall_count.
+ inc jimmy_stash_fall_count
+ lda jimmy_stash_fall_count
+ cmp #1
+ bne :ne_grab_jdep_2
+ lda #0
+ stal $019E52
+ stal $019E53
+ jmp :ne_grab_dep_done
+:ne_grab_jdep_2
+ cmp #2
+ bne :ne_grab_jdep_3
+ lda #0
+ stal $019E50
+ stal $019E51
+ jmp :ne_grab_dep_done
+:ne_grab_jdep_3
+ cmp #3
+ bne :ne_grab_jdep_4
+ lda #0
+ stal $019E4E
+ stal $019E4F
+ jmp :ne_grab_dep_done
+:ne_grab_jdep_4
+ cmp #4
+ bne :ne_grab_jdep_5
+ lda #0
+ stal $019E4C
+ stal $019E4D
+ jmp :ne_grab_dep_done
+:ne_grab_jdep_5
+ cmp #5
+ bne :ne_grab_dep_done
+ lda #0
+ stal $019E4A
+ stal $019E4B
 :ne_grab_dep_done
 * Restore Burnov's info_ptr so :normal_end's idle restore below
 * operates on him.
@@ -13903,6 +14114,7 @@ update_anims
 
 :frm dfb 0
 :ne_tmp dfb 0
+:ne_grab_who dfb 0          ; bn_grab_active snapshot for :ne_grab_do
 :lf_tmp dfb 0
 :lf_lastfrm dfb 0
 :kick_saved_xpos dfb 0
@@ -13932,6 +14144,31 @@ update_anims
 start_burnov_dissolve
  ldx #SND_BURNGONE
  jsr sound_trigger
+* Release the held player if Burnov was mid-grab when he died. The
+* natural grab-end hook (:ne_grab_do) only fires when anim_bngrab /
+* anim_bnjgrab ends cleanly; a death-mid-grab swaps Burnov's
+* anim_ptr away before that hook can run, leaving bn_grab_active
+* stuck and the held player invisible (their draw is gated off).
+* bn_grab_active tells us which player: $01=Billy, $02=Jimmy.
+* Mark them dirty so the next draw_all repaints at the pre-grab
+* position. Skip the fall / punch_count bookkeeping :ne_grab_do
+* does — Burnov is the one dying; the released player just gets
+* dropped back into the fight standing.
+ lda bn_grab_active
+ beq :sbd_no_release
+ cmp #$02
+ beq :sbd_release_jimmy
+ lda billy_sprite+30
+ ora #$03
+ sta billy_sprite+30
+ bra :sbd_release_done
+:sbd_release_jimmy
+ lda jimmy_sprite+30
+ ora #$03
+ sta jimmy_sprite+30
+:sbd_release_done
+ stz bn_grab_active
+:sbd_no_release
 * Snapshot prev_* so the fallen sprite gets erased cleanly when
 * the new (taller) dissolve frame paints. Use a generous prev_w/h
 * (24×24) to cover BNFALLEN's 23×23 footprint.
@@ -18660,6 +18897,52 @@ anim_bngrab
   hex 0000             ; patched: BNBILLY3_DATA_MIRROR
   hex 0000             ; patched: BNBILLY3_MASK_MIRROR
 
+* anim_bnjgrab — parallel to anim_bngrab but pointed at the BNJIMMY
+* sprite slots. Used when Burnov's grab trigger fires on Jimmy
+* (controller=$02) instead of Billy. Same 7-frame BNBILLY1/2/1/2/1/2/3
+* shape, frame widths/heights/durations are identical because the
+* BNJIMMY sprites are palette-shifted copies (geometry unchanged).
+* Patched by init_burnov_combat_compiled.
+anim_bnjgrab
+ dfb 7
+ dfb $15             ; max_width (BNJIMMY1/2 are 21)
+ dfb $88             ; flags: bit 7 = compiled, bit 3 = bank $1C
+ dfb $15,$30,8       ; BNJIMMY1
+  hex 0000             ; patched: BNJIMMY1_DATA
+  hex 0000             ; patched: BNJIMMY1_MASK
+  hex 0000             ; patched: BNJIMMY1_DATA_MIRROR
+  hex 0000             ; patched: BNJIMMY1_MASK_MIRROR
+ dfb $15,$31,8       ; BNJIMMY2
+  hex 0000             ; patched: BNJIMMY2_DATA
+  hex 0000             ; patched: BNJIMMY2_MASK
+  hex 0000             ; patched: BNJIMMY2_DATA_MIRROR
+  hex 0000             ; patched: BNJIMMY2_MASK_MIRROR
+ dfb $15,$30,8       ; BNJIMMY1
+  hex 0000             ; patched: BNJIMMY1_DATA
+  hex 0000             ; patched: BNJIMMY1_MASK
+  hex 0000             ; patched: BNJIMMY1_DATA_MIRROR
+  hex 0000             ; patched: BNJIMMY1_MASK_MIRROR
+ dfb $15,$31,8       ; BNJIMMY2
+  hex 0000             ; patched: BNJIMMY2_DATA
+  hex 0000             ; patched: BNJIMMY2_MASK
+  hex 0000             ; patched: BNJIMMY2_DATA_MIRROR
+  hex 0000             ; patched: BNJIMMY2_MASK_MIRROR
+ dfb $15,$30,8       ; BNJIMMY1
+  hex 0000             ; patched: BNJIMMY1_DATA
+  hex 0000             ; patched: BNJIMMY1_MASK
+  hex 0000             ; patched: BNJIMMY1_DATA_MIRROR
+  hex 0000             ; patched: BNJIMMY1_MASK_MIRROR
+ dfb $15,$31,8       ; BNJIMMY2
+  hex 0000             ; patched: BNJIMMY2_DATA
+  hex 0000             ; patched: BNJIMMY2_MASK
+  hex 0000             ; patched: BNJIMMY2_DATA_MIRROR
+  hex 0000             ; patched: BNJIMMY2_MASK_MIRROR
+ dfb $15,$2F,12      ; BNJIMMY3 (release)
+  hex 0000             ; patched: BNJIMMY3_DATA
+  hex 0000             ; patched: BNJIMMY3_MASK
+  hex 0000             ; patched: BNJIMMY3_DATA_MIRROR
+  hex 0000             ; patched: BNJIMMY3_MASK_MIRROR
+
 * Burnov punched reaction. 1 frame placeholder using BNFALL1
 * — replace with a dedicated recoil frame if/when one ships.
 * Compiled bank-$1C — patched by init_burnov_combat_compiled.
@@ -19970,25 +20253,48 @@ check_punch_hit
 :ht_dbg_skip
  fin
 
-* Burnov-grabs-Billy special case. When anim_bnpunch lands on
-* Billy (controller=1), divert from the standard hit/fall logic
-* to the BNBILLY grab sequence: hide Billy, run anim_bngrab on
-* Burnov, ignore Billy's input until the anim ends. The grab
-* anim's :normal_end handler will reposition Billy and start
-* fall_anim on him.
+* Burnov-grabs-Player special case. When anim_bnpunch lands on
+* Billy (controller=$01) or Jimmy (controller=$02), divert from
+* the standard hit/fall logic to the BNBILLY/BNJIMMY grab sequence:
+* hide the held player, run the matching grab anim on Burnov,
+* ignore the held player's input until the anim ends. The grab
+* anim's :normal_end handler will reposition the player and start
+* fall_anim on them.
  lda :puncher_anim_lo
  cmp #<anim_bnpunch
- bne :hit_normal
+ beq :bn_chk_anim_hi
+ jmp :hit_normal
+:bn_chk_anim_hi
  lda :puncher_anim_hi
  cmp #>anim_bnpunch
- bne :hit_normal
+ beq :bn_chk_target
+ jmp :hit_normal
+:bn_chk_target
  ldy #22
  lda (info_ptr),y     ; target controller
  cmp #$01
- bne :hit_normal      ; target isn't Billy — fall through
-* Set the active flag, mark Billy needing-erase (so this frame's
-* erase_all clears his last-drawn rect and draw_all skips him).
- lda #$01
+ beq :bn_do_grab
+ cmp #$02
+ beq :bn_chk_jimmy_ptr
+ jmp :hit_normal
+:bn_chk_jimmy_ptr
+* Target=$02 is the controller value Jimmy and dropped items share;
+* re-check it's actually jimmy_sprite to avoid grabbing a pipe/knife.
+ lda info_ptr
+ cmp #<jimmy_sprite
+ beq :bn_chk_jimmy_hi
+ jmp :hit_normal
+:bn_chk_jimmy_hi
+ lda info_ptr+1
+ cmp #>jimmy_sprite
+ beq :bn_do_grab
+ jmp :hit_normal
+:bn_do_grab
+* Remember which player got grabbed. Stash the target's controller
+* into bn_grab_active so it doubles as the "which player" tag for
+* later release logic and the draw-skip gates above.
+ ldy #22
+ lda (info_ptr),y
  sta bn_grab_active
  ldy #30
  lda (info_ptr),y
@@ -19996,14 +20302,12 @@ check_punch_hit
  and #$FE
  sta (info_ptr),y
 * Switch info_ptr back to the puncher (Burnov) and run start_anim
-* with anim_bngrab. start_anim handles frame_bank, info+10/+12/
-* +14, dirty, etc.
+* with anim_bngrab (Billy target) or anim_bnjgrab (Jimmy target).
+* start_anim handles frame_bank, info+10/+12/+14, dirty, etc.
  lda :self_lo
  sta info_ptr
  lda :self_hi
  sta info_ptr+1
-* Re-load Burnov's globals so start_anim's :sa_write_block
-* operates on the right block.
  ldy #0
  lda (info_ptr),y
  sta IMAGE01_YPOS
@@ -20025,8 +20329,17 @@ check_punch_hit
  iny
  lda (info_ptr),y
  sta FRAME_ADDR+1
+* Pick the grab anim variant by bn_grab_active (set just above).
+ lda bn_grab_active
+ cmp #$02
+ beq :bn_grab_jimmy
  lda #<anim_bngrab
  ldx #>anim_bngrab
+ bra :bn_grab_start
+:bn_grab_jimmy
+ lda #<anim_bnjgrab
+ ldx #>anim_bnjgrab
+:bn_grab_start
  jsr start_anim
  jmp :done
 :hit_normal
