@@ -1,6 +1,6 @@
 # D.uble Drag.n II: The Revenge (NES) - Apple IIgs
 
-A fan-made recreation of D.uble Drag.n II (NES) for the Apple IIgs, written entirely in 65816 assembly language.
+A fan-made recreation of D.uble Drag.n II (NES) for the Apple IIgs, written entirely in 65816 assembly language, featuring 2-player action and graphics and music directly from the NES title
 
 ## Overview
 
