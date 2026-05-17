@@ -2,9 +2,13 @@
 VOLNAME = ddiigs
 IMGFILE = out/$(VOLNAME).po
 
-.PHONY: package clean
+MENU_VOLNAME = menu
+MENU_IMGFILE = out/$(MENU_VOLNAME).po
+
+.PHONY: package menu clean
 
 package: $(IMGFILE)
+menu: $(MENU_IMGFILE)
 
 out/game: src/game.s
 	mkdir -p out
@@ -28,6 +32,15 @@ out/title: src/title.s
 	mkdir -p out
 	cd src && merlin32 title.s
 	mv src/title out/title
+
+# Experimental "menu" disk image — assembles src/select.s and packs
+# it together with PRODOS, BASIC.SYSTEM, and assets/concept3 onto a
+# fresh 800KB volume. Sandbox for testing new flows before merging
+# anything back into the main `package` build.
+out/select: src/select.s
+	mkdir -p out
+	cd src && merlin32 select.s
+	mv src/select out/select
 
 out/mission1: src/mission1.s
 	mkdir -p out
@@ -240,6 +253,28 @@ $(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.sh
 	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/SFX/ out/BURNBACK.RAW\#060000 --quiet
 	rm out/BURNBACK.RAW\#060000
 	cadius CATALOG $(IMGFILE)
+
+# Menu disk: minimal sandbox image carrying PRODOS, BASIC.SYSTEM,
+# the concept3 SHR (uncompressed PIC), and the assembled select.s.
+# select.s ORGs at $2000 so it lands as a SYS ($FF2000) file like
+# the main game's TITLE / DDII.SYSTEM / BASIC.SYSTEM.
+$(MENU_IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/concept3\#C10000 out/select
+	mkdir -p out
+	rm -f $(MENU_IMGFILE)
+	cadius CREATEVOLUME $(MENU_IMGFILE) $(MENU_VOLNAME) 800KB --quiet
+	cp res/PRODOS out/PRODOS\#FF0000
+	cadius ADDFILE $(MENU_IMGFILE) /$(MENU_VOLNAME)/ out/PRODOS\#FF0000 --quiet
+	rm out/PRODOS\#FF0000
+	cp res/BASIC.SYSTEM out/BASIC.SYSTEM\#FF2000
+	cadius ADDFILE $(MENU_IMGFILE) /$(MENU_VOLNAME)/ out/BASIC.SYSTEM\#FF2000 --quiet
+	rm out/BASIC.SYSTEM\#FF2000
+	cp assets/concept3\#C10000 out/CONCEPT3\#C10000
+	cadius ADDFILE $(MENU_IMGFILE) /$(MENU_VOLNAME)/ out/CONCEPT3\#C10000 --quiet
+	rm out/CONCEPT3\#C10000
+	cp out/select out/SELECT\#FF2000
+	cadius ADDFILE $(MENU_IMGFILE) /$(MENU_VOLNAME)/ out/SELECT\#FF2000 --quiet
+	rm out/SELECT\#FF2000
+	cadius CATALOG $(MENU_IMGFILE)
 
 clean:
 	rm -rf out
