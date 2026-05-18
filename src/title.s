@@ -1997,6 +1997,16 @@ ctl_select
   clc
   xce
   rep $30
+
+; bold text face for drawing the controller names
+  pea #$0001         ; bit 1 = bold
+  ldx #$9A04
+  jsl $E10000        ; SetTextFace
+
+  pea #$0001
+  ldx #$A204
+  jsl $E10000        ; SetBackColor
+
   lda #0
   ldx #$01FE
 :zeropal
@@ -2367,7 +2377,8 @@ draw_p1_icon
   sta DRAW_YPOS2
   lda #P1_KB_X
   sta DRAW_XPOS2
-  jmp plot2
+  jsr plot2
+  bra draw_p1_text
 :dp1_not_kb
   cmp #CTL_JOYSTICK
   bne :dp1_snes
@@ -2381,7 +2392,8 @@ draw_p1_icon
   sta DRAW_YPOS2
   lda #P1_JS_X
   sta DRAW_XPOS2
-  jmp plot2
+  jsr plot2
+  bra draw_p1_text
 :dp1_snes
   lda #SNES
   sta FRAME_ADDR2
@@ -2393,7 +2405,44 @@ draw_p1_icon
   sta DRAW_YPOS2
   lda #P1_SNES_X
   sta DRAW_XPOS2
-  jmp plot2
+  jsr plot2
+* fall through to draw_p1_text
+
+*----------------------------------------------------------
+* draw_p1_text / draw_p2_text - Render the carousel label
+* under the icon via _MoveTo + _DrawCString. Caller in native
+* 16-bit M. QD II fg/bg colours + pen mode were set during
+* title init and persist for the life of the program.
+*   P1 label at (42, 150) — joystick / keyboard / "SNES MAX 1"
+*   P2 label at (207, 150) — joystick / keyboard / "SNES MAX 2"
+*----------------------------------------------------------
+draw_p1_text
+  pea #36
+  pea #150
+  ldx #$3a04
+  jsl $E10000               ; _MoveTo
+  pea #$0002         ; P1 color is blue
+  ldx #$A004
+  jsl $E10000        ; SetForeColor
+  lda ctl_type_p1
+  cmp #CTL_KEYBOARD
+  bne :dp1t_not_kb
+  pea ^txt_keyboard
+  pea txt_keyboard
+  bra :dp1t_draw
+:dp1t_not_kb
+  cmp #CTL_JOYSTICK
+  bne :dp1t_snes
+  pea ^txt_joystick
+  pea txt_joystick
+  bra :dp1t_draw
+:dp1t_snes
+  pea ^txt_snes1
+  pea txt_snes1
+:dp1t_draw
+  ldx #$A604
+  jsl $E10000               ; _DrawCString
+  rts
 
 draw_p2_icon
   lda ctl_type_p2
@@ -2409,7 +2458,8 @@ draw_p2_icon
   sta DRAW_YPOS2
   lda #P2_KB_X
   sta DRAW_XPOS2
-  jmp plot2
+  jsr plot2
+  bra draw_p2_text
 :dp2_not_kb
   cmp #CTL_JOYSTICK
   bne :dp2_snes
@@ -2423,7 +2473,8 @@ draw_p2_icon
   sta DRAW_YPOS2
   lda #P2_JS_X
   sta DRAW_XPOS2
-  jmp plot2
+  jsr plot2
+  bra draw_p2_text
 :dp2_snes
   lda #SNES
   sta FRAME_ADDR2
@@ -2435,7 +2486,36 @@ draw_p2_icon
   sta DRAW_YPOS2
   lda #P2_SNES_X
   sta DRAW_XPOS2
-  jmp plot2
+  jsr plot2
+* fall through to draw_p2_text
+
+draw_p2_text
+  pea #199
+  pea #150
+  ldx #$3a04
+  jsl $E10000               ; _MoveTo
+  pea #$0005         ; P2 color is red
+  ldx #$A004
+  jsl $E10000        ; SetForeColor
+  lda ctl_type_p2
+  cmp #CTL_KEYBOARD
+  bne :dp2t_not_kb
+  pea ^txt_keyboard
+  pea txt_keyboard
+  bra :dp2t_draw
+:dp2t_not_kb
+  cmp #CTL_JOYSTICK
+  bne :dp2t_snes
+  pea ^txt_joystick
+  pea txt_joystick
+  bra :dp2t_draw
+:dp2t_snes
+  pea ^txt_snes2
+  pea txt_snes2
+:dp2t_draw
+  ldx #$A604
+  jsl $E10000               ; _DrawCString
+  rts
 
 *----------------------------------------------------------
 * eventmanager_init - Initialize the Event Manager
@@ -2865,3 +2945,15 @@ SNES
  HEX 111111111111111111111111111111111111111111111111111111111111111111111111
  HEX 111111111111111111111111111111111111111111111111111111111111111111111111
  HEX 111111111111111111111111111111111111111111111111111111111111111111111111
+
+txt_joystick
+  ASC ' JOYSTICK  ',00
+
+txt_keyboard
+  ASC ' KEYBOARD  ',00
+
+txt_snes1
+  ASC 'SNES MAX 1',00
+
+txt_snes2
+  ASC 'SNES MAX 2',00

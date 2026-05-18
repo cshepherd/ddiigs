@@ -15,6 +15,21 @@ NTPgetsongpos           =   NinjaTrackerPlus+18
 NTPsetplayvolume        =   NinjaTrackerPlus+21
 NTPstreamsound          =   NinjaTrackerPlus+24
 
+; constants for game type selection
+GT_1P        = 0
+GT_2P_COOP   = 1
+GT_2P_PVP    = 2
+
+; constants for controller selection
+CTL_KEYBOARD = 0
+CTL_JOYSTICK = 1
+CTL_SNES     = 2
+
+; global variables from selection screen
+game_type = $300
+ctl_type_p1 = $302
+ctl_type_p2 = $304
+
 ]IOBUF = $0C00        ; 1024-byte ProDOS I/O buffer (page-aligned),
                        ; $0C00-$0FFF. Moved from $BB00 to $0C00 to free
                        ; $BB00-$BEFF (1KB) for game.s growth as more
