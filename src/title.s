@@ -1524,6 +1524,53 @@ copy_chunk_bank
  rts
 
 *----------------------------------------------------------
+* copy_select_to_screen - Move the staged SELECT.PAK image
+* from bank $18 into the visible screen ($E1) and the fade-in
+* source ($02). Caller in native 16-bit M/X.
+*   $18/2000-$18/9DFF  →  $E1/2000-$E1/9DFF  (32256 B pix+SCBs)
+*   $18/9E00-$18/9FFF  →  $02/9E00-$02/9FFF  (512 B palette)
+* Uses ZP $F0..$F2 (src long) and $F3..$F5 (dst long).
+*----------------------------------------------------------
+ mx %00
+copy_select_to_screen
+* Pixel + SCB block.
+ lda #$2000
+ sta $F0
+ sta $F3
+ sep $20
+ lda #$18
+ sta $F2
+ lda #$E1
+ sta $F5
+ rep $20
+ ldy #$0000
+:cp1
+ lda [$F0],y
+ sta [$F3],y
+ iny
+ iny
+ cpy #$7E00
+ bcc :cp1
+
+* Palette block. Source bank ($F2) is still $18; only $F5 changes.
+ lda #$9E00
+ sta $F0
+ sta $F3
+ sep $20
+ lda #$02
+ sta $F5
+ rep $20
+ ldy #$0000
+:cp2
+ lda [$F0],y
+ sta [$F3],y
+ iny
+ iny
+ cpy #$0200
+ bcc :cp2
+ rts
+
+*----------------------------------------------------------
 * ProDOS 8 parameter blocks for title loader
 *----------------------------------------------------------
 t_dest ds 2            ; current destination offset
@@ -1942,38 +1989,76 @@ ctl_select
   sta ctl_type_p2
   stz ctl_type_p2+1
 
-; set 1P palette color to selected, black out the other two
-  lda #<game_type_selected
-  stal palette_1p
-  lda #>game_type_selected
-  stal palette_1p+1
-
-  lda #00
-  stal palette_2p_coop
-  stal palette_2p_coop+1
-  stal palette_2p_pvp
-  stal palette_2p_pvp+1
-
   jsr eventmanager_init
 
-* Load SELECT.PAK and unpack the CONCEPT3 backdrop straight to
-* $E1/2000 (SHR memory). load_titlentp_pak buffers the PAK in
-* bank $17 and the _UnPackBytes ROM call writes the inflated
-* 32 KB image directly to bank $E1.
+* Zero the SHR palette on both bank $01 and $E1 so the screen
+* stays black while we unpack. fadeIn drives $01/9E00 (with
+* shadowing on) and that mirrors to $E1.
+  clc
+  xce
+  rep $30
+  lda #0
+  ldx #$01FE
+:zeropal
+  stal $019E00,x
+  stal $E19E00,x
+  dex
+  dex
+  bpl :zeropal
+  sec
+  xce
+  sep $30
+
+* Unpack SELECT.PAK into a staging bank ($18/2000-$18/9FFF) so
+* we can copy pixels+SCBs to $E1 without lighting up the palette
+* until the fade-in is ready to drive it.
   lda #<select_path
   sta t2_open+1
   lda #>select_path
   sta t2_open+2
-  lda #$E1
+  lda #$18
   sta t_unpack_bank
-  stz t_unpack_offset           ; low byte ($00)
+  stz t_unpack_offset
   lda #$20
-  sta t_unpack_offset+1         ; high byte ($20) → $E1/2000
+  sta t_unpack_offset+1         ; $18/2000
   jsr load_titlentp_pak
 
+* Apply game-type palette tweaks to the staging palette so the
+* fade-in lands on the right selected/unselected colours.
+* (Defaults: P1=1P selected, P2 COOP/PVP = unselected/black.)
+  lda #<game_type_selected
+  stal $189E26                  ; palette_1p offset within $9E00
+  lda #>game_type_selected
+  stal $189E27
+  lda #00
+  stal $189E38                  ; palette_2p_coop offset
+  stal $189E39
+  stal $189E36                  ; palette_2p_pvp offset
+  stal $189E37
+
+* Copy pixels+SCBs $18/2000-9DFF → $E1/2000-9DFF (32256 bytes)
+* and palette $18/9E00-9FFF → $02/9E00-9FFF (fadeIn source).
   clc
   xce
   rep $30
+  jsr copy_select_to_screen
+
+* Re-enable SHR shadowing so fadeIn's writes to $01/9E00 reach
+* $E1/9E00. Disable again after the fade so the cursor save-
+* under stays coherent during interactive use.
+  sep $20
+  ldal $e0C035
+  and #$F7                      ; clear bit 3: enable shadow
+  stal $e0C035
+  rep $20
+
+  jsr fadeIn
+
+  sep $20
+  ldal $e0C035
+  ora #$08                      ; set bit 3: disable shadow
+  stal $e0C035
+  rep $20
 
 ; draw initial controller icons for both players (P1=joystick, P2=keyboard)
   jsr draw_p1_icon
@@ -2138,8 +2223,30 @@ p2_right_clicked
   jmp eventLoop
 
 start_clicked
+* Hide the cursor first so it doesn't visibly hang around
+* during the fade.
   ldx #$9004
-  jsl $E10000    ; _HideCursor (stop the cursor)
+  jsl $E10000    ; _HideCursor
+
+* Click handlers modified the live palette at $E1 directly
+* (shadowing was off during interactive use). Sync those bytes
+* back to $01/9E00 so fadeOut reads the current colours.
+  ldx #$01FE
+:syncpal
+  ldal $E19E00,x
+  stal $019E00,x
+  dex
+  dex
+  bpl :syncpal
+
+* Re-enable shadowing so fadeOut's $01 writes propagate to $E1.
+  sep $20
+  ldal $e0C035
+  and #$F7                      ; clear bit 3: enable shadow
+  stal $e0C035
+  rep $20
+
+  jsr fadeOut
 
   ldx #$0306
   jsl $E10000    ; _EMShutDown (stop the event manager)
