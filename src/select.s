@@ -2,17 +2,6 @@
 
   ORG $2000
 
-NinjaTrackerPlus        =   $120000
-NTPprepare              =   NinjaTrackerPlus
-NTPplay                 =   NinjaTrackerPlus+3
-NTPstop                 =   NinjaTrackerPlus+6
-NTPgetvuptr             =   NinjaTrackerPlus+9
-NTPgete8ptr             =   NinjaTrackerPlus+12
-NTPforcesongpos         =   NinjaTrackerPlus+15
-NTPgetsongpos           =   NinjaTrackerPlus+18
-NTPsetplayvolume        =   NinjaTrackerPlus+21
-NTPstreamsound          =   NinjaTrackerPlus+24
-
 ; constants for game type selection
 GT_1P        = 0
 GT_2P_COOP   = 1
@@ -94,11 +83,6 @@ palette_2p_pvp = $e19e36
 
   ldx #$CA04            ; _InitCursor
   jsl $E10000
-
-;  pea $0000
-;  pea #cursor
-;  ldx #$8e04
-;  jsl $E10000           ; _SetCursor
 
 eventLoop
   pea $0000             ; space for result
@@ -253,6 +237,12 @@ p2_right_clicked
   jmp eventLoop
 
 start_clicked
+  ldx #$9004
+  jsl $E10000    ; _HideCursor (stop the cursor)
+
+  ldx #$0306
+  jsl $E10000    ; _EMShutDown (stop the event manager)
+
   sec
   xce
   sep $20
@@ -521,9 +511,6 @@ toolbox_init
  jsl $E10000
  bcs errorspot2
 
- ldx #$0205            ; _DeskStartUp
- jsl $E10000
-
  pea $8100             ; EM DP (1 page)
  pea $0000             ; queue size (0 = default of 20)
  pea $0000             ; X Min Clamp
@@ -579,292 +566,8 @@ wait_for_vbl
  rep $20            ; restore 16-bit A
  rts
 
-*----------------------------------------------------------
-* ProDOS 8 file loading and relocation
-*----------------------------------------------------------
-
 ]IOBUF = $6C00         ; 1024-byte ProDOS I/O buffer (page-aligned)
 ]RDBUF = $7000         ; 4KB read buffer
-
-*----------------------------------------------------------
-* fadeOut - Fade all 16 palettes (256 words at $019E00) to
-* black over 16 steps using the fadeBlack lookup table.
-* Each palette word is $0RGB. Each nibble is faded
-* individually: fadeBlack[nibble*16 + step].
-* Must be called in native mode with REP $30.
-*----------------------------------------------------------
- mx %00
-fadeOut
-* First, save the original palette to a buffer
- ldx #$01FE           ; 256 words = 512 bytes, index last word
-:save
- ldal $019E00,x
- sta origPal,x
- dex
- dex
- bpl :save
-
- lda #0
- sta :step             ; fade step counter (0-15)
-
-:stepLoop
-* For each palette word, fade R, G, B nibbles
- ldx #0               ; palette byte index (0-$1FE, step 2)
-
-:wordLoop
-* Read original palette word
- lda origPal,x
- sta :origWord
-
-* Fade Blue (bits 0-3)
- and #$000F            ; isolate B nibble
- asl
- asl
- asl
- asl                   ; * 16 = row offset in fadeBlack
- clc
- adc :step             ; + step = table index
- tay
- sep $20
- lda fadeBlack,y       ; faded B value
- sta :fadedB
- rep $20
-
-* Fade Green (bits 4-7)
- lda :origWord
- and #$00F0
-                       ; already *16 relative to nibble value
-                       ; but we need (nibble_value * 16) + step
-                       ; nibble_value = bits 4-7 >> 4
- lsr
- lsr
- lsr
- lsr                   ; now have green nibble in low 4 bits
- asl
- asl
- asl
- asl                   ; * 16
- clc
- adc :step
- tay
- sep $20
- lda fadeBlack,y       ; faded G value
- asl
- asl
- asl
- asl                   ; shift back to bits 4-7
- ora :fadedB
- sta :fadedGB
- rep $20
-
-* Fade Red (bits 8-11)
- lda :origWord
- and #$0F00
- xba                   ; swap bytes: red nibble now in low byte
- asl
- asl
- asl
- asl                   ; * 16
- clc
- adc :step
- tay
- sep $20
- lda fadeBlack,y       ; faded R value (8-bit, 0-F)
- sta :fadedR
- rep $20
-* Combine $0RGB from :fadedR (R), :fadedGB (G+B)
- lda :fadedR
- and #$000F            ; $000R
- xba                   ; $0R00
- sta :fadedRGB         ; save R in high byte position
- lda :fadedGB
- and #$00FF            ; $00GB
- ora :fadedRGB         ; $0RGB
- stal $019E00,x        ; write to palette RAM
-
- inx
- inx
- cpx #$0200
- bcc :wordLoop
-
-* Wait for VBL
- sep $20
-:vbl1 bit $C019
- bmi :vbl1
-:vbl2 bit $C019
- bpl :vbl2
- rep $20
-
-* Next step
- lda :step
- clc
- adc #1
- sta :step
- cmp #16
- bcs :fadeDone
- jmp :stepLoop
-:fadeDone
-
- rts
-
-:step dw 0
-:origWord dw 0
-:fadedB dfb 0
-:fadedGB dfb 0
-:fadedR dfb 0
-:fadedRGB dw 0
-
-*----------------------------------------------------------
-* fadeIn - Fade all 16 palettes from black to the target
-* palette stored at $02/9E00 over 16 steps.
-* Works backwards through the fadeBlack table (step 15→0).
-* Must be called in native mode with REP $30.
-*----------------------------------------------------------
- mx %00
-fadeIn
-* Save target palette from bank $02 to buffer
- sep $20
- lda #$02
- sta $F2               ; bank byte for indirect long
- rep $20
- lda #$9E00
- sta $F0               ; $F0 = $02/9E00
- ldy #0
-:loadTgt
- lda [$F0],y
- sta targetPal,y
- iny
- iny
- cpy #$0200
- bcc :loadTgt
-
- lda #15
- sta :istep            ; start at step 15 (fully black)
-
-:istepLoop
- ldx #0               ; palette byte index
-
-:iwordLoop
-* Read target palette word
- lda targetPal,x
- sta :iorigWord
-
-* Fade Blue (bits 0-3)
- and #$000F
- asl
- asl
- asl
- asl                   ; * 16
- clc
- adc :istep
- tay
- sep $20
- lda fadeBlack,y
- sta :ifadedB
- rep $20
-
-* Fade Green (bits 4-7)
- lda :iorigWord
- and #$00F0
- lsr
- lsr
- lsr
- lsr                   ; green nibble in low bits
- asl
- asl
- asl
- asl                   ; * 16
- clc
- adc :istep
- tay
- sep $20
- lda fadeBlack,y
- asl
- asl
- asl
- asl                   ; shift to bits 4-7
- ora :ifadedB
- sta :ifadedGB
- rep $20
-
-* Fade Red (bits 8-11)
- lda :iorigWord
- and #$0F00
- xba                   ; red nibble in low byte
- asl
- asl
- asl
- asl                   ; * 16
- clc
- adc :istep
- tay
- sep $20
- lda fadeBlack,y       ; faded R value (8-bit, 0-F)
- sta :ifadedR
- rep $20
-* Combine $0RGB from :ifadedR (R), :ifadedGB (G+B)
- lda :ifadedR
- and #$000F            ; $000R
- xba                   ; $0R00
- sta :ifadedRGB
- lda :ifadedGB
- and #$00FF            ; $00GB
- ora :ifadedRGB        ; $0RGB
- stal $019E00,x
-
- inx
- inx
- cpx #$0200
- bcc :iwordLoop
-
-* Wait for VBL
- sep $20
-:ivbl1 bit $C019
- bmi :ivbl1
-:ivbl2 bit $C019
- bpl :ivbl2
- rep $20
-
-* Decrement step (15→14→...→0)
- lda :istep
- sec
- sbc #1
- sta :istep
- bpl :jstep
- rts                   ; done when step goes negative
-:jstep jmp :istepLoop
-
-:istep dw 0
-:iorigWord dw 0
-:ifadedB dfb 0
-:ifadedGB dfb 0
-:ifadedR dfb 0
-:ifadedRGB dw 0
-
-targetPal ds 512       ; target palette from bank $02
-
-origPal ds 512          ; saved copy of original palette (used by fadeOut)
-
-; fade table for title screen fade-in/out effect, indexed by frame (0-15) and color index (0-15)
-; use fadeBlack[orig*16]+step to get faded color index for a given original color nibble and fade step
-; NOTE this is for gamma value 1.6
-fadeBlack
-    db $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
-    db $01, $01, $01, $01, $01, $01, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
-    db $02, $02, $02, $01, $01, $01, $01, $01, $01, $00, $00, $00, $00, $00, $00, $00
-    db $03, $03, $02, $02, $02, $02, $01, $01, $01, $01, $01, $00, $00, $00, $00, $00
-    db $04, $04, $03, $03, $02, $02, $02, $01, $01, $01, $01, $00, $00, $00, $00, $00
-    db $05, $04, $04, $03, $03, $03, $02, $02, $01, $01, $01, $01, $00, $00, $00, $00
-    db $06, $05, $05, $04, $04, $03, $03, $02, $02, $01, $01, $01, $00, $00, $00, $00
-    db $07, $06, $06, $05, $04, $04, $03, $03, $02, $02, $01, $01, $01, $00, $00, $00
-    db $08, $07, $06, $06, $05, $04, $04, $03, $02, $02, $01, $01, $01, $00, $00, $00
-    db $09, $08, $07, $06, $05, $05, $04, $03, $03, $02, $02, $01, $01, $00, $00, $00
-    db $0A, $09, $08, $07, $06, $05, $04, $04, $03, $02, $02, $01, $01, $00, $00, $00
-    db $0B, $0A, $09, $08, $07, $06, $05, $04, $03, $03, $02, $01, $01, $00, $00, $00
-    db $0C, $0B, $0A, $08, $07, $06, $05, $04, $04, $03, $02, $01, $01, $00, $00, $00
-    db $0D, $0C, $0A, $09, $08, $07, $06, $05, $04, $03, $02, $02, $01, $01, $00, $00
-    db $0E, $0D, $0B, $0A, $09, $07, $06, $05, $04, $03, $02, $02, $01, $01, $00, $00
-    db $0F, $0D, $0C, $0A, $09, $08, $07, $05, $04, $03, $03, $02, $01, $01, $00, $00
 
 ;
 ; Clickable Regions
@@ -955,40 +658,6 @@ p2_snes
   dw $108, $89
   dw $121, $9C
   dw p2_snes_clicked
-
-;
-; QD II cursor Record (currently unused but could be useful later)
-;
-cursor
-  hex 0b000400 ; 11 rows of 4 words (16 bit LE)
-; pixels
-  hex 1111111111111111
-  hex 1311111111111111
-  hex 1331111111111111
-  hex 1333111111111111
-  hex 1333311111111111
-  hex 1333331111111111
-  hex 1333333111111111
-  hex 1333333311111111
-  hex 1331331111111111
-  hex 1111133111111111
-  hex 1111111111111111
-
-; mask
-  hex ff00000000000000
-  hex fff0000000000000
-  hex ffff000000000000
-  hex fffff00000000000
-  hex ffffff0000000000
-  hex fffffff000000000
-  hex ffffffff00000000
-  hex fffffffff0000000
-  hex ffffffff00000000
-  hex fff0ffff00000000
-  hex 00000fff00000000
-
-; hotspot
-  hex 01000100 ; hotspot at (1,1) (16 bit LE)
 
 ;
 ; EventManager Event Record

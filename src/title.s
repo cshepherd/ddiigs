@@ -13,6 +13,21 @@ NTPgetsongpos           =   NinjaTrackerPlus+18
 NTPsetplayvolume        =   NinjaTrackerPlus+21
 NTPstreamsound          =   NinjaTrackerPlus+24
 
+; constants for game type selection
+GT_1P        = 0
+GT_2P_COOP   = 1
+GT_2P_PVP    = 2
+
+; constants for controller selection
+CTL_KEYBOARD = 0
+CTL_JOYSTICK = 1
+CTL_SNES     = 2
+
+; global variables for game engine
+game_type = $300
+ctl_type_p1 = $302
+ctl_type_p2 = $304
+
   lda $1100
   bne :already
   jsr toolbox_init
@@ -370,13 +385,11 @@ NTPstreamsound          =   NinjaTrackerPlus+24
   cpx #$7d00
   bne :cls
 
-  jsl NTPstop
-
   sec
   xce
   sep $30
 
-  jmp $1002 ; jump to cutscene
+  jmp ctl_select
 
 s_pressany ASC 'Press any key to start',00
 
@@ -1248,8 +1261,10 @@ DDRAGONLEN EQU *-DDRAGON
 * ProDOS 8 file loading and relocation
 *----------------------------------------------------------
 
-]IOBUF = $6C00         ; 1024-byte ProDOS I/O buffer (page-aligned)
-]RDBUF = $7000         ; 4KB read buffer
+]IOBUF = $0C00         ; 1024-byte ProDOS I/O buffer (page-aligned)
+]RDBUF = $0800         ; 1024-byte read buffer (= 2 disk blocks), $0800-$0BFF.
+                       ; Lives well below title.s ($2000+) so growing
+                       ; the binary can't overlap the disk-read window.
 
 *----------------------------------------------------------
 * load_ccc - Load CCC.SHR to bank $02 starting at $02/2000
@@ -1282,7 +1297,7 @@ load_ccc
 * Advance destination by $1000
  lda t_dest+1
  clc
- adc #$10
+ adc #$04              ; advance dest by 1KB
  sta t_dest+1
  bcc :readlp
 * Address wrapped — next bank
@@ -1301,7 +1316,7 @@ load_ccc
 
 *----------------------------------------------------------
 * load_drugs - Load DRUGS.SHR to bank $02 starting at $02/2000.
-* Same protocol as load_ccc: 4 KB chunks via ProDOS 8 read,
+* Same protocol as load_ccc: 1 KB chunks via ProDOS 8 read,
 * destination address advances $1000 per chunk and rolls into
 * the next bank if it wraps. drugs.shr is 32 KB, so it lives
 * entirely in bank $02 ($02/2000..$02/9FFF), including its
@@ -1334,7 +1349,7 @@ load_drugs
 
  lda t_dest+1
  clc
- adc #$10
+ adc #$04              ; advance dest by 1KB
  sta t_dest+1
  bcc :readlp
  lda #$00
@@ -1378,7 +1393,7 @@ load_titlentp_pak
  lda t_eof_size+1
  sta t_file_size+1
 
-* Read PAK into bank $17 starting at $2000, 4KB chunks.
+* Read PAK into bank $17 starting at $2000, 1KB chunks.
  lda #$00
  sta t_dest
  lda #$20
@@ -1394,7 +1409,7 @@ load_titlentp_pak
  jsr copy_chunk_bank
  lda t_dest+1
  clc
- adc #$10
+ adc #$04              ; advance dest by 1KB
  sta t_dest+1
  bcc :readlp
  lda #$00
@@ -1478,7 +1493,7 @@ load_titlentp_pak
 :err rts
 
 *----------------------------------------------------------
-* copy_chunk_bank - Copy 4KB from ]RDBUF to t_bank/t_dest.
+* copy_chunk_bank - Copy 1KB from ]RDBUF to t_bank/t_dest.
 * Uses ZP $F0-$F2 for indirect long pointer.
 *----------------------------------------------------------
 copy_chunk_bank
@@ -1495,7 +1510,7 @@ copy_chunk_bank
  rep $30
 
  ldy #$0000
- ldx #$0800            ; $1000/2 = $0800 word copies
+ ldx #$0200            ; $0400/2 = $0200 word copies (1KB)
 
 :loop lda ]RDBUF,y
  sta [$F0],y
@@ -1525,7 +1540,7 @@ t2_oref dfb 0          ; ref_num
 t2_read dfb 4          ; param count
 t2_rref dfb 0          ; ref_num
  da ]RDBUF             ; data buffer
- da $1000              ; request count (4KB)
+ da $0400              ; request count (1KB = 2 disk blocks)
  ds 2                  ; transfer count (returned)
 
 t2_close dfb 1         ; param count
@@ -1533,6 +1548,9 @@ t2_cref dfb 0          ; ref_num
 
 titlentp_path dfb 21
  asc '/DDIIGS/TITLE.NTP.PAK'
+
+select_path dfb 18
+ asc '/DDIIGS/SELECT.PAK'
 
 *----------------------------------------------------------
 * GET_EOF + UnPackBytes scratch for load_titlentp_pak.
@@ -1563,7 +1581,7 @@ ccc_oref dfb 0
 ccc_read dfb 4
 ccc_rref dfb 0
  da ]RDBUF
- da $1000
+ da $0400              ; request count (1KB = 2 disk blocks)
  ds 2
 
 ccc_close dfb 1
@@ -1580,7 +1598,7 @@ drugs_oref dfb 0
 drugs_read dfb 4
 drugs_rref dfb 0
  da ]RDBUF
- da $1000
+ da $0400              ; request count (1KB = 2 disk blocks)
  ds 2
 
 drugs_close dfb 1
@@ -1868,3 +1886,875 @@ fadeBlack
     db $0D, $0C, $0A, $09, $08, $07, $06, $05, $04, $03, $02, $02, $01, $01, $00, $00
     db $0E, $0D, $0B, $0A, $09, $07, $06, $05, $04, $03, $02, $02, $01, $01, $00, $00
     db $0F, $0D, $0C, $0A, $09, $08, $07, $05, $04, $03, $03, $02, $01, $01, $00, $00
+
+;
+; Game Selection Screen
+;
+    mx %11
+
+; carousel icon positions (SHR-320 byte coords)
+P1_JS_X     = $14
+P1_JS_Y     = $47
+P1_KB_X     = $13
+P1_KB_Y     = $48
+P1_SNES_X   = $14
+P1_SNES_Y   = $4C
+P2_JS_X     = $66
+P2_JS_Y     = $47
+P2_KB_X     = $65
+P2_KB_Y     = $48
+P2_SNES_X   = $66
+P2_SNES_Y   = $4C
+
+game_type_selected = $0b93
+game_type_unselected = $0000
+
+palette_1p = $e19e26
+palette_2p_coop = $e19e38
+palette_2p_pvp = $e19e36
+
+;
+; init: set defaults
+;
+
+ctl_select
+* Disable SHR shadowing ($01 -> $E1) for the select screen.
+* The mouse cursor's save-under buffer reads from $E1, and
+* with shadowing on, stale bytes get restored over fresh
+* pixels every time the cursor moves over them.
+  ldal $e0C035
+  ora #$08             ; set bit 3: disable SHR shadow
+  stal $e0C035
+
+; game type default: 1P
+  lda #GT_1P
+  sta game_type
+  stz game_type+1
+
+; P1 controller default: joystick
+  lda #CTL_JOYSTICK
+  sta ctl_type_p1
+  stz ctl_type_p1+1
+
+
+; P2 controller default: keyboard
+  lda #CTL_KEYBOARD
+  sta ctl_type_p2
+  stz ctl_type_p2+1
+
+; set 1P palette color to selected, black out the other two
+  lda #<game_type_selected
+  stal palette_1p
+  lda #>game_type_selected
+  stal palette_1p+1
+
+  lda #00
+  stal palette_2p_coop
+  stal palette_2p_coop+1
+  stal palette_2p_pvp
+  stal palette_2p_pvp+1
+
+  jsr eventmanager_init
+
+* Load SELECT.PAK and unpack the CONCEPT3 backdrop straight to
+* $E1/2000 (SHR memory). load_titlentp_pak buffers the PAK in
+* bank $17 and the _UnPackBytes ROM call writes the inflated
+* 32 KB image directly to bank $E1.
+  lda #<select_path
+  sta t2_open+1
+  lda #>select_path
+  sta t2_open+2
+  lda #$E1
+  sta t_unpack_bank
+  stz t_unpack_offset           ; low byte ($00)
+  lda #$20
+  sta t_unpack_offset+1         ; high byte ($20) → $E1/2000
+  jsr load_titlentp_pak
+
+  clc
+  xce
+  rep $30
+
+; draw initial controller icons for both players (P1=joystick, P2=keyboard)
+  jsr draw_p1_icon
+  jsr draw_p2_icon
+
+  ldx #$CA04            ; _InitCursor
+  jsl $E10000
+
+eventLoop
+  pea $0000             ; space for result
+  pea #$0002            ; event type (bit 1 = mouse down)
+  pea $0000             ; event record high
+  pea #eventRecord      ; event record low
+  ldx #$0a06
+  jsl $E10000           ; _GetNextEvent
+
+  pla                   ; boolean: event should be handled by app
+
+  lda eventRecord
+  beq eventLoop         ; if event code is 0, it's a null event → loop again
+
+* Print the mouse coordinates at the right edge of the SHR
+* screen. Modeled on game.s's draw_debug_xy (toggled by 'x' in
+* the main game). 16-bit because ermouseLocation is two words.
+;  jsr draw_mouse_xy
+
+* Hit-test the click against every entry in the buttons table.
+* Each table slot is a 16-bit pointer to a 5-word rect record:
+*   +0  top-left X      +2  top-left Y
+*   +4  bottom-right X  +6  bottom-right Y
+*   +8  handler address (intra-bank; handler JMPs back to eventLoop)
+* Walk the null-terminated table; on the first containing rect we
+* JMP to its handler. If nothing matches, fall through to the BRA
+* below and wait for the next event.
+*
+* ermouseLocation point layout (QD II Point): V word at +0, H word
+* at +2. Snapshot into click_x/click_y so we're not re-reading the
+* OS event record on every comparison.
+  lda ermouseLocation+2     ; H (X)
+  sta click_x
+  lda ermouseLocation       ; V (Y)
+  sta click_y
+  ldx #0
+:btn_loop
+  lda buttons,x
+  beq :btn_none             ; null terminator → no hit
+  sta $00                   ; DP $00..$01 = pointer to current rect
+  ldy #0
+  lda ($00),y               ; top-left X
+  cmp click_x
+  beq :btn_tlx_ok
+  bcs :btn_next             ; top-left X > click_x → outside on the left
+:btn_tlx_ok
+  ldy #2
+  lda ($00),y               ; top-left Y
+  cmp click_y
+  beq :btn_tly_ok
+  bcs :btn_next             ; top-left Y > click_y → outside above
+:btn_tly_ok
+  ldy #4
+  lda ($00),y               ; bottom-right X
+  cmp click_x
+  bcc :btn_next             ; bottom-right X < click_x → outside on the right
+  ldy #6
+  lda ($00),y               ; bottom-right Y
+  cmp click_y
+  bcc :btn_next             ; bottom-right Y < click_y → outside below
+* Hit! Load the handler address and JMP through it. JMP not JSR
+* because the handler owns its own return path (they all branch
+* back to eventLoop themselves).
+  ldy #8
+  lda ($00),y
+  sta $02
+  jmp ($02)
+:btn_next
+  inx
+  inx                       ; advance one word in the buttons table
+  bra :btn_loop
+:btn_none
+
+  bra eventLoop
+
+click_x dw 0
+click_y dw 0
+
+;
+; click handlers
+;
+1p_clicked
+  lda #game_type_selected
+  stal palette_1p
+
+  lda #game_type_unselected
+  stal palette_2p_coop
+  stal palette_2p_pvp
+
+  lda #GT_1P
+  sta game_type
+
+  jmp eventLoop
+
+2p_coop_clicked
+  lda #game_type_selected
+  stal palette_2p_coop
+
+  lda #game_type_unselected
+  stal palette_1p
+  stal palette_2p_pvp
+
+  lda #GT_2P_COOP
+  sta game_type
+
+  jmp eventLoop
+
+2p_pvp_clicked
+  lda #game_type_selected
+  stal palette_2p_pvp
+
+  lda #game_type_unselected
+  stal palette_1p
+  stal palette_2p_coop
+
+  lda #GT_2P_PVP
+  sta game_type
+
+  jmp eventLoop
+
+p1_left_clicked
+  lda ctl_type_p1
+  jsr cycle_left
+  sta ctl_type_p1
+  jsr enforce_p2_after_p1
+  jsr draw_p1_icon
+  jsr draw_p2_icon
+  jmp eventLoop
+
+p1_right_clicked
+  lda ctl_type_p1
+  jsr cycle_right
+  sta ctl_type_p1
+  jsr enforce_p2_after_p1
+  jsr draw_p1_icon
+  jsr draw_p2_icon
+  jmp eventLoop
+
+p2_left_clicked
+  lda ctl_type_p2
+  jsr cycle_left
+  sta ctl_type_p2
+  jsr enforce_p1_after_p2
+  jsr draw_p1_icon
+  jsr draw_p2_icon
+  jmp eventLoop
+
+p2_right_clicked
+  lda ctl_type_p2
+  jsr cycle_right
+  sta ctl_type_p2
+  jsr enforce_p1_after_p2
+  jsr draw_p1_icon
+  jsr draw_p2_icon
+  jmp eventLoop
+
+start_clicked
+  ldx #$9004
+  jsl $E10000    ; _HideCursor (stop the cursor)
+
+  ldx #$0306
+  jsl $E10000    ; _EMShutDown (stop the event manager)
+
+  jsl NTPstop    ; stop the title music
+
+  sec
+  xce
+  sep $20
+  jmp $1002 ; jump to cutscene
+
+p1_keyboard_clicked
+  jmp eventLoop
+p1_joystick_clicked
+  jmp eventLoop
+p1_snes_clicked
+  jmp eventLoop
+p2_keyboard_clicked
+  jmp eventLoop
+p2_joystick_clicked
+  jmp eventLoop 
+p2_snes_clicked
+  jmp eventLoop
+
+*----------------------------------------------------------
+* cycle_left / cycle_right - advance a controller type around
+* the carousel. Order (right/next): JOYSTICK -> KEYBOARD ->
+* SNES -> JOYSTICK. Left/prev is the reverse. A in/out.
+* Caller in native 16-bit M. start_clicked above leaves
+* Merlin's MX tracker at M=1; force %00 here so the immediate
+* cmp/lda below assemble as 16-bit (matches runtime).
+*----------------------------------------------------------
+ mx %00
+cycle_left
+  cmp #CTL_JOYSTICK
+  bne :cl_not_js
+  lda #CTL_SNES
+  rts
+:cl_not_js
+  cmp #CTL_KEYBOARD
+  bne :cl_snes
+  lda #CTL_JOYSTICK
+  rts
+:cl_snes
+  lda #CTL_KEYBOARD
+  rts
+
+cycle_right
+  cmp #CTL_JOYSTICK
+  bne :cr_not_js
+  lda #CTL_KEYBOARD
+  rts
+:cr_not_js
+  cmp #CTL_KEYBOARD
+  bne :cr_snes
+  lda #CTL_SNES
+  rts
+:cr_snes
+  lda #CTL_JOYSTICK
+  rts
+
+*----------------------------------------------------------
+* enforce_p2_after_p1 / enforce_p1_after_p2 - both players
+* may freely share SNES, but cannot both hold KEYBOARD or
+* both hold JOYSTICK. After one player changes, bump the
+* other to the opposite local controller if they collide.
+*----------------------------------------------------------
+enforce_p2_after_p1
+  lda ctl_type_p1
+  cmp ctl_type_p2
+  bne :ep2_ok
+  cmp #CTL_KEYBOARD
+  bne :ep2_not_kb
+  lda #CTL_JOYSTICK
+  sta ctl_type_p2
+  rts
+:ep2_not_kb
+  cmp #CTL_JOYSTICK
+  bne :ep2_ok
+  lda #CTL_KEYBOARD
+  sta ctl_type_p2
+:ep2_ok
+  rts
+
+enforce_p1_after_p2
+  lda ctl_type_p2
+  cmp ctl_type_p1
+  bne :ep1_ok
+  cmp #CTL_KEYBOARD
+  bne :ep1_not_kb
+  lda #CTL_JOYSTICK
+  sta ctl_type_p1
+  rts
+:ep1_not_kb
+  cmp #CTL_JOYSTICK
+  bne :ep1_ok
+  lda #CTL_KEYBOARD
+  sta ctl_type_p1
+:ep1_ok
+  rts
+
+*----------------------------------------------------------
+* draw_p1_icon / draw_p2_icon - blit the currently-selected
+* controller icon at that player's carousel slot. Caller in
+* native 16-bit M (plot saves/restores its own mode).
+*----------------------------------------------------------
+draw_p1_icon
+  lda ctl_type_p1
+  cmp #CTL_KEYBOARD
+  bne :dp1_not_kb
+  lda #KEYBOARD
+  sta FRAME_ADDR2
+  lda KEYBOARD_X
+  sta FRAME_X2
+  lda KEYBOARD_Y
+  sta FRAME_Y2
+  lda #P1_KB_Y
+  sta DRAW_YPOS2
+  lda #P1_KB_X
+  sta DRAW_XPOS2
+  jmp plot2
+:dp1_not_kb
+  cmp #CTL_JOYSTICK
+  bne :dp1_snes
+  lda #JOYSTICK
+  sta FRAME_ADDR2
+  lda JOYSTICK_X
+  sta FRAME_X2
+  lda JOYSTICK_Y
+  sta FRAME_Y2
+  lda #P1_JS_Y
+  sta DRAW_YPOS2
+  lda #P1_JS_X
+  sta DRAW_XPOS2
+  jmp plot2
+:dp1_snes
+  lda #SNES
+  sta FRAME_ADDR2
+  lda SNES_X
+  sta FRAME_X2
+  lda SNES_Y
+  sta FRAME_Y2
+  lda #P1_SNES_Y
+  sta DRAW_YPOS2
+  lda #P1_SNES_X
+  sta DRAW_XPOS2
+  jmp plot2
+
+draw_p2_icon
+  lda ctl_type_p2
+  cmp #CTL_KEYBOARD
+  bne :dp2_not_kb
+  lda #KEYBOARD
+  sta FRAME_ADDR2
+  lda KEYBOARD_X
+  sta FRAME_X2
+  lda KEYBOARD_Y
+  sta FRAME_Y2
+  lda #P2_KB_Y
+  sta DRAW_YPOS2
+  lda #P2_KB_X
+  sta DRAW_XPOS2
+  jmp plot2
+:dp2_not_kb
+  cmp #CTL_JOYSTICK
+  bne :dp2_snes
+  lda #JOYSTICK
+  sta FRAME_ADDR2
+  lda JOYSTICK_X
+  sta FRAME_X2
+  lda JOYSTICK_Y
+  sta FRAME_Y2
+  lda #P2_JS_Y
+  sta DRAW_YPOS2
+  lda #P2_JS_X
+  sta DRAW_XPOS2
+  jmp plot2
+:dp2_snes
+  lda #SNES
+  sta FRAME_ADDR2
+  lda SNES_X
+  sta FRAME_X2
+  lda SNES_Y
+  sta FRAME_Y2
+  lda #P2_SNES_Y
+  sta DRAW_YPOS2
+  lda #P2_SNES_X
+  sta DRAW_XPOS2
+  jmp plot2
+
+*----------------------------------------------------------
+* eventmanager_init - Initialize the Event Manager
+*----------------------------------------------------------
+
+eventmanager_init
+ clc
+ xce                   ; native mode
+ rep $30               ; 16-bit A, X/Y
+
+ pea $8100             ; EM DP (1 page)
+ pea $0000             ; queue size (0 = default of 20)
+ pea $0000             ; X Min Clamp
+ pea #320            ; X Max Clamp
+ pea $0000             ; Y Min Clamp
+ pea #200            ; Y Max Clamp
+ lda myID
+ pha                   ; userID
+ ldx #$0206            ; _EMStartUp
+ jsl $E10000
+
+ sec
+ xce                   ; back to emulation mode
+ rts
+
+;
+; Clickable Regions
+;
+buttons
+  dw 1p
+  dw 2p_coop
+  dw 2p_pvp
+  dw p1_left
+  dw p1_right
+  dw p2_left
+  dw p2_right
+  dw start
+  dw p1_keyboard
+  dw p1_joystick
+  dw p1_snes
+  dw p2_keyboard
+  dw p2_joystick
+  dw p2_snes
+  dw 0000              ; the end my friend
+
+1p
+  dw $34, $0a            ; top left x,y
+  dw $6f, $22            ; bottom right x,y
+  dw 1p_clicked        ; handler
+
+2p_coop
+  dw $76, $0a
+  dw $cc, $22
+  dw 2p_coop_clicked
+
+2p_pvp
+  dw $d1, $0a
+  dw $10c, $22
+  dw 2p_pvp_clicked
+
+p1_left
+  dw $1a, $55
+  dw $22, $68
+  dw p1_left_clicked
+
+p1_right
+  dw $78, $55
+  dw $81, $68
+  dw p1_right_clicked
+
+p2_left
+  dw $C0, $55
+  dw $C8, $68
+  dw p2_left_clicked
+
+p2_right
+  dw $11E, $55
+  dw $128, $68
+  dw p2_right_clicked
+
+start
+  dw $FC, $80
+  dw $137, $C1
+  dw start_clicked
+
+p1_keyboard
+  dw $20, $89
+  dw $38, $9C
+  dw p1_keyboard_clicked
+
+p1_joystick
+  dw $44, $89
+  dw $57, $9C
+  dw p1_joystick_clicked
+
+p1_snes
+  dw $62, $89
+  dw $7D, $9C
+  dw p1_snes_clicked
+
+p2_keyboard
+  dw $C3, $89
+  dw $DC, $9C
+  dw p2_keyboard_clicked
+
+p2_joystick
+  dw $E9, $89
+  dw $FC, $9C
+  dw p2_joystick_clicked
+
+p2_snes
+  dw $108, $89
+  dw $121, $9C
+  dw p2_snes_clicked
+
+;
+; EventManager Event Record
+;
+eventRecord
+  hex 0000     ; what: event code (word, 0 = null event)
+  hex 00000000 ; message: event message (long)
+  hex 00000000 ; when: event tick count (long)
+ermouseLocation
+  hex 00000000 ; where: mouse location (point — QD II Point order:
+               ;        V word at +0, H word at +2)
+  hex 00000000 ; modifier flags (long)
+
+ mx %00
+plot2
+ ldx #$9004
+ jsl $E10000    ; _HideCursor to prevent corruption
+ PHB
+ PHP
+ CLC
+ XCE
+ PHP
+ PHK
+ PLB
+ REP $30
+ TSC
+ SEC
+ SBC #10
+ TCS
+ PHD
+ TSC
+ CLC
+ ADC #3
+ TCD
+ SEP $20
+ LDAL $E0C029
+ ORA #%01000000
+ STAL $E0C029
+ REP $20
+ LDA draw_bank2
+ STA 2
+ lda DRAW_YPOS2  ; do our own multiplication by $a0 because address won't always be hardcoded
+ asl
+ asl
+ asl
+ asl
+ asl
+ sta 8
+ asl
+ asl
+ clc
+ adc 8
+ clc
+ adc #$2000
+ sta 0
+ LDA #^JOYSTICK
+ STA 6
+ LDA FRAME_ADDR2
+ STA 4
+ SEP $30
+ LDA FRAME_X2
+ CLC
+ ADC DRAW_XPOS2
+ STA IMAGE_XTEMP2
+ LDX FRAME_Y2       ;Number of lines
+
+]LOOP1 LDY DRAW_XPOS2
+]LOOP LDA [4]
+ STA [0],Y
+ REP $20
+ INC 4
+ SEP $20
+ INY
+ CPY IMAGE_XTEMP2
+ BCC ]LOOP
+ DEX
+ BEQ :FINDUMP
+ REP $20
+ LDA 0
+ CLC
+ ADC #$A0
+ STA 0
+ SEP $20
+ BRA ]LOOP1
+:FINDUMP REP $30
+ PLD
+ TSC
+ CLC
+ ADC #10
+ TCS
+ PLP
+ XCE
+ PLP
+ PLB
+ ldx #$9104
+ jsl $E10000    ; _ShowCursor
+ RTS
+
+DRAW_XPOS2 hex 0000
+DRAW_YPOS2 hex 0000
+IMAGE_XTEMP2 HEX 0000
+FRAME_X2 HEX 0000
+FRAME_Y2 HEX 0000
+FRAME_ADDR2 HEX 00000000
+draw_bank2 HEX E100
+
+JOYSTICK_XPOS hex 6900
+JOYSTICK_YPOS hex 4600
+JOYSTICK_Y hex 3500
+JOYSTICK_X hex 2400
+JOYSTICK
+ HEX 111111111111111111111111111111111111111111111111111111111111111111111111
+ HEX 111111111111111111111111111111111111444491111111111111111111111111111111
+ HEX 11111111111111111111111111111111194C333334411111111111111111111111111111
+ HEX 111111111111111111111111111111111333333333341111111111111111111111111111
+ HEX 11111111111111111111111111111111C333333333334111111111111111111111111111
+ HEX 1111111111111111111111111111111C3333333333333911111111111111111111111111
+ HEX 111111111111111111111111111111133333333333333411111111111111111111111111
+ HEX 111111111111111111111111111111C33333333333333C91111111111111111111111111
+ HEX 111111111111111111111111111111333333333333333341111111111111111111111111
+ HEX 111111111111111111111111111111333333333333333341111111111111111111111111
+ HEX 111111111111111111111111111111333333333333333341111111111111111111111111
+ HEX 111111111111111111111111111111333333333333333341111111111111111111111111
+ HEX 111111111111111111111111111111C33333333333333C11111111111111111111111111
+ HEX 111111111111111111111111111111133333333333333411111111111111111111111111
+ HEX 11111111111111111111111111111114333333333333C111111111111111111111111111
+ HEX 11111111111111111111111111111111C3333333333C1111111111111111111111111111
+ HEX 111111111111111111111111111111111C33333333C11111111111111111111111111111
+ HEX 11111111111111111111111111111111111C3333C1111111111111111111111111111111
+ HEX 111111111111111111111111111111111E11111111111111111111111111111111111111
+ HEX 111111111111111111111111111111111114CCCCC1111111111111111111111111111111
+ HEX 11111111111111111111111111111111111C333331111111111111111111111111111111
+ HEX 11111111111111111111111111111111111C333331111111111111111111111111111111
+ HEX 11111111111111111111111111111111111C333331111111111111111111111111111111
+ HEX 11111111111111111111111111111111111C333331111111111111111111111111111111
+ HEX 11111111111111111111111111111111111C333331111111111111111111111111111111
+ HEX 11111111111111111111111111111111111C333331111111111111111111111111111111
+ HEX 11111111111111111111111111111111111C333331111111111111111111111111111111
+ HEX 111111111111111111111119CCCCCCCCCC1C3333314CCCCCCCCCC4111111111111111111
+ HEX 1111111111111111111111C333333333331C333331333333333333C41111111111111111
+ HEX 111111111111111111111C33C4444444441C3333314444444444C3334111111111111111
+ HEX 11111111111111111111C33411111111C31C333331C34111111114333411111111111111
+ HEX 1111111111111111111933411111111C3C1C333331433911111111433C11111111111111
+ HEX 1111111111111111111C3C11111111933111C333411C3C1111991E1C3391111111111111
+ HEX 1111111111111111111334111111111C33341111143334111C3334193341111111111111
+ HEX 11111111111111111933C11111111E11C333333333334111C3333341C339111111111111
+ HEX 11111111111111111C33111111111111114333333C111111C33333C11C3C111111111111
+ HEX 1111111111111111133C11111111111111111111111111111C333C191C33911111111111
+ HEX 1111111111111111C3341111111111111111111111111111111111111133C11111111111
+ HEX 111111111111111C33334CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC4C333C1111111111
+ HEX 111111111111111C333333333333333333333333333333333333333333333C1111111111
+ HEX 111111111111111433333333333333333333333333333333333333333333341111111111
+ HEX 11111111111111919CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC911111111111
+ HEX 1111111111111114C1111111111111111111111111111111111111111111C41111111111
+ HEX 111111111111111C3CCC33333333333333333333333333333333333333CC3C1111111111
+ HEX 111111111111111C333333333333333333333333333333333333333333333C1111111111
+ HEX 111111111111111C33333333333333333333333333333333333333333333341111111111
+ HEX 1111111111111111C3333333333333333333333333333333333333333333C11111111111
+ HEX 111111111111111143333333333333333333333333333333333333333333411111111111
+ HEX 11111111111111111C33333333333333333333333333333333333333333C111111111111
+ HEX 1111111111111111114CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC41111111111111
+ HEX 111111111111111111111111111111111111111111111111111111111111111111111111
+ HEX 111111111111111111111111111111111111111111111111111111111111111111111111
+ HEX 111111111111111111111111111111111111111111111111111111111111111111111111
+
+KEYBOARD_XPOS hex 1300
+KEYBOARD_YPOS hex 5800
+KEYBOARD_Y hex 3100
+KEYBOARD_X hex 2600
+KEYBOARD
+ HEX 1111111111111111111111111111111111111111111111111111111111111111
+ HEX 111111111111
+ HEX 1111111111111111111111111111111111111111111111111111111111111111
+ HEX 111111111111
+ HEX 1111111111111111111111111111111111111111111111111111111111111111
+ HEX 111111111111
+ HEX 1111111111111111111111111111111111111111111111111111111111111111
+ HEX 111111111111
+ HEX 1111119999999999999999999999999999999999999999999999999999999999
+ HEX 999999911111
+ HEX 1111111111111111111111111111111111111111111111111111111111111111
+ HEX 111111111111
+ HEX 111119CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC
+ HEX CCCCCCC11111
+ HEX 1111933333333333333333333333333333333333333333333333333333333333
+ HEX 3333333C1111
+ HEX 1119333333333333333333333333333333333333333333333333333333333333
+ HEX 33333333C111
+ HEX 11143333CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC
+ HEX CCCCC3333111
+ HEX 1114333411111111111111111111111111111111111111111111111111111111
+ HEX 11111C333111
+ HEX 111433C191111199111119111119911111911111998111199111119111119911
+ HEX 111911333111
+ HEX 111433C119444911444491944441194449114444819444911944491944441194
+ HEX 449119333111
+ HEX 111433C11C333C19333341C3333113333C14333381C333C19333341C333391C3
+ HEX 33C119333111
+ HEX 111433C11C3333193333C1C3333113333C14333391C333C19333341C33339133
+ HEX 33C119333111
+ HEX 111433C11C333C19333341C3333113333C14333391C333C19333341C333391C3
+ HEX 33C119333111
+ HEX 111433C11C333C19333341C3333113333C14333391C333C19333341C33339133
+ HEX 33C119333111
+ HEX 111433C114CCCC19CCCC414CCCC11CCCC414CCCC91CCCCC11CCCC414CCCC11CC
+ HEX CCC119333111
+ HEX 111433C111111191111119111111911111911111991111191111119111119911
+ HEX 111119333111
+ HEX 111433C111111111199111119111111911111911111191111191111119111111
+ HEX 111119333111
+ HEX 111433C114CCCCCCC11CCCC414CCCC91CCCCC19CCCC91CCCCC11CCCC414CCCCC
+ HEX CCC119333111
+ HEX 111433C11C333333311C333C14333391C333C14333341C3333193333C1C33333
+ HEX 33C119333111
+ HEX 111433C11C333333311C333C14333391C333C14333341C3333193333C1C33333
+ HEX 33C119333111
+ HEX 111433C11C333333311C333C14333391C333C14333341C3333193333C1C33333
+ HEX 33C119333111
+ HEX 111433C11C333333311C333C14333391C333C14333341C333C19333341C33333
+ HEX 33C118333111
+ HEX 111433C119444444911944491144491194449114444119444911444411144444
+ HEX 449119333111
+ HEX 111433C111111111111111111E11111111111181111811111111111111111111
+ HEX 111119333111
+ HEX 111433C111111111911111111111111111111111111111111111991111191111
+ HEX 111119333111
+ HEX 111433C11C3333341C333333333333333333333333333333333C11C333C19C33
+ HEX 33C119333111
+ HEX 111433C11C33333C1C333333333333333333333333333333333C113333319333
+ HEX 333119333111
+ HEX 111433C11C3333341C333333333333333333333333333333333C113333319333
+ HEX 33C119333111
+ HEX 111433C11C33333C1C333333333333333333333333333333333C113333319333
+ HEX 33C119333111
+ HEX 111433C11C33333414333333333333333333333333333333333C11C333C19333
+ HEX 33C118333111
+ HEX 111433C191111111111111111111111111111111111111111111111111111111
+ HEX 111114333111
+ HEX 111433C199999999999999999999999999999999999999999999999999999999
+ HEX 999911333111
+ HEX 1114333411111111111111111111111111111111111111111111111111111111
+ HEX 11111C333111
+ HEX 11143333CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC
+ HEX CCCCC3333111
+ HEX 1114333333333333333333333333333333333333333333333333333333333333
+ HEX 33333333C111
+ HEX 1111133333333333333333333333333333333333333333333333333333333333
+ HEX 3333333C1111
+ HEX 111914CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC
+ HEX CCCCCCC19111
+ HEX 1111111111111111111111111111111111111111111111111111111111111111
+ HEX 111111111111
+ HEX 1111181111111111111111111111111111111111111111111111111111111111
+ HEX 111111111111
+ HEX 1111111111111111111111111111111111111111111111111111111111111111
+ HEX 111111111111
+ HEX 1111111111111111111111111111111111111111111111111111111111111111
+ HEX 111111111111
+ HEX 1111111111111111111111111111111111111111111111111111111111111111
+ HEX 111111111111
+ HEX 1111111111111111111111111111111111111111111111111111111111111111
+ HEX 111111111111
+ HEX 1111111111111111111111111111111111111111111111111111111111111111
+ HEX 111111111111
+ HEX 1111111111111111111111111111111111111111111111111111111111111111
+ HEX 111111111111
+ HEX 1111111111111111111111111111111111111111111111111111111111111111
+ HEX 111111111111
+
+SNES_XPOS hex 6900
+SNES_YPOS hex 5800
+SNES_Y hex 2600        ; 
+SNES_X hex 2400        ; 
+SNES
+ HEX 111111111111111111111111111111111111111111111111111111111111111111111111
+ HEX 111111111111111111111111111111111111111111111111111111111111111111111111
+ HEX 111111111111111111111111111111111111111111111111111111111111111111111111
+ HEX 111111111111111111111111111111111111111111111111111111111111111111111111
+ HEX 111111111111184888888884111111111111111111111848888888848111111111111111
+ HEX 111111111114433333333333044444444444444444444033333333330441111111111111
+ HEX 111111111873333333333333333333333333333333333333333333333334811111111111
+ HEX 111111114333307111111180000000000000000000000001111111100333011111111111
+ HEX 111111143337411111111111111111111111111111111111111111111403301111111111
+ HEX 11111143338111144444811111111111111111111111E111144444411114330111111111
+ HEX 111118333811143333333311111111111111111111111114033333337111433011111111
+ HEX 111110338111030444440331111111111111111111111143378444403011143301111111
+ HEX 111143381110341111111133111111111111111111111430111034114301117334111111
+ HEX 111133011103411733331113311111111111111111118301110333481830111330111111
+ HEX 111133411434141033331811331111111111111111110011143333011143711730111111
+ HEX 1111338E1301811733331111731111111111111111173811143333011110311433711111
+ HEX 111133117381841033331888133111111111111111830140714330180718331133711111
+ HEX 111133110317333333333330133111111111111111434833301441833301331133711111
+ HEX 111133110317333333333330133111111111E11111434033334181033334331133711111
+ HEX 111133110317333333333330133111140111110411434033334111033334331133711111
+ HEX 111133110317333333333330133111433011103381434133371471103301331133711111
+ HEX 111133110318474033334774133114333711033011430140717333180711331133711111
+ HEX 111133411301111733331111734143337110330118103811143333311110341733011111
+ HEX 111133411738141033331481331183371110301111113011143333311183311733411111
+ HEX 1111333191031117333311133111134111114911119133711133C3411133191333111111
+ HEX 111173341913341111111433111111111111111111191433111039117331917334111111
+ HEX 111113334191033444443331111111111111111111119143304444433019173331111111
+ HEX 111114333411143333333711111111111111111111111119333333304191733391111111
+ HEX 111111433371111499949111433333333333333333333911194999411117333411111111
+ HEX 111111143333411111111190333333333333333333333371111111111733334111111111
+ HEX 111111114333333444447333337000000000000000703333344444433333341111111111
+ HEX 111111111403333333333333371999999999999999197333333333333337911111111111
+ HEX 111111111114433333333307411111111111111111111473333333330441111111111111
+ HEX 111111111111144444444491111111111111111111111114444444449111111111111111
+ HEX 111111111111111111111111111111111111111111111111111111111111111111111111
+ HEX 111111111111111111111111111111111111111111111111111111111111111111111111
+ HEX 111111111111111111111111111111111111111111111111111111111111111111111111
+ HEX 111111111111111111111111111111111111111111111111111111111111111111111111
+ HEX 111111111111111111111111111111111111111111111111111111111111111111111111
+ HEX 111111111111111111111111111111111111111111111111111111111111111111111111
+ HEX 111111111111111111111111111111111111111111111111111111111111111111111111

@@ -2,13 +2,9 @@
 VOLNAME = ddiigs
 IMGFILE = out/$(VOLNAME).po
 
-MENU_VOLNAME = menu
-MENU_IMGFILE = out/$(MENU_VOLNAME).po
-
-.PHONY: package menu clean
+.PHONY: package clean
 
 package: $(IMGFILE)
-menu: $(MENU_IMGFILE)
 
 out/game: src/game.s
 	mkdir -p out
@@ -32,15 +28,6 @@ out/title: src/title.s
 	mkdir -p out
 	cd src && merlin32 title.s
 	mv src/title out/title
-
-# Experimental "menu" disk image — assembles src/select.s and packs
-# it together with PRODOS, BASIC.SYSTEM, and assets/concept3 onto a
-# fresh 800KB volume. Sandbox for testing new flows before merging
-# anything back into the main `package` build.
-out/select: src/select.s
-	mkdir -p out
-	cd src && merlin32 select.s
-	mv src/select out/select
 
 out/mission1: src/mission1.s
 	mkdir -p out
@@ -82,7 +69,7 @@ out/ddii: src/ddii.s
 	cd src && merlin32 ddii.s
 	mv src/ddii out/ddii
 
-$(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.shr assets/mission13.shr assets/mission14.shr assets/mission15.shr assets/mission16.shr assets/mission17.shr assets/mission18.shr assets/mission19.shr assets/mission110.shr assets/mission111.shr assets/mission112.shr assets/mission113.shr assets/mission114.shr out/game out/title out/mission1 out/mission12 out/mission13 out/cutscene out/cutscene1 out/ddii out/mission14 out/engine out/mission1jimmy
+$(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.shr assets/mission13.shr assets/mission14.shr assets/mission15.shr assets/mission16.shr assets/mission17.shr assets/mission18.shr assets/mission19.shr assets/mission110.shr assets/mission111.shr assets/mission112.shr assets/mission113.shr assets/mission114.shr assets/CONCEPT3\#C10000 out/game out/title out/mission1 out/mission12 out/mission13 out/cutscene out/cutscene1 out/ddii out/mission14 out/engine out/mission1jimmy
 	mkdir -p out
 	rm -f $(IMGFILE)
 	cadius CREATEVOLUME $(IMGFILE) $(VOLNAME) 800KB --quiet
@@ -188,6 +175,11 @@ $(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.sh
 	python3 tools/packbytes.py pack assets/loading.shr out/LOADING.PAK\#C00000
 	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/LOADING.PAK\#C00000 --quiet
 	rm out/LOADING.PAK\#C00000
+	# Packed CONCEPT3 SHR — backdrop for the controller-select screen
+	# integrated into title.s. Full standalone PIC (palettes + SCBs).
+	python3 tools/packbytes.py pack assets/CONCEPT3\#C10000 out/SELECT.PAK\#C00000
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/SELECT.PAK\#C00000 --quiet
+	rm out/SELECT.PAK\#C00000
 	# Add NTP music assets. ntpplayer compresses ~58% (34672 → 14667
 	# bytes) so we ship it PackBytes-compressed and have title.s
 	# unpack it to bank $12 at boot via load_titlentp_pak.
@@ -253,28 +245,6 @@ $(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.sh
 	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/SFX/ out/BURNBACK.RAW\#060000 --quiet
 	rm out/BURNBACK.RAW\#060000
 	cadius CATALOG $(IMGFILE)
-
-# Menu disk: minimal sandbox image carrying PRODOS, BASIC.SYSTEM,
-# the concept3 SHR (uncompressed PIC), and the assembled select.s.
-# select.s ORGs at $2000 so it lands as a SYS ($FF2000) file like
-# the main game's TITLE / DDII.SYSTEM / BASIC.SYSTEM.
-$(MENU_IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/concept3\#C10000 out/select
-	mkdir -p out
-	rm -f $(MENU_IMGFILE)
-	cadius CREATEVOLUME $(MENU_IMGFILE) $(MENU_VOLNAME) 800KB --quiet
-	cp res/PRODOS out/PRODOS\#FF0000
-	cadius ADDFILE $(MENU_IMGFILE) /$(MENU_VOLNAME)/ out/PRODOS\#FF0000 --quiet
-	rm out/PRODOS\#FF0000
-	cp res/BASIC.SYSTEM out/BASIC.SYSTEM\#FF2000
-	cadius ADDFILE $(MENU_IMGFILE) /$(MENU_VOLNAME)/ out/BASIC.SYSTEM\#FF2000 --quiet
-	rm out/BASIC.SYSTEM\#FF2000
-	cp assets/concept3\#C10000 out/CONCEPT3\#C10000
-	cadius ADDFILE $(MENU_IMGFILE) /$(MENU_VOLNAME)/ out/CONCEPT3\#C10000 --quiet
-	rm out/CONCEPT3\#C10000
-	cp out/select out/SELECT\#FF2000
-	cadius ADDFILE $(MENU_IMGFILE) /$(MENU_VOLNAME)/ out/SELECT\#FF2000 --quiet
-	rm out/SELECT\#FF2000
-	cadius CATALOG $(MENU_IMGFILE)
 
 clean:
 	rm -rf out
