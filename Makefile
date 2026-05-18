@@ -69,7 +69,7 @@ out/ddii: src/ddii.s
 	cd src && merlin32 ddii.s
 	mv src/ddii out/ddii
 
-$(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.shr assets/mission13.shr assets/mission14.shr assets/mission15.shr assets/mission16.shr assets/mission17.shr assets/mission18.shr assets/mission19.shr assets/mission110.shr assets/mission111.shr assets/mission112.shr assets/mission113.shr assets/mission114.shr out/game out/title out/mission1 out/mission12 out/mission13 out/cutscene out/cutscene1 out/ddii out/mission14 out/engine out/mission1jimmy
+$(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.shr assets/mission13.shr assets/mission14.shr assets/mission15.shr assets/mission16.shr assets/mission17.shr assets/mission18.shr assets/mission19.shr assets/mission110.shr assets/mission111.shr assets/mission112.shr assets/mission113.shr assets/mission114.shr assets/CONCEPT3\#C10000 out/game out/title out/mission1 out/mission12 out/mission13 out/cutscene out/cutscene1 out/ddii out/mission14 out/engine out/mission1jimmy
 	mkdir -p out
 	rm -f $(IMGFILE)
 	cadius CREATEVOLUME $(IMGFILE) $(VOLNAME) 800KB --quiet
@@ -175,6 +175,11 @@ $(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.sh
 	python3 tools/packbytes.py pack assets/loading.shr out/LOADING.PAK\#C00000
 	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/LOADING.PAK\#C00000 --quiet
 	rm out/LOADING.PAK\#C00000
+	# Packed CONCEPT3 SHR — backdrop for the controller-select screen
+	# integrated into title.s. Full standalone PIC (palettes + SCBs).
+	python3 tools/packbytes.py pack assets/CONCEPT3\#C10000 out/SELECT.PAK\#C00000
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/SELECT.PAK\#C00000 --quiet
+	rm out/SELECT.PAK\#C00000
 	# Add NTP music assets. ntpplayer compresses ~58% (34672 → 14667
 	# bytes) so we ship it PackBytes-compressed and have title.s
 	# unpack it to bank $12 at boot via load_titlentp_pak.
