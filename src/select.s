@@ -23,6 +23,20 @@ CTL_KEYBOARD = 0
 CTL_JOYSTICK = 1
 CTL_SNES     = 2
 
+; carousel icon positions (SHR-320 byte coords)
+P1_JS_X     = $14
+P1_JS_Y     = $47
+P1_KB_X     = $13
+P1_KB_Y     = $48
+P1_SNES_X   = $15
+P1_SNES_Y   = $4F
+P2_JS_X     = $66
+P2_JS_Y     = $47
+P2_KB_X     = $65
+P2_KB_Y     = $48
+P2_SNES_X   = $67
+P2_SNES_Y   = $4F
+
 game_type = $300
 ctl_type_p1 = $302
 ctl_type_p2 = $304
@@ -74,31 +88,9 @@ palette_2p_pvp = $e19e36
   xce
   rep $30
 
-; blit default controller for P1 (joystick)
-  lda #JOYSTICK
-  sta FRAME_ADDR
-  lda JOYSTICK_X
-  sta FRAME_X
-  lda JOYSTICK_Y
-  sta FRAME_Y
-  lda #$47
-  sta DRAW_YPOS
-  lda #$14
-  sta DRAW_XPOS
-  jsr plot
-
-; blit default controller for P2 (keyboard)
-  lda #KEYBOARD
-  sta FRAME_ADDR
-  lda KEYBOARD_X
-  sta FRAME_X
-  lda KEYBOARD_Y
-  sta FRAME_Y
-  lda #$47
-  sta DRAW_YPOS
-  lda #$65
-  sta DRAW_XPOS
-  jsr plot
+; draw initial controller icons for both players (P1=joystick, P2=keyboard)
+  jsr draw_p1_icon
+  jsr draw_p2_icon
 
   ldx #$CA04            ; _InitCursor
   jsl $E10000
@@ -225,72 +217,39 @@ eventLoop
   jmp eventLoop
 
 p1_left_clicked
-p1_right_clicked
-p2_left_clicked
-p2_right_clicked
   lda ctl_type_p1
-  cmp #CTL_KEYBOARD
-  bne :p1_left_not_keyboard
-  lda #CTL_JOYSTICK
+  jsr cycle_left
   sta ctl_type_p1
-  lda #JOYSTICK
-  sta FRAME_ADDR
-  lda JOYSTICK_X
-  sta FRAME_X
-  lda JOYSTICK_Y
-  sta FRAME_Y
-  lda #$47
-  sta DRAW_YPOS
-  lda #$14
-  sta DRAW_XPOS
-  jsr plot
-; now for P2 to keyboard since P1 has joystick
-  lda #CTL_KEYBOARD
-  sta ctl_type_p2
-; blit keyboard for P2
-  lda #KEYBOARD
-  sta FRAME_ADDR
-  lda KEYBOARD_X
-  sta FRAME_X
-  lda KEYBOARD_Y
-  sta FRAME_Y
-  lda #$48
-  sta DRAW_YPOS
-  lda #$65
-  sta DRAW_XPOS
-  jmp :p1_left_done
-:p1_left_not_keyboard
-  lda #CTL_KEYBOARD
-  sta ctl_type_p1
-; blit keyboard for P1
-  lda #KEYBOARD
-  sta FRAME_ADDR
-  lda KEYBOARD_X
-  sta FRAME_X
-  lda KEYBOARD_Y
-  sta FRAME_Y
-  lda #$48
-  sta DRAW_YPOS
-  lda #$13
-  sta DRAW_XPOS
-  jsr plot
-; now for P2 to joystick since P1 has keyboard
-  lda #CTL_JOYSTICK
-  sta ctl_type_p2
-; blit joystick for P2
-  lda #JOYSTICK
-  sta FRAME_ADDR
-  lda JOYSTICK_X
-  sta FRAME_X
-  lda JOYSTICK_Y
-  sta FRAME_Y
-  lda #$47
-  sta DRAW_YPOS
-  lda #$66
-  sta DRAW_XPOS
-:p1_left_done
-  jsr plot
+  jsr enforce_p2_after_p1
+  jsr draw_p1_icon
+  jsr draw_p2_icon
+  jmp eventLoop
 
+p1_right_clicked
+  lda ctl_type_p1
+  jsr cycle_right
+  sta ctl_type_p1
+  jsr enforce_p2_after_p1
+  jsr draw_p1_icon
+  jsr draw_p2_icon
+  jmp eventLoop
+
+p2_left_clicked
+  lda ctl_type_p2
+  jsr cycle_left
+  sta ctl_type_p2
+  jsr enforce_p1_after_p2
+  jsr draw_p1_icon
+  jsr draw_p2_icon
+  jmp eventLoop
+
+p2_right_clicked
+  lda ctl_type_p2
+  jsr cycle_right
+  sta ctl_type_p2
+  jsr enforce_p1_after_p2
+  jsr draw_p1_icon
+  jsr draw_p2_icon
   jmp eventLoop
 
 start_clicked
@@ -313,6 +272,172 @@ p2_joystick_clicked
   jmp eventLoop 
 p2_snes_clicked
   jmp eventLoop
+
+*----------------------------------------------------------
+* cycle_left / cycle_right - advance a controller type around
+* the carousel. Order (right/next): JOYSTICK -> KEYBOARD ->
+* SNES -> JOYSTICK. Left/prev is the reverse. A in/out.
+* Caller in native 16-bit M. start_clicked above leaves
+* Merlin's MX tracker at M=1; force %00 here so the immediate
+* cmp/lda below assemble as 16-bit (matches runtime).
+*----------------------------------------------------------
+ mx %00
+cycle_left
+  cmp #CTL_JOYSTICK
+  bne :cl_not_js
+  lda #CTL_SNES
+  rts
+:cl_not_js
+  cmp #CTL_KEYBOARD
+  bne :cl_snes
+  lda #CTL_JOYSTICK
+  rts
+:cl_snes
+  lda #CTL_KEYBOARD
+  rts
+
+cycle_right
+  cmp #CTL_JOYSTICK
+  bne :cr_not_js
+  lda #CTL_KEYBOARD
+  rts
+:cr_not_js
+  cmp #CTL_KEYBOARD
+  bne :cr_snes
+  lda #CTL_SNES
+  rts
+:cr_snes
+  lda #CTL_JOYSTICK
+  rts
+
+*----------------------------------------------------------
+* enforce_p2_after_p1 / enforce_p1_after_p2 - both players
+* may freely share SNES, but cannot both hold KEYBOARD or
+* both hold JOYSTICK. After one player changes, bump the
+* other to the opposite local controller if they collide.
+*----------------------------------------------------------
+enforce_p2_after_p1
+  lda ctl_type_p1
+  cmp ctl_type_p2
+  bne :ep2_ok
+  cmp #CTL_KEYBOARD
+  bne :ep2_not_kb
+  lda #CTL_JOYSTICK
+  sta ctl_type_p2
+  rts
+:ep2_not_kb
+  cmp #CTL_JOYSTICK
+  bne :ep2_ok
+  lda #CTL_KEYBOARD
+  sta ctl_type_p2
+:ep2_ok
+  rts
+
+enforce_p1_after_p2
+  lda ctl_type_p2
+  cmp ctl_type_p1
+  bne :ep1_ok
+  cmp #CTL_KEYBOARD
+  bne :ep1_not_kb
+  lda #CTL_JOYSTICK
+  sta ctl_type_p1
+  rts
+:ep1_not_kb
+  cmp #CTL_JOYSTICK
+  bne :ep1_ok
+  lda #CTL_KEYBOARD
+  sta ctl_type_p1
+:ep1_ok
+  rts
+
+*----------------------------------------------------------
+* draw_p1_icon / draw_p2_icon - blit the currently-selected
+* controller icon at that player's carousel slot. Caller in
+* native 16-bit M (plot saves/restores its own mode).
+*----------------------------------------------------------
+draw_p1_icon
+  lda ctl_type_p1
+  cmp #CTL_KEYBOARD
+  bne :dp1_not_kb
+  lda #KEYBOARD
+  sta FRAME_ADDR
+  lda KEYBOARD_X
+  sta FRAME_X
+  lda KEYBOARD_Y
+  sta FRAME_Y
+  lda #P1_KB_Y
+  sta DRAW_YPOS
+  lda #P1_KB_X
+  sta DRAW_XPOS
+  jmp plot
+:dp1_not_kb
+  cmp #CTL_JOYSTICK
+  bne :dp1_snes
+  lda #JOYSTICK
+  sta FRAME_ADDR
+  lda JOYSTICK_X
+  sta FRAME_X
+  lda JOYSTICK_Y
+  sta FRAME_Y
+  lda #P1_JS_Y
+  sta DRAW_YPOS
+  lda #P1_JS_X
+  sta DRAW_XPOS
+  jmp plot
+:dp1_snes
+  lda #SNES
+  sta FRAME_ADDR
+  lda SNES_X
+  sta FRAME_X
+  lda SNES_Y
+  sta FRAME_Y
+  lda #P1_SNES_Y
+  sta DRAW_YPOS
+  lda #P1_SNES_X
+  sta DRAW_XPOS
+  jmp plot
+
+draw_p2_icon
+  lda ctl_type_p2
+  cmp #CTL_KEYBOARD
+  bne :dp2_not_kb
+  lda #KEYBOARD
+  sta FRAME_ADDR
+  lda KEYBOARD_X
+  sta FRAME_X
+  lda KEYBOARD_Y
+  sta FRAME_Y
+  lda #P2_KB_Y
+  sta DRAW_YPOS
+  lda #P2_KB_X
+  sta DRAW_XPOS
+  jmp plot
+:dp2_not_kb
+  cmp #CTL_JOYSTICK
+  bne :dp2_snes
+  lda #JOYSTICK
+  sta FRAME_ADDR
+  lda JOYSTICK_X
+  sta FRAME_X
+  lda JOYSTICK_Y
+  sta FRAME_Y
+  lda #P2_JS_Y
+  sta DRAW_YPOS
+  lda #P2_JS_X
+  sta DRAW_XPOS
+  jmp plot
+:dp2_snes
+  lda #SNES
+  sta FRAME_ADDR
+  lda SNES_X
+  sta FRAME_X
+  lda SNES_Y
+  sta FRAME_Y
+  lda #P2_SNES_Y
+  sta DRAW_YPOS
+  lda #P2_SNES_X
+  sta DRAW_XPOS
+  jmp plot
 
 *----------------------------------------------------------
 * toolbox_init - Start IIgs Toolbox tools
@@ -1347,22 +1472,38 @@ KEYBOARD
 
 SNES_XPOS hex 6900
 SNES_YPOS hex 5800
-SNES_Y hex 0F00
-SNES_X hex 1000
+SNES_Y hex 2000        ; 
+SNES_X hex 2300        ; 
 SNES
- HEX 1111111111111111111111111111111111
- HEX 1111189999991111111119999991111111
- HEX 1111999999999999999999999999911111
- HEX 1119911111111111111111111111991111
- HEX 1199889999911111111111999991199111
- HEX 1191198191191111111119119119119111
- HEX 1191991191199111111199119119919111
- HEX 1191999999999111111199991999919111
- HEX 1198999999999199199199991999919111
- HEX 1191991191199199199199119119919111
- HEX 1191191191191111111119119119119111
- HEX 1199119999911111111111999991199111
- HEX 1119911111119999999991111111991111
- HEX 11E1999999999999999999999999911111
- HEX 1111119999911111111111999991111111
- HEX 1111111111111111111111111111111111
+ HEX 1111111111111111111111111111111111111111111111111111111111111111111111
+ HEX 1111111111184888888884111111111111111111111848888888848111111111111111
+ HEX 1111111114433333333333044444444444444444444033333333330441111111111111
+ HEX 1111111873333333333333333333333333333333333333333333333334811111111111
+ HEX 1111114333307111111180000000000000000000000001111111100333011111111111
+ HEX 1111143337411111111111111111111111111111111111111111111403301111111111
+ HEX 111143338111144444811111111111111111111111E111144444411114330111111111
+ HEX 1118333811143333333311111111111111111111111114033333337111433011111111
+ HEX 1110338111030444440331111111111111111111111143378444403011143301111111
+ HEX 1143381110341111111133111111111111111111111430111034114301117334111111
+ HEX 1133011103411733331113311111111111111111118301110333481830111330111111
+ HEX 1133411434141033331811331111111111111111110011143333011143711730111111
+ HEX 11338E1301811733331111731111111111111111173811143333011110311433711111
+ HEX 1133117381841033331888133111111111111111830140714330180718331133711111
+ HEX 1133110317333333333330133111111111111111434833301441833301331133711111
+ HEX 1133110317333333333330133111111111E11111434033334181033334331133711111
+ HEX 1133110317333333333330133111140111110411434033334111033334331133711111
+ HEX 1133110317333333333330133111433011103381434133371471103301331133711111
+ HEX 1133110318474033334774133114333711033011430140717333180711331133711111
+ HEX 1133411301111733331111734143337110330118103811143333311110341733011111
+ HEX 1133411738141033331481331183371110301111113011143333311183311733411111
+ HEX 11333191031117333311133111134111114911119133711133C3411133191333111111
+ HEX 1173341913341111111433111111111111111111191433111039117331917334111111
+ HEX 1113334191033444443331111111111111111111119143304444433019173331111111
+ HEX 1114333411143333333711111111111111111111111119333333304191733391111111
+ HEX 1111433371111499949111433333333333333333333911194999411117333411111111
+ HEX 1111143333411111111190333333333333333333333371111111111733334111111111
+ HEX 1111114333333444447333337000000000000000703333344444433333341111111111
+ HEX 1111111403333333333333371999999999999999197333333333333337911111111111
+ HEX 1111111114433333333307411111111111111111111473333333330441111111111111
+ HEX 1111111111144444444491111111111111111111111114444444449111111111111111
+ HEX 1111111111111111111111111111111111111111111E11111111111111111111111111
