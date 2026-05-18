@@ -433,6 +433,23 @@ DEBUG_LSRC  equ 1
  jsl init_mission14
  jsl init_jimmy
 
+* Apply the selection-screen game type ($300):
+*   0 (GT_1P)     → leave jimmy_active at 0 (single player)
+*   1 (GT_2P_COOP)→ activate Jimmy (same path as Ctrl-J)
+*   2 (GT_2P_PVP) → activate Jimmy + arm friendly_fire so
+*                    Billy ↔ Jimmy hits register in check_punch_hit
+ lda game_type
+ beq :gt_done
+ lda #1
+ sta jimmy_active
+ sta jimmy_sprite+30       ; dirty bit 0 = needs_draw on first frame
+ lda game_type
+ cmp #GT_2P_PVP
+ bne :gt_done
+ lda #1
+ sta friendly_fire
+:gt_done
+
  ldx #5
  jsr draw_loading_string
 
@@ -458,7 +475,7 @@ DEBUG_LSRC  equ 1
 
  pea #$0000
  ldx #$A204
-  jsl $E10000        ; SetBackColor
+ jsl $E10000        ; SetBackColor
 
  lda #3
  pha
