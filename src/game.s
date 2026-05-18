@@ -450,6 +450,40 @@ DEBUG_LSRC  equ 1
  sta friendly_fire
 :gt_done
 
+* Apply the selection-screen controller types ($302 / $304).
+*   input_mode is Billy's live source (kbd=0 / joy=1 / snes=2);
+*     Ctrl-K and Ctrl-N still re-write it at runtime to switch
+*     Billy on the fly.
+*   jimmy_input_mode is P2's source. swap_in_jimmy moves it into
+*     input_mode for each Jimmy turn, so the same dispatch logic
+*     in pi_action_dispatch handles either player.
+* For P2 on SNES, swap_in/out_jimmy also flips snes_poll_mask
+* between $80 (ctl 1 = P1) and $40 (ctl 2 = P2) so the single
+* shift-register read picks up the right controller's bits.
+ lda ctl_type_p1
+ sta input_mode
+ lda ctl_type_p2
+ sta jimmy_input_mode
+
+* Build snes_pause_mask from the chosen controller types. check_pause
+* uses this to know which $C0C0 bits to watch for Start presses
+* (bit 7 = P1 / SNES MAX 1, bit 6 = P2 / SNES MAX 2). Zero mask
+* means neither player is on SNES → pause-by-Start skipped.
+ stz snes_pause_mask
+ lda ctl_type_p1
+ cmp #CTL_SNES
+ bne :sp_p1_not_snes
+ lda #$80
+ sta snes_pause_mask
+:sp_p1_not_snes
+ lda ctl_type_p2
+ cmp #CTL_SNES
+ bne :sp_p2_not_snes
+ lda snes_pause_mask
+ ora #$40
+ sta snes_pause_mask
+:sp_p2_not_snes
+
  ldx #5
  jsr draw_loading_string
 
@@ -3283,10 +3317,21 @@ overlay_mirror dfb 0          ; 0 = normal, 1 = flipped (legacy; unused
 overlay_addr   ds 2           ; pointer to sprite DATA (bank $02)
 overlay_mask   ds 2           ; pointer to inverse MASK (bank $02)
 
-* Pause state — toggled by ESC tap in check_pause. When paused,
-* game_loop skips update_overlay/process_input/update_anims/etc.,
-* leaving the screen frozen until the next ESC tap.
+* Pause state — toggled by ESC tap or SNES MAX Start tap in
+* check_pause. When paused, game_loop skips update_overlay /
+* process_input / update_anims / etc., leaving the screen frozen
+* until the next tap.
 paused dfb 0                  ; 0 = running, 1 = paused
+
+* SNES-pause edge-detect state.
+* snes_pause_mask is built once at game init from ctl_type_p1/p2:
+*   bit 7 set → P1 is on SNES (watch SNES_LATCH bit 7 for Start)
+*   bit 6 set → P2 is on SNES (watch SNES_LATCH bit 6 for Start)
+*   $00       → neither player on SNES → check_pause skips entirely
+* pause_snes_prev holds last frame's masked Start state so we only
+* toggle on the rising edge (press) and not on a held button.
+snes_pause_mask  dfb 0
+pause_snes_prev  dfb 0
 
 * PAUSED text geometry. QuickDraw uses pixel coords; erase uses
 * the byte/row coords (1 byte = 2 pixels in 320 mode). Erase rect
@@ -3390,12 +3435,37 @@ compute_script_x_min
 * unpaused frame.
 *----------------------------------------------------------
 check_pause
+* Keyboard ESC tap — consume the strobe and fall through to toggle.
  lda $c000
- bpl :cp_done           ; bit 7 clear → no key waiting
+ bpl :cp_no_kbd         ; bit 7 clear → no key waiting
  and #$7f
  cmp #$1B               ; ESC
- bne :cp_done           ; some other key — leave for process_input
+ bne :cp_no_kbd         ; some other key — leave for process_input
  sta $c010              ; consume the strobe (write clears it)
+ jmp :cp_toggle
+:cp_no_kbd
+
+* SNES MAX Start tap. snes_pause_mask is non-zero only when at
+* least one player is on SNES; bit 7 = P1, bit 6 = P2. We latch
+* the SNES MAX, clock past B/Y/Select (3 pulses), and read the
+* Start bit position for both controllers in one $C0C0 fetch.
+ lda snes_pause_mask
+ beq :cp_done
+ stal SNES_LATCH
+ stal SNES_CLOCK        ; skip B
+ stal SNES_CLOCK        ; skip Y
+ stal SNES_CLOCK        ; skip Select — next read = Start
+ ldal SNES_LATCH        ; bit 7 = P1 Start (raw), bit 6 = P2 Start
+ eor #$FF               ; active-LOW → active-HIGH
+ and snes_pause_mask    ; mask out non-SNES players' bits
+ tax                    ; X = current masked Start state
+ eor pause_snes_prev    ; A = bits that changed this frame
+ stx pause_snes_prev    ; record current for next-frame edge calc
+ and pause_snes_prev    ; rising edges = changed AND current
+ beq :cp_done           ; no fresh press
+ ; fall through to :cp_toggle
+
+:cp_toggle
  lda paused
  eor #$01               ; toggle 0↔1
  sta paused
@@ -8162,57 +8232,10 @@ pi_action_dispatch
 :pad_hidden
  rts                      ; current = hidden OTHER, skip
 :pad_no_hide_gate
-*
-* Mode toggle (Ctrl-J / Ctrl-K) is checked FIRST — before the
-* action-anim block — so the user can always switch modes and
-* recover if a stuck animation (e.g., anim_jump's auto-advance
-* xpos) is driving Billy. The toggle path also calls
-* cancel_action_anim to abort whatever Billy is doing, so Ctrl-K
-* doubles as an emergency unstick. Border color confirms the
-* toggle actually fired.
- lda $c000
- bpl :no_mode_key
- cmp #$8A              ; Ctrl-J
- bne :not_ctrl_j
- sta $c010             ; clear strobe
-* Ctrl-J no longer switches Billy's input source — keyboard
-* keeps controlling Billy. It just enables Jimmy and arms
-* joystick polling for him (joy_armed=0 → require centered
-* read once before accepting deflection, so a stuck KEGS
-* arrow doesn't slam Jimmy on activation).
- stz joy_armed
- lda #1
- sta jimmy_active      ; process_input_jimmy gate
- stz jimmy_sprite+24   ; anim_ptr = 0 (no action anim — input is
- stz jimmy_sprite+25   ; not blocked, advance_walk drives walk
-                       ; frames just like for Billy)
- lda #$01
- sta jimmy_sprite+30   ; dirty bit 0 = needs_draw
- lda #$0F              ; white border = Jimmy active
- stal $E0C034
- rts
-:not_ctrl_j
- cmp #$8B              ; Ctrl-K
- bne :not_ctrl_k
- sta $c010
- stz input_mode
- jsr reset_input_state
- jsr cancel_action_anim
- lda #$04              ; purple border = keyboard mode
- stal $E0C034
- rts
-:not_ctrl_k
- cmp #$8E              ; Ctrl-N = SNES MAX
- bne :no_mode_key
- sta $c010
- lda #2
- sta input_mode
- jsr reset_input_state
- jsr cancel_action_anim
- lda #$0C              ; green border = SNES mode
- stal $E0C034
- rts
-:no_mode_key
+* (Ctrl-J / Ctrl-K / Ctrl-N runtime mode-switch hotkeys removed —
+* the selection screen now sets input_mode + jimmy_input_mode +
+* jimmy_active at startup. reset_input_state stays defined but
+* unreferenced in case a future hot-swap path wants it.)
 
 * Check if action animation is active (block input)
  ldy #24
@@ -10463,21 +10486,25 @@ grab_check
  rts
 
 *----------------------------------------------------------
-* snes_poll - Read SNES MAX controller 1 into snes_b0/b1.
+* snes_poll - Read the active player's SNES MAX controller
+* into snes_b0/b1.
 *
 * Protocol: write any value to SNES_LATCH to pulse the latch.
-* Then 16 cycles of: read SNES_LATCH (bit 7 = controller 1
-* current bit, MSB-first), shift into the result byte, write
-* any value to SNES_CLOCK to pulse the clock. After all 16
-* bits are in, EOR with $FF so "pressed" reads as 1 (the
+* Then 16 cycles of: read SNES_LATCH and isolate the active
+* player's data bit (snes_poll_mask = $80 for P1/controller 1
+* on bit 7, $40 for P2/controller 2 on bit 6). Shift the bit
+* into snes_b0/b1, MSB-first, then pulse SNES_CLOCK. After all
+* 16 bits are in, EOR with $FF so "pressed" reads as 1 (the
 * card returns active-LOW).
+*
+* swap_in_jimmy / swap_out_jimmy own snes_poll_mask + the
+* snes_b0_prev/b1_prev edge state, so each player gets the
+* right controller bit + independent edge detection even when
+* both P1 and P2 are on SNES (P1=MAX1, P2=MAX2).
 *
 * Bit layout after poll (active HIGH):
 *   snes_b0: 0=Right 1=Left 2=Down 3=Up 4=Start 5=Select 6=Y 7=B
 *   snes_b1: 0-3 unused, 4=R-shoulder 5=L-shoulder 6=X 7=A
-*
-* Controller 2 is ignored (the card's bit 6 path); this game
-* is single-player. Add a second poll routine if/when needed.
 *----------------------------------------------------------
 snes_poll
  stal SNES_LATCH       ; latch pulse — value doesn't matter
@@ -10485,8 +10512,9 @@ snes_poll
 :sp_byte
  ldy #8
 :sp_bit
- ldal SNES_LATCH       ; bit 7 = controller 1 data
- asl                   ; bit 7 → carry
+ ldal SNES_LATCH       ; ctl 1 on bit 7, ctl 2 on bit 6
+ and snes_poll_mask    ; isolate the active player's bit
+ cmp #1                ; C = (A != 0) — works for $80 or $40
  rol snes_b0,x         ; carry → bit 0 of snes_b0/b1
  stal SNES_CLOCK       ; clock pulse
  dey
@@ -10741,8 +10769,24 @@ swap_in_jimmy
  stz abs_x+1
  lda input_mode
  sta billy_save_input_mode
- lda #1
+ lda jimmy_input_mode
  sta input_mode
+* SNES MAX state swap for P2 (= controller 2 of the same card).
+* snes_poll_mask flips from $80 (P1 / ctl 1) to $40 (P2 / ctl 2),
+* and snes_b0_prev/b1_prev are stashed so each player has its own
+* button-edge detection across the swap. swap_out_jimmy reverses.
+ lda snes_poll_mask
+ sta billy_save_snes_poll_mask
+ lda #$40              ; bit 6 = controller 2
+ sta snes_poll_mask
+ lda snes_b0_prev
+ sta billy_save_snes_b0_prev
+ lda jimmy_stash_snes_b0_prev
+ sta snes_b0_prev
+ lda snes_b1_prev
+ sta billy_save_snes_b1_prev
+ lda jimmy_stash_snes_b1_prev
+ sta snes_b1_prev
 * scroll_*_enabled are NOT swapped — they describe the world's
 * current scroll permissions (set by OP_RIGHT / OP_LEFT / OP_UP
 * in the level script) and apply to whichever player is at the
@@ -10971,6 +11015,17 @@ swap_out_jimmy
  sta abs_x+1
  lda billy_save_input_mode
  sta input_mode
+* SNES MAX state restore — counterpart to the swap_in_jimmy block.
+ lda snes_b0_prev
+ sta jimmy_stash_snes_b0_prev
+ lda billy_save_snes_b0_prev
+ sta snes_b0_prev
+ lda snes_b1_prev
+ sta jimmy_stash_snes_b1_prev
+ lda billy_save_snes_b1_prev
+ sta snes_b1_prev
+ lda billy_save_snes_poll_mask
+ sta snes_poll_mask
 * scroll_*_enabled stay shared between Billy and Jimmy (set by
 * the level script, not swapped per player).
 * Restore Billy's active anim pointers.
