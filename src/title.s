@@ -2697,11 +2697,11 @@ guide_buttons
 
 guide_prev
   dw 2, 1
-  dw 8, 11
+  dw 40, 11
   dw guide_prev_clicked
 
 guide_next
-  dw 311, 1
+  dw 274, 1
   dw 317, 11
   dw guide_next_clicked
 
