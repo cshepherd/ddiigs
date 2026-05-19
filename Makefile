@@ -69,12 +69,13 @@ out/ddii: src/ddii.s
 	cd src && merlin32 ddii.s
 	mv src/ddii out/ddii
 
-$(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.shr assets/mission13.shr assets/mission14.shr assets/mission15.shr assets/mission16.shr assets/mission17.shr assets/mission18.shr assets/mission19.shr assets/mission110.shr assets/mission111.shr assets/mission112.shr assets/mission113.shr assets/mission114.shr assets/CONCEPT3\#C10000 out/game out/title out/mission1 out/mission12 out/mission13 out/cutscene out/cutscene1 out/ddii out/mission14 out/engine out/mission1jimmy
+$(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.shr assets/mission13.shr assets/mission14.shr assets/mission15.shr assets/mission16.shr assets/mission17.shr assets/mission18.shr assets/mission19.shr assets/mission110.shr assets/mission111.shr assets/mission112.shr assets/mission113.shr assets/mission114.shr assets/CONCEPT3\#C10000 assets/INTRO\#C10000 assets/keycontrols\#C10000 assets/joycontrols\#C10000 assets/snescontrols\#C10000 assets/moves\#C10000 out/game out/title out/mission1 out/mission12 out/mission13 out/cutscene out/cutscene1 out/ddii out/mission14 out/engine out/mission1jimmy
 	mkdir -p out
 	rm -f $(IMGFILE)
 	cadius CREATEVOLUME $(IMGFILE) $(VOLNAME) 800KB --quiet
 	cadius CREATEFOLDER $(IMGFILE) /$(VOLNAME)/MISSION1 --quiet
 	cadius CREATEFOLDER $(IMGFILE) /$(VOLNAME)/SFX --quiet
+	cadius CREATEFOLDER $(IMGFILE) /$(VOLNAME)/GUIDE --quiet
 	cp res/PRODOS out/PRODOS\#FF0000
 	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/PRODOS\#FF0000 --quiet
 	rm out/PRODOS\#FF0000
@@ -180,6 +181,24 @@ $(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.sh
 	python3 tools/packbytes.py pack assets/CONCEPT3\#C10000 out/SELECT.PAK\#C00000
 	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/ out/SELECT.PAK\#C00000 --quiet
 	rm out/SELECT.PAK\#C00000
+	# /GUIDE pages — each is a full standalone SHR PIC packed with
+	# PackBytes (palettes + SCBs included). Loaded by the in-game
+	# user guide one page at a time.
+	python3 tools/packbytes.py pack assets/INTRO\#C10000 out/PAGE1.PAK\#C00000
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/GUIDE/ out/PAGE1.PAK\#C00000 --quiet
+	rm out/PAGE1.PAK\#C00000
+	python3 tools/packbytes.py pack assets/keycontrols\#C10000 out/PAGE2.PAK\#C00000
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/GUIDE/ out/PAGE2.PAK\#C00000 --quiet
+	rm out/PAGE2.PAK\#C00000
+	python3 tools/packbytes.py pack assets/joycontrols\#C10000 out/PAGE3.PAK\#C00000
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/GUIDE/ out/PAGE3.PAK\#C00000 --quiet
+	rm out/PAGE3.PAK\#C00000
+	python3 tools/packbytes.py pack assets/snescontrols\#C10000 out/PAGE4.PAK\#C00000
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/GUIDE/ out/PAGE4.PAK\#C00000 --quiet
+	rm out/PAGE4.PAK\#C00000
+	python3 tools/packbytes.py pack assets/moves\#C10000 out/PAGE5.PAK\#C00000
+	cadius ADDFILE $(IMGFILE) /$(VOLNAME)/GUIDE/ out/PAGE5.PAK\#C00000 --quiet
+	rm out/PAGE5.PAK\#C00000
 	# Add NTP music assets. ntpplayer compresses ~58% (34672 → 14667
 	# bytes) so we ship it PackBytes-compressed and have title.s
 	# unpack it to bank $12 at boot via load_titlentp_pak.

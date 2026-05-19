@@ -2597,6 +2597,7 @@ buttons
   dw p2_keyboard
   dw p2_joystick
   dw p2_snes
+  dw guide
   dw 0000              ; the end my friend
 
 1p
@@ -2668,6 +2669,209 @@ p2_snes
   dw $108, $89
   dw $121, $9C
   dw p2_snes_clicked
+
+guide
+  dw 7, 176
+  dw 60, 192
+  dw guide_clicked
+
+;
+; Online Manual — page tracking, paths, buttons, handlers
+;
+guide_page dw 1                ; current page (1..5), set on GUIDE click
+
+* One path string, self-modified per page. Layout:
+*   /DDIIGS/GUIDE/PAGE<digit>.PAK    (23 chars total)
+* guide_path_pagebyte points at the <digit> position; the page
+* loader rewrites it before each load_titlentp_pak call.
+guide_path dfb 23
+  asc '/DDIIGS/GUIDE/PAGE'
+guide_path_pagebyte
+  asc '1'
+  asc '.PAK'
+
+guide_buttons
+  dw guide_prev
+  dw guide_next
+  dw 0000
+
+guide_prev
+  dw 2, 1
+  dw 8, 11
+  dw guide_prev_clicked
+
+guide_next
+  dw 311, 1
+  dw 317, 11
+  dw guide_next_clicked
+
+ mx %00
+*----------------------------------------------------------
+* guide_clicked - GUIDE button on the controller-select screen.
+* Sets page=1, loads + paints PAGE1.PAK, hands off to the manual
+* event loop.
+*----------------------------------------------------------
+guide_clicked
+  lda #1
+  sta guide_page
+  jsr load_and_show_guide_page
+  jmp guide_event_loop
+
+*----------------------------------------------------------
+* guide_next_clicked / guide_prev_clicked - manual page-cycle
+* handlers. NEXT past page 5 or PREV before page 1 falls back to
+* ctl_select (which re-enters the controller-select screen from
+* scratch).
+*----------------------------------------------------------
+guide_next_clicked
+  lda guide_page
+  inc
+  cmp #6
+  beq :gnx_back
+  sta guide_page
+  jsr load_and_show_guide_page
+  jmp guide_event_loop
+:gnx_back
+  jmp guide_exit_to_ctl_select
+
+guide_prev_clicked
+  lda guide_page
+  dec
+  beq :gpx_back
+  sta guide_page
+  jsr load_and_show_guide_page
+  jmp guide_event_loop
+:gpx_back
+  jmp guide_exit_to_ctl_select
+
+*----------------------------------------------------------
+* guide_exit_to_ctl_select - drop back to emul 8-bit and jump
+* into ctl_select. Mirrors the mode state ctl_select expects on
+* entry (its first instruction reads $C035 in 8-bit M).
+*----------------------------------------------------------
+guide_exit_to_ctl_select
+  sec
+  xce
+  sep $30
+  jmp ctl_select
+
+*----------------------------------------------------------
+* load_and_show_guide_page - Load /DDIIGS/GUIDE/PAGEn.PAK,
+* unpack to $15/2000, then HideCursor → 32KB copy to $E1/2000
+* → ShowCursor. Caller in native 16-bit M; routine returns in
+* native 16-bit M.
+*----------------------------------------------------------
+load_and_show_guide_page
+* ProDOS calls need emul 8-bit M.
+  sec
+  xce
+  sep $30
+  lda guide_page
+  clc
+  adc #'0'
+  sta guide_path_pagebyte
+  lda #<guide_path
+  sta t2_open+1
+  lda #>guide_path
+  sta t2_open+2
+  lda #$15
+  sta t_unpack_bank
+  stz t_unpack_offset
+  lda #$20
+  sta t_unpack_offset+1         ; $15/2000
+  jsr load_titlentp_pak
+* Back to native 16-bit for toolbox + bulk copy.
+  clc
+  xce
+  rep $30
+  ldx #$9004
+  jsl $E10000                  ; _HideCursor
+  jsr copy_15_to_e1
+  ldx #$9104
+  jsl $E10000                  ; _ShowCursor
+  rts
+
+*----------------------------------------------------------
+* copy_15_to_e1 - Copy $15/2000-$15/9FFF (32768 B = full SHR
+* image incl. pixels + SCBs + palette) to $E1/2000-$E1/9FFF.
+* Caller in native 16-bit M/X. Uses ZP $F0..$F2 (src) /
+* $F3..$F5 (dst) long pointers.
+*----------------------------------------------------------
+copy_15_to_e1
+  lda #$2000
+  sta $F0
+  sta $F3
+  sep $20
+  lda #$15
+  sta $F2
+  lda #$E1
+  sta $F5
+  rep $20
+  ldy #$0000
+:cp_loop
+  lda [$F0],y
+  sta [$F3],y
+  iny
+  iny
+  cpy #$8000                   ; 32768 bytes = $8000
+  bcc :cp_loop
+  rts
+
+*----------------------------------------------------------
+* guide_event_loop - mirror of eventLoop, hit-tests against
+* guide_buttons (prev + next).
+*----------------------------------------------------------
+guide_event_loop
+  pea $0000
+  pea #$0002
+  pea $0000
+  pea #eventRecord
+  ldx #$0a06
+  jsl $E10000           ; _GetNextEvent
+  pla
+
+  lda eventRecord
+  beq guide_event_loop
+
+  lda ermouseLocation+2
+  sta click_x
+  lda ermouseLocation
+  sta click_y
+  ldx #0
+:gbtn_loop
+  lda guide_buttons,x
+  beq :gbtn_none
+  sta $00
+  ldy #0
+  lda ($00),y
+  cmp click_x
+  beq :gbtn_tlx_ok
+  bcs :gbtn_next
+:gbtn_tlx_ok
+  ldy #2
+  lda ($00),y
+  cmp click_y
+  beq :gbtn_tly_ok
+  bcs :gbtn_next
+:gbtn_tly_ok
+  ldy #4
+  lda ($00),y
+  cmp click_x
+  bcc :gbtn_next
+  ldy #6
+  lda ($00),y
+  cmp click_y
+  bcc :gbtn_next
+  ldy #8
+  lda ($00),y
+  sta $02
+  jmp ($02)
+:gbtn_next
+  inx
+  inx
+  bra :gbtn_loop
+:gbtn_none
+  bra guide_event_loop
 
 ;
 ; SNES-MAX confirmation modal — buttons table + handler
