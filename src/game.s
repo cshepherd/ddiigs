@@ -29,6 +29,7 @@ CTL_SNES     = 2
 game_type = $300
 ctl_type_p1 = $302
 ctl_type_p2 = $304
+smax_slot = $306
 
 ]IOBUF = $0C00        ; 1024-byte ProDOS I/O buffer (page-aligned),
                        ; $0C00-$0FFF. Moved from $BB00 to $0C00 to free
@@ -484,6 +485,30 @@ DEBUG_LSRC  equ 1
  sta snes_pause_mask
 :sp_p2_not_snes
 
+* Resolve the SNES MAX slot from smax_slot ($306) and patch the
+* operand low byte of every stal/ldal SNES_LATCH/CLOCK in
+* snes_poll and check_pause. Each instruction is a 4-byte stal/
+* ldal abs-long; the low byte of the address sits at label+1
+* (mid byte $C0 and bank $00 are unchanged). New low byte:
+*   LATCH = $80 + slot*$10
+*   CLOCK = $81 + slot*$10
+ lda smax_slot           ; 1..7 (low byte; high byte zeroed by title.s)
+ asl
+ asl
+ asl
+ asl                     ; A = slot * $10
+ clc
+ adc #$80                ; A = LATCH low byte ($90..$F0)
+ sta cps_latch_a+1
+ sta cps_latch_b+1
+ sta sps_latch_a+1
+ sta sps_latch_b+1
+ inc                     ; A = CLOCK low byte ($91..$F1)
+ sta cps_clock_a+1
+ sta cps_clock_b+1
+ sta cps_clock_c+1
+ sta sps_clock_a+1
+
  ldx #5
  jsr draw_loading_string
 
@@ -522,8 +547,18 @@ DEBUG_LSRC  equ 1
  ldx #$9A04
  jsl $E10000        ; SetTextFace
 
+* HUD text: in 1P mode the "PLAYER 2: 0000000" half is replaced
+* with "Press 2 to Join" (same prefix length so the rest
+* still starts at the original P2 column).
+ lda game_type
+ beq :hud_1p
  pea ^string5
  pea string5
+ bra :hud_draw
+:hud_1p
+ pea ^string5_1p
+ pea string5_1p
+:hud_draw
  ldx #$A604
  jsl $E10000        ; DrawCString
 
@@ -533,7 +568,10 @@ DEBUG_LSRC  equ 1
 
  bra over1
 
-string5 ASC 'PLAYER 1: 0000000       PLAYER 2: 0000000',00
+string5    ASC 'PLAYER 1: 0000000       PLAYER 2: 0000000',00
+* 1P-mode variant: same "PLAYER 1: 0000000       " prefix so the
+* second-half text starts at the same x as "PLAYER 2:" would have.
+string5_1p ASC 'PLAYER 1: 0000000       Press 2 to Join',00
 
 over1
 * Initial draw of all sprites
@@ -585,6 +623,7 @@ over1
 game_loop
  jsr check_pause       ; ESC tap toggles paused
  jsr check_debug_xy    ; 'd' tap toggles hex xpos/ypos readout
+ jsr check_p2_join     ; '2' tap activates Jimmy in 1P mode
  lda paused
  bne :gl_paused_idle   ; frozen: skip all per-frame work
  jsr update_overlay
@@ -3451,11 +3490,17 @@ check_pause
 * Start bit position for both controllers in one $C0C0 fetch.
  lda snes_pause_mask
  beq :cp_done
- stal SNES_LATCH
- stal SNES_CLOCK        ; skip B
- stal SNES_CLOCK        ; skip Y
- stal SNES_CLOCK        ; skip Select — next read = Start
- ldal SNES_LATCH        ; bit 7 = P1 Start (raw), bit 6 = P2 Start
+* These stal/ldal SNES_LATCH/CLOCK instructions are patched at
+* game init (apply_smax_slot) so their operand low bytes line up
+* with the slot the player picked on the selection screen. The
+* equate-time default targets slot 4 ($C0C0/$C0C1); init rewrites
+* byte +1 of each instruction below to $80+slot*$10 (latch) or
+* $81+slot*$10 (clock).
+cps_latch_a   stal SNES_LATCH
+cps_clock_a   stal SNES_CLOCK        ; skip B
+cps_clock_b   stal SNES_CLOCK        ; skip Y
+cps_clock_c   stal SNES_CLOCK        ; skip Select — next read = Start
+cps_latch_b   ldal SNES_LATCH        ; bit 7 = P1 Start (raw), bit 6 = P2 Start
  eor #$FF               ; active-LOW → active-HIGH
  and snes_pause_mask    ; mask out non-SNES players' bits
  tax                    ; X = current masked Start state
@@ -3475,6 +3520,70 @@ check_pause
 :cp_unpaused
  jsr erase_pause_text   ; just unpaused — restore playfield rect
 :cp_done rts
+
+*----------------------------------------------------------
+* check_p2_join - Watch for '2' key while in 1P mode (jimmy_active=0).
+* On press: activate Jimmy with the controller P2 picked at the
+* selection screen (jimmy_input_mode was already loaded from $304
+* during game init), repaint the HUD strip with the 2P version of
+* string5, and paint the P2 health bar segments.
+*
+* Skips entirely when jimmy_active is already non-zero, so the
+* 2P-from-boot path (game_type=GT_2P_COOP/_PVP) is unaffected.
+*----------------------------------------------------------
+check_p2_join
+ lda jimmy_active
+ bne :cpj_done                ; P2 already in
+ lda $c000
+ bpl :cpj_done                ; no key waiting
+ and #$7f
+ cmp #'2'
+ bne :cpj_done                ; not our key
+ sta $c010                    ; consume the strobe
+* Activate Jimmy — same fields as the boot-time game_type init.
+ lda #1
+ sta jimmy_active
+ sta jimmy_sprite+30          ; dirty bit 0 = needs_draw on first frame
+* Promote game_type so subsequent gates (HUD redraws, health-bar
+* repaints, etc.) take the 2P path. Promoted to COOP; player can't
+* opt into PvP at runtime (that requires the selection screen).
+ lda #GT_2P_COOP
+ sta game_type
+* Repaint HUD strip: replaces "Press 2 to Join" with the 2P version
+* of string5 ("PLAYER 1: ...   PLAYER 2: 0000000"). DrawCString
+* needs native 16-bit; redraw_hud_2p switches modes internally.
+ jsr redraw_hud_2p
+* Paint the P2 health bar. draw_health_bar's game_type gate now
+* falls through, so both bars get written; P1's bar is already
+* on screen and gets the same bytes re-written (harmless).
+ jsr draw_health_bar
+:cpj_done rts
+
+*----------------------------------------------------------
+* redraw_hud_2p - MoveTo (3, 195) + DrawCString string5 (the
+* 2P version). Caller in emulation 8-bit; this routine switches
+* to native 16-bit for the toolbox calls and restores on exit.
+* fg/bg colours and SetTextFace bold are inherited from the
+* boot-time HUD init (QD II port state persists).
+*----------------------------------------------------------
+redraw_hud_2p
+ clc
+ xce
+ rep $30
+ lda #3
+ pha
+ lda #195
+ pha
+ ldx #$3a04                   ; _MoveTo
+ jsl $E10000
+ pea ^string5
+ pea string5
+ ldx #$A604                   ; _DrawCString
+ jsl $E10000
+ sec
+ xce
+ sep #$30
+ rts
 
 *----------------------------------------------------------
 * draw_pause_text - Draw "PAUSED" via QuickDraw II _DrawCString.
@@ -3729,7 +3838,11 @@ draw_health_bar
  lda #$44              ; green  (slot 4)
  jsr :seg
 
-* Player 2 bar (5 segments at bytes 89..106)
+* Player 2 bar (5 segments at bytes 89..106) — skipped in 1P mode
+* so the HUD text "Press 2 to Join Co-Op" isn't sitting over a
+* mostly-empty colored strip.
+ lda game_type
+ beq :hb_done
  ldx #89
  lda #$55              ; red    (slot 5)
  jsr :seg
@@ -3741,6 +3854,7 @@ draw_health_bar
  jsr :seg
  lda #$99              ; green  (slot 9)
  jsr :seg
+:hb_done
  rts
 
 * Local segment writer: A = fill byte, X = start byte.
@@ -10507,16 +10621,19 @@ grab_check
 *   snes_b1: 0-3 unused, 4=R-shoulder 5=L-shoulder 6=X 7=A
 *----------------------------------------------------------
 snes_poll
- stal SNES_LATCH       ; latch pulse — value doesn't matter
+* sps_latch_a / sps_latch_b / sps_clock_a are patched by
+* apply_smax_slot at game init to point at whichever $C0nX slot
+* the player chose. Default equate is slot 4.
+sps_latch_a   stal SNES_LATCH       ; latch pulse — value doesn't matter
  ldx #0
 :sp_byte
  ldy #8
 :sp_bit
- ldal SNES_LATCH       ; ctl 1 on bit 7, ctl 2 on bit 6
+sps_latch_b   ldal SNES_LATCH       ; ctl 1 on bit 7, ctl 2 on bit 6
  and snes_poll_mask    ; isolate the active player's bit
  cmp #1                ; C = (A != 0) — works for $80 or $40
  rol snes_b0,x         ; carry → bit 0 of snes_b0/b1
- stal SNES_CLOCK       ; clock pulse
+sps_clock_a   stal SNES_CLOCK       ; clock pulse
  dey
  bne :sp_bit
  inx
