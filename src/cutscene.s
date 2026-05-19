@@ -102,6 +102,20 @@ OP_PALETTE  EQU 7
 
  mx %00
 run_cutscene
+* Zero all 256 SCBs at $E1/9D00-$9DFF. The controller-select
+* screen may have left non-zero palette indices in scattered SCBs
+* (its plot writes can touch the SCB band). Cutscene frames assume
+* palette 0 for every scanline — without this reset, the lines
+* that fall on tweaked SCBs render via the wrong palette and look
+* like blanks. Native 16-bit M with shadow on, so writes to bank
+* $E1 work directly.
+ lda #0
+ ldx #$00FE
+:zsc
+ stal $E19D00,x
+ dex
+ dex
+ bpl :zsc
 * Clear the keyboard strobe so any prior keypress (e.g. the
 * ENTER from the title screen) doesn't immediately skip us.
  ldal $00C010

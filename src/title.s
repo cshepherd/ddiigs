@@ -2820,11 +2820,33 @@ ctl_select_redraw
   jmp eventLoop
 
 *----------------------------------------------------------
+* zero_e1_palette - Black out $E1/9E00-$9FFF (the visible SHR
+* palette). Caller in native 16-bit M/X. Used as a blanking
+* step before a 32 KB SHR-page copy so the still-resident old
+* palette doesn't flash over the partially-copied new pixel
+* data while the beam works its way down to the palette section
+* of the new image.
+*----------------------------------------------------------
+zero_e1_palette
+  lda #0
+  ldx #$01FE
+:zep_lp
+  stal $E19E00,x
+  dex
+  dex
+  bpl :zep_lp
+  rts
+
+*----------------------------------------------------------
 * copy_18_to_e1 - Copy 32 KB from $18/2000-$18/9FFF to
 * $E1/2000-$E1/9FFF (full SHR: pixels + SCBs + palette).
-* Caller in native 16-bit M/X.
+* Caller in native 16-bit M/X. Zeros the destination palette
+* first so the swap is visually clean (screen briefly black
+* while pixels copy, then lights up once palette section
+* lands at $E1/9E00).
 *----------------------------------------------------------
 copy_18_to_e1
+  jsr zero_e1_palette
   lda #$2000
   sta $F0
   sta $F3
@@ -2884,9 +2906,11 @@ load_and_show_guide_page
 * copy_15_to_e1 - Copy $15/2000-$15/9FFF (32768 B = full SHR
 * image incl. pixels + SCBs + palette) to $E1/2000-$E1/9FFF.
 * Caller in native 16-bit M/X. Uses ZP $F0..$F2 (src) /
-* $F3..$F5 (dst) long pointers.
+* $F3..$F5 (dst) long pointers. Zeros the destination palette
+* first (see zero_e1_palette) so the swap is visually clean.
 *----------------------------------------------------------
 copy_15_to_e1
+  jsr zero_e1_palette
   lda #$2000
   sta $F0
   sta $F3
