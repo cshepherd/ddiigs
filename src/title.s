@@ -2993,6 +2993,7 @@ smax_buttons
   dw smax_up
   dw smax_down
   dw lets_go
+  dw start2
   dw 0000             ; null terminator
 
 * Up-arrow hit rect — modal sprite cols 42-49, rows 29-35
@@ -3014,6 +3015,12 @@ smax_down
 lets_go
   dw 138, 107         ; top-left x, y (pixel coords)
   dw 180, 118         ; bottom-right x, y
+  dw lets_go_clicked
+
+; users will tend to hit the old 'start' button to progress too
+start2
+  dw $FC, $80
+  dw $137, $C1
   dw lets_go_clicked
 
  mx %00
