@@ -2745,15 +2745,104 @@ guide_prev_clicked
   jmp guide_exit_to_ctl_select
 
 *----------------------------------------------------------
-* guide_exit_to_ctl_select - drop back to emul 8-bit and jump
-* into ctl_select. Mirrors the mode state ctl_select expects on
-* entry (its first instruction reads $C035 in 8-bit M).
+* guide_exit_to_ctl_select - HideCursor to suppress the save-
+* under-driven glitch around the cursor during the upcoming
+* 32 KB screen repaint, then drop to emul 8-bit and jump to
+* ctl_select_redraw (which skips the init block in ctl_select
+* so the player's earlier game_type / ctl_type_p[12] choices
+* are preserved). ctl_select_redraw matches our HideCursor
+* with a ShowCursor at the end of its repaint.
 *----------------------------------------------------------
 guide_exit_to_ctl_select
+  ldx #$9004
+  jsl $E10000          ; _HideCursor — protects the big copy below
   sec
   xce
   sep $30
-  jmp ctl_select
+  jmp ctl_select_redraw
+
+*----------------------------------------------------------
+* ctl_select_redraw - Re-entry point for ctl_select used when
+* returning from the online manual. We don't touch game_type /
+* ctl_type_p[12] (the player's choices stay intact). What we DO
+* need to do is repaint the CONCEPT3 backdrop (the screen
+* currently shows the last GUIDE page), reapply the game_type
+* highlight palette, redraw the carousel icons, and restore
+* the cursor visibility.
+*
+* Caller enters in emul 8-bit M with cursor already hidden by
+* guide_exit_to_ctl_select. Shadow stays off throughout — the
+* first ctl_select run set it that way and nothing has touched
+* it since.
+*----------------------------------------------------------
+ctl_select_redraw
+  clc
+  xce
+  rep $30
+* Re-blit CONCEPT3 from the staging bank $18 that the first
+* ctl_select run left populated. 32 KB long-pointer copy.
+  jsr copy_18_to_e1
+* Reapply game_type-aware palette tweaks at $E1. The $18
+* staging palette baked in the 1P-default tweaks, but the
+* player may have selected COOP or PVP before clicking GUIDE.
+  lda game_type
+  beq :csr_1p
+  cmp #1
+  beq :csr_coop
+* PVP highlighted, others unselected.
+  lda #game_type_selected
+  stal palette_2p_pvp
+  lda #game_type_unselected
+  stal palette_1p
+  stal palette_2p_coop
+  bra :csr_palette_done
+:csr_1p
+  lda #game_type_selected
+  stal palette_1p
+  lda #game_type_unselected
+  stal palette_2p_coop
+  stal palette_2p_pvp
+  bra :csr_palette_done
+:csr_coop
+  lda #game_type_selected
+  stal palette_2p_coop
+  lda #game_type_unselected
+  stal palette_1p
+  stal palette_2p_pvp
+:csr_palette_done
+* Carousel icons (plot2 wraps each in its own HideCursor /
+* ShowCursor — nested under our outer Hide, net zero).
+  jsr draw_p1_icon
+  jsr draw_p2_icon
+* Counterpart of the HideCursor in guide_exit_to_ctl_select.
+  ldx #$9104
+  jsl $E10000          ; _ShowCursor
+  jmp eventLoop
+
+*----------------------------------------------------------
+* copy_18_to_e1 - Copy 32 KB from $18/2000-$18/9FFF to
+* $E1/2000-$E1/9FFF (full SHR: pixels + SCBs + palette).
+* Caller in native 16-bit M/X.
+*----------------------------------------------------------
+copy_18_to_e1
+  lda #$2000
+  sta $F0
+  sta $F3
+  sep $20
+  lda #$18
+  sta $F2
+  lda #$E1
+  sta $F5
+  rep $20
+  ldy #$0000
+:cp_loop
+  lda [$F0],y
+  sta [$F3],y
+  iny
+  iny
+  cpy #$8000
+  bcc :cp_loop
+  rts
 
 *----------------------------------------------------------
 * load_and_show_guide_page - Load /DDIIGS/GUIDE/PAGEn.PAK,
