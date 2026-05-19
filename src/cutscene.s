@@ -1,5 +1,7 @@
 ; DD II cutscene render engine
 
+cutscene_number = $308
+
   ORG $2000
 
 NinjaTrackerPlus        =   $120000
@@ -42,11 +44,25 @@ NTPstreamsound          =   NinjaTrackerPlus+24
   sec
   xce
 
-* Load CUTSCENE1 script data to bank $02
+* Load CUTSCENE1 or CUTSCENE2 script data to bank $02 based on
+* cutscene_number ($308). 1 → /DDIIGS/CUTSCENE1 via cs_path;
+* anything else → /DDIIGS/CUTSCENE2 via cs2_path. run_cutscene
+* itself doesn't care which file was loaded — it just walks the
+* script that now lives at $02/0000.
+  lda cutscene_number
+  cmp #1
+  bne :cs_use_path2
   lda #<cs_path
   sta cs_open+1
   lda #>cs_path
   sta cs_open+2
+  bra :cs_path_done
+:cs_use_path2
+  lda #<cs2_path
+  sta cs_open+1
+  lda #>cs2_path
+  sta cs_open+2
+:cs_path_done
   lda #$02
   sta cs_bank
   stz cs_dest
@@ -364,7 +380,12 @@ cutscene_done
  xce
  sep $30
  mx %11
- jmp $1004 ; run the main game
+ lda cutscene_number
+ cmp #1
+ bne :not_title
+ jmp $1004 ; run the main game engine
+:not_title
+ jmp $1000 ; jump back to title screen
 
 *----------------------------------------------------------
 * check_skip - poll the keyboard. If bit 7 of $C000 is set
@@ -1029,6 +1050,9 @@ cs_cref dfb 0
 
 cs_path dfb 17
  asc '/DDIIGS/CUTSCENE1'
+
+cs2_path dfb 17
+  asc '/DDIIGS/CUTSCENE2'
 
 * CUTSCENENTP.PAK rather than CUTSCENE.NTP.PAK because ProDOS
 * limits each filename component to 15 chars.

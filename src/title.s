@@ -28,6 +28,7 @@ game_type = $300
 ctl_type_p1 = $302
 ctl_type_p2 = $304
 smax_slot = $306
+cutscene_number = $308
 
   lda $1100
   bne :already
@@ -2304,6 +2305,8 @@ do_start
   sec
   xce
   sep $20
+  lda #1
+  sta cutscene_number
   jmp $1002 ; jump to cutscene
 
 p1_keyboard_clicked

@@ -30,6 +30,7 @@ game_type = $300
 ctl_type_p1 = $302
 ctl_type_p2 = $304
 smax_slot = $306
+cutscene_number = $308
 
 ]IOBUF = $0C00        ; 1024-byte ProDOS I/O buffer (page-aligned),
                        ; $0C00-$0FFF. Moved from $BB00 to $0C00 to free
@@ -737,7 +738,11 @@ run_script
  mx %11
  lda #SCRIPT_DONE
  sta script_state
-:rs_rts jmp $1000
+:rs_rts 
+* Run Cutscene #2 before going back to the title screen. This is the "To Be Continued"
+ lda #2
+ sta cutscene_number
+ jmp $1002
 
 :not_end
  cmp #OP_SCREEN
@@ -3993,9 +3998,10 @@ game_over
  xce
  sep $30
  mx %11
-* Chain back to TITLE via DDII.SYSTEM. Entry $1000 reloads the
-* title program at $2000 and runs it.
- jmp $1000
+* Run Cutscene #2 before going back to the title screen. This is the "To Be Continued"
+ lda #2
+ sta cutscene_number
+ jmp $1002
 
 * Player 1 score HUD position. Drawn over the "0000000" digits
 * in the static HUD line at startup-MoveTo (3, 195) using the
