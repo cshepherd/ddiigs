@@ -2174,6 +2174,23 @@ script_spawn_npc
  sta (info_ptr),y
  ldy #63
  sta (info_ptr),y
+* idle_data_mirror (+64/65) + idle_mask_mirror (+66/67) for
+* :ne_npc_mask_restore's mirror swap. Without these the IDLE
+* pose always renders in WILLIAM1_DATA's natural orientation
+* regardless of info+4 (mirror), so a William facing left at
+* rest visually pointed the wrong way.
+ lda spr_william1c_data_mir
+ ldy #64
+ sta (info_ptr),y
+ lda spr_william1c_data_mir+1
+ ldy #65
+ sta (info_ptr),y
+ lda spr_william1c_mask_mir
+ ldy #66
+ sta (info_ptr),y
+ lda spr_william1c_mask_mir+1
+ ldy #67
+ sta (info_ptr),y
 * Bank → $1B (overrides the $02 default just written).
  lda #$1B
  ldy #56
@@ -2211,6 +2228,19 @@ script_spawn_npc
  ldy #61
  sta (info_ptr),y
  ldy #63
+ sta (info_ptr),y
+* idle_data_mirror + idle_mask_mirror for the mirror-aware idle.
+ lda spr_roper1c_data_mir
+ ldy #64
+ sta (info_ptr),y
+ lda spr_roper1c_data_mir+1
+ ldy #65
+ sta (info_ptr),y
+ lda spr_roper1c_mask_mir
+ ldy #66
+ sta (info_ptr),y
+ lda spr_roper1c_mask_mir+1
+ ldy #67
  sta (info_ptr),y
 * Bank → $1B (overrides the $02 default just written).
  lda #$1B
@@ -2252,6 +2282,19 @@ script_spawn_npc
  ldy #61
  sta (info_ptr),y
  ldy #63
+ sta (info_ptr),y
+* idle_data_mirror + idle_mask_mirror for the mirror-aware idle.
+ lda spr_linda1c_data_mir
+ ldy #64
+ sta (info_ptr),y
+ lda spr_linda1c_data_mir+1
+ ldy #65
+ sta (info_ptr),y
+ lda spr_linda1c_mask_mir
+ ldy #66
+ sta (info_ptr),y
+ lda spr_linda1c_mask_mir+1
+ ldy #67
  sta (info_ptr),y
 * Bank → $1B (overrides the $02 default just written).
  lda #$1B
@@ -2295,6 +2338,19 @@ script_spawn_npc
  sta (info_ptr),y
  ldy #63
  sta (info_ptr),y
+* idle_data_mirror + idle_mask_mirror for the mirror-aware idle.
+ lda spr_lfwalk1c_data_mir
+ ldy #64
+ sta (info_ptr),y
+ lda spr_lfwalk1c_data_mir+1
+ ldy #65
+ sta (info_ptr),y
+ lda spr_lfwalk1c_mask_mir
+ ldy #66
+ sta (info_ptr),y
+ lda spr_lfwalk1c_mask_mir+1
+ ldy #67
+ sta (info_ptr),y
 * Bank → $1C (overrides the $19 default just written).
  lda #$1C
  ldy #56
@@ -2333,6 +2389,19 @@ script_spawn_npc
  ldy #61
  sta (info_ptr),y
  ldy #63
+ sta (info_ptr),y
+* idle_data_mirror + idle_mask_mirror for the mirror-aware idle.
+ lda spr_wpipewalk1c_data_mir
+ ldy #64
+ sta (info_ptr),y
+ lda spr_wpipewalk1c_data_mir+1
+ ldy #65
+ sta (info_ptr),y
+ lda spr_wpipewalk1c_mask_mir
+ ldy #66
+ sta (info_ptr),y
+ lda spr_wpipewalk1c_mask_mir+1
+ ldy #67
  sta (info_ptr),y
 * Bank → $1C (overrides the $19 default just written).
  lda #$1C
@@ -2376,6 +2445,19 @@ script_spawn_npc
  ldy #61
  sta (info_ptr),y
  ldy #63
+ sta (info_ptr),y
+* idle_data_mirror + idle_mask_mirror for the mirror-aware idle.
+ lda spr_bnwalk1c_data_mir
+ ldy #64
+ sta (info_ptr),y
+ lda spr_bnwalk1c_data_mir+1
+ ldy #65
+ sta (info_ptr),y
+ lda spr_bnwalk1c_mask_mir
+ ldy #66
+ sta (info_ptr),y
+ lda spr_bnwalk1c_mask_mir+1
+ ldy #67
  sta (info_ptr),y
 * Bank → $1B (overrides the $19 default just written).
  lda #$1B
@@ -2440,10 +2522,10 @@ script_spawn_npc
  jsr dbg_print_nl
 :no_dbg_dump
  fin
-* Advance NPC buffer pointer (60 bytes per block)
+* Advance NPC buffer pointer by NPC_INFO_SIZE bytes per block.
  lda npc_buf_next
  clc
- adc #64
+ adc #NPC_INFO_SIZE
  sta npc_buf_next
  lda npc_buf_next+1
  adc #0
@@ -4553,7 +4635,7 @@ draw_ladder_debug
 * level's lifetime (not just concurrent), since npc_buf_next
 * only advances, never reuses slots of defeated NPCs.
 NPC_BUFFER_SLOTS = 24
-* 64 bytes/slot: 0..51 copied from the bank-$02 template; 52/54
+* 68 bytes/slot: 0..51 copied from the bank-$02 template; 52/54
 * (walk_anim/atk_anim), 56 (frame_bank), and 58 (idle_bank — bank
 * of the idle frame, restored on anim end) patched by
 * script_spawn_npc post-copy. 60/62 added for the AND/ORA
@@ -4573,7 +4655,21 @@ NPC_BUFFER_SLOTS = 24
 *                              uses spr_image01_mask globals
 *                              instead of +62 because his idle
 *                              data depends on facing.
-NPC_INFO_SIZE = 64
+*   +64/+65 idle_data_mirror — pre-rotated WILLIAM1_DATA_MIRROR /
+*                              ROPER1_DATA_MIRROR / etc. address.
+*                              :ne_npc_mask_restore swaps FRAME_ADDR
+*                              to this when info+4 (mirror) == 1
+*                              so the IDLE pose flips with the
+*                              direction the NPC is facing. (The
+*                              active animation already had paired
+*                              mirror frames in its anim descriptor;
+*                              this fixes the idle gap between/after
+*                              animations.) Legacy NPCs and non-
+*                              mirror-aware static items leave +64/65
+*                              at 0 — the swap is gated on non-zero
+*                              so they keep the old behavior.
+*   +66/+67 idle_mask_mirror — partner mask for the mirrored idle.
+NPC_INFO_SIZE = 68
 npc_buffers ds NPC_BUFFER_SLOTS*NPC_INFO_SIZE
 npc_buffers_end
 
@@ -11963,7 +12059,16 @@ start_anim
  lda (anim_ptr),y     ; duration
  ldy #28
  sta (info_ptr),y     ; anim_timer
- lda IMAGE01_MIRROR
+* Pick mirror vs non-mirror frame from this sprite's own info+4,
+* not IMAGE01_MIRROR. The global is set by load_sprite, which
+* runs for Billy during process_input but NOT for NPCs during
+* update_npcs — so an NPC reaching start_anim mid-update_npcs
+* would otherwise grab Billy's mirror and pick the wrong first
+* frame (visible as a 1-frame flip away from the player at the
+* start of every NPC compiled punch). For Billy callers, info+4
+* equals IMAGE01_MIRROR, so no regression.
+ ldy #4
+ lda (info_ptr),y     ; this sprite's mirror flag
  bne :sa_compiled_mirror
  ldy #6
  lda (anim_ptr),y     ; data low
@@ -13593,7 +13698,7 @@ update_anims
  sta MASK_ADDR
  lda spr_image01_mask+1
  sta MASK_ADDR+1
- bra :ne_no_billy_mask
+ jmp :ne_no_billy_mask     ; was bra; idle-mirror swap pushed target out of range
 :ne_billy_mirror
 * mirror=1: swap FRAME_ADDR + MASK_ADDR for the pre-mirrored versions.
  lda spr_image01_data_mirror
@@ -13604,7 +13709,7 @@ update_anims
  sta MASK_ADDR
  lda spr_image01_mask_mirror+1
  sta MASK_ADDR+1
- bra :ne_no_billy_mask
+ jmp :ne_no_billy_mask     ; was bra; ditto
 :ne_jimmy_idle_chk_mirror
 * Same shape as Billy's idle restore but with Jimmy's bank-$1D
 * cache vars. mirror=0 → FRAME_ADDR is already idle_addr (forward
@@ -13658,6 +13763,40 @@ update_anims
 * compiled-NPC sprites revert to compiled idle after a legacy
 * anim ends. Legacy NPCs have info+62 = 0, so MASK_ADDR stays
 * zero and the dispatch keeps routing legacy.
+*
+* For compiled NPCs with mirror=$01, additionally swap FRAME_ADDR
+* to info+64/65 (idle_data_mirror) and MASK_ADDR to info+66/67
+* (idle_mask_mirror) so the IDLE pose flips to face the same
+* direction the active animation just did. (Active anims already
+* select between mirror/non-mirror via the paired entries in the
+* anim descriptor; this fills the gap for the idle frame.) The
+* swap is gated on info+64/65 being non-zero so legacy NPCs and
+* static items (mace, dropped weapons — they leave +64/65 at 0)
+* keep the original behavior.
+ ldy #4
+ lda (info_ptr),y
+ beq :ne_npc_no_mirror
+ ldy #64
+ lda (info_ptr),y
+ sta :ne_tmp
+ iny
+ lda (info_ptr),y
+ ora :ne_tmp
+ beq :ne_npc_no_mirror     ; idle_data_mirror unset → legacy / static
+ ldy #64
+ lda (info_ptr),y
+ sta FRAME_ADDR
+ iny
+ lda (info_ptr),y
+ sta FRAME_ADDR+1
+ ldy #66
+ lda (info_ptr),y
+ sta MASK_ADDR
+ iny
+ lda (info_ptr),y
+ sta MASK_ADDR+1
+ bra :ne_no_billy_mask
+:ne_npc_no_mirror
  ldy #62
  lda (info_ptr),y
  sta MASK_ADDR
@@ -14530,6 +14669,21 @@ linda_flail_drop_and_transform
  sta (info_ptr),y
  ldy #63
  sta (info_ptr),y
+* idle_data_mirror / idle_mask_mirror for the mirror-aware idle —
+* matches the regular-Linda installer above so the transformed
+* sprite renders flipped at rest when mirror=$01.
+ lda spr_linda1c_data_mir
+ ldy #64
+ sta (info_ptr),y
+ lda spr_linda1c_data_mir+1
+ ldy #65
+ sta (info_ptr),y
+ lda spr_linda1c_mask_mir
+ ldy #66
+ sta (info_ptr),y
+ lda spr_linda1c_mask_mir+1
+ ldy #67
+ sta (info_ptr),y
 * walk_anim → anim_lwalk (already compiled bank $1B)
  lda #<anim_lwalk
  ldy #52
@@ -14623,9 +14777,9 @@ spawn_dropped_mace
  lda npc_buf_next+1
  sta info_ptr+1
 
-* Zero the slot (NPC_INFO_SIZE = 64 bytes — covers compiled
-* mask fields at +60..+63 too).
- ldy #63
+* Zero the slot (NPC_INFO_SIZE = 68 bytes — covers compiled
+* mask fields at +60..+63 and the idle-mirror fields at +64..+67).
+ ldy #67
  lda #0
 :sm_clear
  sta (info_ptr),y
@@ -16050,6 +16204,21 @@ williams_pipe_drop_and_transform
  ldy #61
  sta (info_ptr),y
  ldy #63
+ sta (info_ptr),y
+* idle_data_mirror / idle_mask_mirror — matches the regular-
+* William installer so the transformed sprite renders flipped at
+* rest when mirror=$01.
+ lda spr_william1c_data_mir
+ ldy #64
+ sta (info_ptr),y
+ lda spr_william1c_data_mir+1
+ ldy #65
+ sta (info_ptr),y
+ lda spr_william1c_mask_mir
+ ldy #66
+ sta (info_ptr),y
+ lda spr_william1c_mask_mir+1
+ ldy #67
  sta (info_ptr),y
 * walk_anim → anim_wwalk (already compiled bank $1B)
  lda #<anim_wwalk
