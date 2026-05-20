@@ -5006,7 +5006,12 @@ fo_approach
  ldy #2
  lda (info_ptr),y      ; current xpos
  cmp fo_target_x
- beq :x_at_target
+* Inverted branch + jmp: the added at-target gates in the two
+* walk-commit branches below pushed :x_at_target out of beq's
+* ±128 reach from here.
+ bne :cxt_not_eq
+ jmp :x_at_target
+:cxt_not_eq
  bcs :x_decrement
 * xpos < target, try xpos + 1. Check the RIGHT edge
 * (xpos + frame_x) against bounds so wider frames can't
@@ -5051,6 +5056,11 @@ fo_approach
  clc
  adc #1
  sta (info_ptr),y
+* If this step lands exactly on target X, fall through to
+* :x_at_target so the mirror gets re-faced toward the player.
+* Otherwise keep the walk-direction mirror set above.
+ cmp fo_target_x
+ beq :x_at_target
  bra :move_y
 :x_decrement
 * Try xpos - 1. Left-edge check is sufficient since the
@@ -5086,6 +5096,15 @@ fo_approach
  ldy #2
  lda chk_xpos
  sta (info_ptr),y
+* Same at-target gate as the increment branch above: only fall
+* through to :x_at_target when the commit landed on target,
+* otherwise keep the walk-direction mirror and skip ahead. This
+* fixes the in-transit override that was flipping NPCs to face
+* the player every left-walk step (visible as a 1-frame moonwalk
+* whenever they crossed the player's xpos).
+ cmp fo_target_x
+ beq :x_at_target
+ bra :move_y
 :x_at_target
 * Reached when xpos already == fo_target_x OR the proposed move
 * was blocked by row bounds. The walk branches above wrote
