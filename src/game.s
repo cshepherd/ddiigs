@@ -4669,7 +4669,22 @@ NPC_BUFFER_SLOTS = 24
 *                              at 0 — the swap is gated on non-zero
 *                              so they keep the old behavior.
 *   +66/+67 idle_mask_mirror — partner mask for the mirrored idle.
-NPC_INFO_SIZE = 68
+*   +68     cur_x_off        — signed byte. NPC counterpart of
+*                              billy_cur_x_off / jimmy_cur_x_off:
+*                              compensates the render position for
+*                              wider punch frames (WPUNCH2 = 17 vs
+*                              WILLIAM1 idle = 9) so the body stays
+*                              anchored instead of sliding backward
+*                              when the mirrored compiled lunge frame
+*                              tucks the body into its right half.
+*                              Set by set_anim_x_off when the NPC
+*                              loads a known punch/attack frame;
+*                              cleared otherwise. Read by erase_all
+*                              and draw_all to derive frame_x_off.
+*   +69     prev_x_off       — latched from +68 right after each
+*                              draw so erase_all next frame can
+*                              clear at the shifted column.
+NPC_INFO_SIZE = 70
 npc_buffers ds NPC_BUFFER_SLOTS*NPC_INFO_SIZE
 npc_buffers_end
 
@@ -7290,11 +7305,11 @@ erase_all
 * flagged neighboring sprites (e.g. ones adjacent on the side
 * the sprite is moving toward) and left visible artifacts.
 *
-* For Billy only, apply signed render-x offsets so the rect
-* covers the actual drawn pixels: prev_xpos + billy_prev_x_off
-* for the prev edge, xpos + billy_cur_x_off for the current edge.
-* NPCs use offset=0 (their info+7..+9 hold behavior state, not
-* render offsets — putting offsets there would corrupt NPC AI).
+* Apply signed render-x offsets so the erase rect covers the
+* actual drawn pixels (the offset shifts wider attack frames to
+* keep the body anchored). Billy/Jimmy pull from their globals;
+* NPCs pull from info+68 / info+69 (per-NPC fields, populated by
+* set_anim_x_off — non-attack NPCs leave them at 0).
  ldy #22
  lda (info_ptr),y
  cmp #$01
@@ -7306,15 +7321,19 @@ erase_all
  bra :ea_off_done
 :ea_chk_jimmy_off
  cmp #$02
- bne :ea_no_off
+ bne :ea_npc_off
  lda jimmy_prev_x_off
  sta :ea_prev_xeff
  lda jimmy_cur_x_off
  sta :ea_cur_xeff
  bra :ea_off_done
-:ea_no_off
- stz :ea_prev_xeff
- stz :ea_cur_xeff
+:ea_npc_off
+ ldy #69
+ lda (info_ptr),y         ; prev_x_off
+ sta :ea_prev_xeff
+ ldy #68
+ lda (info_ptr),y         ; cur_x_off
+ sta :ea_cur_xeff
 :ea_off_done
  ldy #34
  lda (info_ptr),y     ; prev_xpos
@@ -7514,8 +7533,8 @@ erase_all
 :ea_disp_check
 * Stage frame_x_off for this draw — same gating as draw_all.
 * Billy (controller=1) → billy_cur_x_off; Jimmy (controller=2) →
-* jimmy_cur_x_off; everything else clears so the offset doesn't
-* bleed into NPC draws.
+* jimmy_cur_x_off; NPCs (controller=0) → info+68 (set by
+* set_anim_x_off for attack frames; 0 otherwise).
  ldy #22
  lda (info_ptr),y
  cmp #$01
@@ -7525,12 +7544,14 @@ erase_all
  bra :ea_draw_off_done
 :ea_draw_chk_jimmy
  cmp #$02
- bne :ea_draw_no_off
+ bne :ea_draw_npc_off
  lda jimmy_cur_x_off
  sta frame_x_off
  bra :ea_draw_off_done
-:ea_draw_no_off
- stz frame_x_off
+:ea_draw_npc_off
+ ldy #68
+ lda (info_ptr),y
+ sta frame_x_off
 :ea_draw_off_done
 * Compiled vs legacy dispatch: compiled (AND/ORA) when
 * MASK_ADDR != 0. (Was also gated on controller==1 because
@@ -7640,8 +7661,9 @@ erase_all
 :ea_legacy
  jsr draw_sprite
 :ea_post_draw
-* Latch billy/jimmy_cur_x_off → *_prev_x_off after the draw so
-* erase_all next frame clears the rect at the shifted column.
+* Latch cur_x_off → prev_x_off after the draw so erase_all next
+* frame clears the rect at the shifted column. Billy/Jimmy latch
+* their globals; NPCs latch info+68 → info+69 on their own block.
  ldy #22
  lda (info_ptr),y
  cmp #$01
@@ -7651,9 +7673,15 @@ erase_all
  bra :ea_clr_dirty
 :ea_latch_chk_jimmy
  cmp #$02
- bne :ea_clr_dirty
+ bne :ea_latch_npc
  lda jimmy_cur_x_off
  sta jimmy_prev_x_off
+ bra :ea_clr_dirty
+:ea_latch_npc
+ ldy #68
+ lda (info_ptr),y
+ ldy #69
+ sta (info_ptr),y
 :ea_clr_dirty
  ldy #30
  lda (info_ptr),y
@@ -7738,9 +7766,10 @@ draw_all
  jmp :da_drawn
 :da_grab_chk_done
 * Stage frame_x_off for this draw. Billy (controller=1) →
-* billy_cur_x_off; Jimmy (controller=2) → jimmy_cur_x_off.
-* NPCs / projectiles see 0 so draw_sprite/draw_sprite_compiled
-* don't shift them.
+* billy_cur_x_off; Jimmy (controller=2) → jimmy_cur_x_off; NPCs
+* (controller=0) → info+68 (cur_x_off). Projectiles (controller=3)
+* and static items also live in the info+68 slot — zeroed at
+* spawn — so they naturally see 0.
  ldy #22
  lda (info_ptr),y
  cmp #$01
@@ -7750,12 +7779,14 @@ draw_all
  bra :da_off_done
 :da_chk_jimmy_off
  cmp #$02
- bne :da_no_off
+ bne :da_npc_off
  lda jimmy_cur_x_off
  sta frame_x_off
  bra :da_off_done
-:da_no_off
- stz frame_x_off
+:da_npc_off
+ ldy #68
+ lda (info_ptr),y
+ sta frame_x_off
 :da_off_done
 * Dispatch: compiled (AND/ORA) path when MASK_ADDR != 0 and the
 * sprite is the keyboard player (Billy). MASK_ADDR is the live
@@ -7773,9 +7804,9 @@ draw_all
 :da_legacy
  jsr draw_sprite
 :da_drawn
-* Latch billy_cur_x_off → billy_prev_x_off after the Billy draw so
-* next frame's erase_all clears the rect we just drew at the
-* shifted column. NPC draws don't touch the latch.
+* Latch cur_x_off → prev_x_off so next frame's erase_all clears
+* at the shifted column. Billy/Jimmy latch their globals; NPCs
+* latch info+68 → info+69 on their own block.
  ldy #22
  lda (info_ptr),y
  cmp #$01
@@ -7785,9 +7816,15 @@ draw_all
  bra :da_skip_latch
 :da_latch_chk_jimmy
  cmp #$02
- bne :da_skip_latch
+ bne :da_latch_npc
  lda jimmy_cur_x_off
  sta jimmy_prev_x_off
+ bra :da_skip_latch
+:da_latch_npc
+ ldy #68
+ lda (info_ptr),y
+ ldy #69
+ sta (info_ptr),y
 :da_skip_latch
 * Clear bit 0 (needs_draw)
  ldy #30
@@ -12189,7 +12226,10 @@ set_anim_x_off
  beq :sx_is_player      ; Billy
  cmp #$02
  beq :sx_is_player      ; Jimmy
- jmp :sx_done
+* NPC (controller=$00). Different routing: instead of writing
+* billy_cur_x_off / jimmy_cur_x_off, write info+68 (cur_x_off)
+* on this NPC's block. erase_all/draw_all pull from there.
+ jmp :sx_npc_dispatch
 :sx_is_player
  sta :sx_ctrl           ; remember which player so :sx_store
                         ;     routes to the right *_cur_x_off
@@ -12268,6 +12308,54 @@ set_anim_x_off
 * natural shift, fixed by $F7 (-9).
 :sx_punch_off_right  dfb $00,$00
 :sx_punch_off_mirror dfb $ff,$F9
+
+*----------------------------------------------------------
+* NPC render-x compensation. Same shape as the Billy/Jimmy
+* punch-offset path above, but writes to this NPC's info+68
+* (cur_x_off) instead of the global. Currently covers
+* anim_wpunch (Williams); add comparisons for Roper / Linda /
+* etc. as their punch anims get tuned. Right-facing (mirror=0)
+* needs no compensation; mirror=1 the lunge frame's body sits
+* in the right half of the wider sprite and would visually
+* slide backward without the negative offset.
+*
+* anim_wpunch widths: WPUNCH1 = 11 bytes (idle is 9 → 2 wider),
+* WPUNCH2 = 17 bytes (8 wider). Tracks Billy's tuning shape.
+*----------------------------------------------------------
+:sx_npc_dispatch
+* William's offensive punch.
+ lda anim_ptr
+ cmp #<anim_wpunch
+ bne :sx_npc_no_off
+ lda anim_ptr+1
+ cmp #>anim_wpunch
+ bne :sx_npc_no_off
+* anim_frame index → table.
+ ldy #26
+ lda (info_ptr),y
+ tax
+ cpx #2
+ bcc :sx_wp_idx_ok
+ ldx #0
+:sx_wp_idx_ok
+ ldy #4
+ lda (info_ptr),y         ; NPC's own mirror (not IMAGE01_MIRROR —
+                          ;     update_npcs doesn't refresh that)
+ bne :sx_wp_mir
+ lda :sx_wpunch_off_right,x
+ bra :sx_npc_store
+:sx_wp_mir
+ lda :sx_wpunch_off_mirror,x
+ bra :sx_npc_store
+:sx_npc_no_off
+ lda #0
+:sx_npc_store
+ ldy #68
+ sta (info_ptr),y
+ rts
+
+:sx_wpunch_off_right  dfb $00,$00
+:sx_wpunch_off_mirror dfb $FF,$F8       ; WPUNCH1: -1, WPUNCH2: -8
 
 *----------------------------------------------------------
 * set_billy_y_target - Set billy_y_target based on the new
@@ -13619,11 +13707,14 @@ update_anims
  sta (info_ptr),y     ; clear anim_ptr high
  ldy #26
  sta (info_ptr),y     ; clear anim_frame
-* Clear billy_cur_x_off (or jimmy_cur_x_off) when the player's
-* anim ends — idle has no render-x offset. *_prev_x_off stays
-* at the punch's offset until draw_all runs, which is correct:
+* Clear billy_cur_x_off / jimmy_cur_x_off / info+68 when the
+* anim ends — idle has no render-x offset. prev_x_off stays at
+* the punch's offset until draw_all runs, which is correct:
 * erase_all this same frame still needs to clear the punch's
-* drawn rect at the lunged column.
+* drawn rect at the lunged column. Without this clear the NPC
+* visually "jumps" by the punch lunge's offset right as the
+* animation transitions back to idle (William ending his punch
+* and snapping ~8 bytes / 16 pixels in his facing direction).
  ldy #22
  lda (info_ptr),y
  cmp #$01
@@ -13632,8 +13723,15 @@ update_anims
  bra :ne_no_xoff_clear
 :ne_xoff_chk_jimmy
  cmp #$02
- bne :ne_no_xoff_clear
+ bne :ne_xoff_npc
  stz jimmy_cur_x_off
+ bra :ne_no_xoff_clear
+:ne_xoff_npc
+* NPC: clear info+68 (cur_x_off) but leave info+69 (prev_x_off)
+* so this frame's erase_all still finds the punch's offset rect.
+ ldy #68
+ lda #0
+ sta (info_ptr),y
 :ne_no_xoff_clear
 * Restore idle frame from sprite block
  ldy #42
@@ -14777,9 +14875,10 @@ spawn_dropped_mace
  lda npc_buf_next+1
  sta info_ptr+1
 
-* Zero the slot (NPC_INFO_SIZE = 68 bytes — covers compiled
-* mask fields at +60..+63 and the idle-mirror fields at +64..+67).
- ldy #67
+* Zero the slot (NPC_INFO_SIZE = 70 bytes — covers compiled mask
+* fields at +60..+63, idle-mirror fields at +64..+67, and the NPC
+* render-x offsets at +68..+69).
+ ldy #69
  lda #0
 :sm_clear
  sta (info_ptr),y
