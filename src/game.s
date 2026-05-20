@@ -12326,10 +12326,10 @@ set_anim_x_off
 * William's offensive punch.
  lda anim_ptr
  cmp #<anim_wpunch
- bne :sx_npc_no_off
+ bne :sx_chk_rpunch
  lda anim_ptr+1
  cmp #>anim_wpunch
- bne :sx_npc_no_off
+ bne :sx_chk_rpunch
 * anim_frame index → table.
  ldy #26
  lda (info_ptr),y
@@ -12347,6 +12347,33 @@ set_anim_x_off
 :sx_wp_mir
  lda :sx_wpunch_off_mirror,x
  bra :sx_npc_store
+
+:sx_chk_rpunch
+* Roper's offensive punch. RPUNCH1 = 11 wide, RPUNCH2 = 16 wide
+* (idle ROPER1 = 9). Same width pattern as Billy's punch1/2, so
+* the same -1 / -7 mirror offsets work.
+ lda anim_ptr
+ cmp #<anim_rpunch
+ bne :sx_npc_no_off
+ lda anim_ptr+1
+ cmp #>anim_rpunch
+ bne :sx_npc_no_off
+ ldy #26
+ lda (info_ptr),y
+ tax
+ cpx #2
+ bcc :sx_rp_idx_ok
+ ldx #0
+:sx_rp_idx_ok
+ ldy #4
+ lda (info_ptr),y
+ bne :sx_rp_mir
+ lda :sx_rpunch_off_right,x
+ bra :sx_npc_store
+:sx_rp_mir
+ lda :sx_rpunch_off_mirror,x
+ bra :sx_npc_store
+
 :sx_npc_no_off
  lda #0
 :sx_npc_store
@@ -12356,6 +12383,8 @@ set_anim_x_off
 
 :sx_wpunch_off_right  dfb $00,$00
 :sx_wpunch_off_mirror dfb $FF,$F8       ; WPUNCH1: -1, WPUNCH2: -8
+:sx_rpunch_off_right  dfb $00,$00
+:sx_rpunch_off_mirror dfb $FF,$F9       ; RPUNCH1: -1, RPUNCH2: -7
 
 *----------------------------------------------------------
 * set_billy_y_target - Set billy_y_target based on the new
