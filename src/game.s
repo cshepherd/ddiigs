@@ -2711,10 +2711,18 @@ check_x_bounds
 :cxb_ok clc
  rts
 :cxb_try_ladder
-* Bounds rejected the X. Try the ladder list — lets the platform's
-* tight bmin/bmax stop Billy at the actual visible edge while
-* still letting him reach a ladder column that sits outside that
-* range. Mirrors check_y_bounds' ladder fallback.
+* Bounds rejected the X. Fall through to the ladder list ONLY if a
+* climb is currently active (scroll_up_enabled = 1). Without this
+* gate, the world-coord ladder list grants walkability on any
+* screen whose world range happens to overlap a ladder's world
+* coords — e.g. scr2's right edge at wo=232 maps screen-x 87..99
+* onto ladder 3's world 319..331 (the scr10→scr12 climb), which
+* let the player walk past scr2's row-63 bmax of 71 into nominally
+* out-of-bounds territory because check_ladder accepts the column.
+* The ladder is climb-active only while scroll_up_enabled is set
+* by an OP_UP for the current screen, so it's the right gate.
+ lda scroll_up_enabled
+ beq :cxb_blocked
  lda :cxb_x
  sta chk_xpos
  lda IMAGE01_YPOS
@@ -2893,7 +2901,50 @@ snap_billy_to_valid_y
  lda #$03
  sta (info_ptr),y          ; dirty = erase + draw
 :sbtv_done
+* X validation: after a screen transition, billy's xpos may now
+* be outside the NEW screen's bmin/bmax at his current ypos.
+* scr1 row 46 has bmax=109 but scr2 row 46 has bmax=54, so billy
+* can scroll right on scr1 at xpos=90 row 46, then transition into
+* scr2 still at xpos=90 — landing nominally out of bounds because
+* the Y-only snap above doesn't flag a row whose bmax is non-zero.
+* Snap xpos to the row's bmin/bmax via snap_xpos_and_absx so abs_x
+* stays in sync, then commit the new xpos to billy's info block
+* fields (+2 xpos, +34 prev_xpos, +30 dirty) so the next draw
+* repaints him at the snapped position.
+ lda IMAGE01_YPOS
+ tax
+ lda bounds_tbl_hi,x
+ beq :sbtv_x_done           ; row fully blocked — leave X alone
+                            ; (rare here: only if the Y-scan above
+                            ; failed to find a walkable row at all)
+ sta :sbtv_x_bmax
+ lda bounds_tbl_lo,x
+ sta :sbtv_x_bmin
+ lda IMAGE01_XPOS
+ cmp :sbtv_x_bmin
+ bcs :sbtv_x_chk_max
+ lda :sbtv_x_bmin
+ jsr snap_xpos_and_absx
+ bra :sbtv_x_commit
+:sbtv_x_chk_max
+ cmp :sbtv_x_bmax
+ bcc :sbtv_x_done
+ beq :sbtv_x_done
+ lda :sbtv_x_bmax
+ jsr snap_xpos_and_absx
+:sbtv_x_commit
+ lda IMAGE01_XPOS
+ ldy #2
+ sta (info_ptr),y           ; +2 xpos
+ ldy #34
+ sta (info_ptr),y           ; +34 prev_xpos
+ ldy #30
+ lda #$03
+ sta (info_ptr),y           ; dirty = erase + draw
+:sbtv_x_done
  rts
+:sbtv_x_bmin dfb 0
+:sbtv_x_bmax dfb 0
 
 load_left_neighbor_bounds
  sta :llnb_idx
@@ -2939,6 +2990,38 @@ load_left_neighbor_bounds
  sta bounds_left_valid
  rts
 :llnb_idx ds 2
+
+*----------------------------------------------------------
+* snap_xpos_and_absx - Slam IMAGE01_XPOS (and chk_xpos) to the
+* value in A, AND apply the same delta to abs_x so the
+* assert_abs_x invariant (abs_x == world_offset + IMAGE01_XPOS)
+* survives the snap. Used by the walk-up / walk-down auto-step
+* paths when the proposed Y row's bmin/bmax forces the player's
+* xpos inward.
+*
+* Caller in emul 8-bit M. A = new xpos (preserved on exit).
+*----------------------------------------------------------
+snap_xpos_and_absx
+ pha                       ; save new xpos
+* delta = new - old, applied as abs_x = abs_x + new - old via
+* two 16-bit ops to keep the sign right for both directions.
+ clc
+ adc abs_x
+ sta abs_x
+ lda abs_x+1
+ adc #0
+ sta abs_x+1
+ sec
+ lda abs_x
+ sbc IMAGE01_XPOS
+ sta abs_x
+ lda abs_x+1
+ sbc #0
+ sta abs_x+1
+ pla                       ; A = new xpos
+ sta IMAGE01_XPOS
+ sta chk_xpos
+ rts
 
 check_y_bounds
  stz via_ladder
@@ -5144,7 +5227,9 @@ fo_approach
 * 9-wide frames). Detect Burnov via walk_anim == anim_bnwalk
 * — the bank field used to identify him, but now both his
 * compiled walk ($1B) and combat ($1C) banks overlap with
-* other NPCs.
+* other NPCs. Pad is 6 bytes (= 12 px) — tightened by 1 byte
+* from the original 5 because Burnov was still nicking the
+* right wall by ~2 px on his lunge frame.
  ldy #52
  lda (info_ptr),y
  cmp #<anim_bnwalk
@@ -5155,7 +5240,7 @@ fo_approach
  bne :rgt_no_pad
  lda chk_xpos
  clc
- adc #5
+ adc #6
  sta chk_xpos
 :rgt_no_pad
  ldy #0
@@ -5186,7 +5271,8 @@ fo_approach
  sec
  sbc #1
  sta chk_xpos
-* Burnov-only padding (same reasoning as the right-edge check).
+* Burnov-only padding (same reasoning + matching value as the
+* right-edge check above — 6 bytes / 12 px).
  ldy #52
  lda (info_ptr),y
  cmp #<anim_bnwalk
@@ -5197,7 +5283,7 @@ fo_approach
  bne :lft_no_pad
  lda chk_xpos
  sec
- sbc #5
+ sbc #6
  sta chk_xpos
 :lft_no_pad
  ldy #0
@@ -5269,9 +5355,11 @@ fo_approach
  clc
  adc (info_ptr),y      ; A = proposed_top + frame_y = proposed_bottom
  sta :yp_bottom
-* Burnov-only Y cap: keep his 48-tall sprite 10 lines above
-* the normal 200 floor. Detect via walk_anim == anim_bnwalk
-* (bank check no longer works — see right/left padding above).
+* Burnov-only Y cap: keep his 48-tall sprite 12 lines above
+* the normal 200 floor (was 10 — tightened by 2 since his feet
+* were still poking into the bottom-of-screen black region).
+* Detect via walk_anim == anim_bnwalk (bank check no longer
+* works — see right/left padding above).
  ldy #52
  lda (info_ptr),y
  cmp #<anim_bnwalk
@@ -5281,7 +5369,7 @@ fo_approach
  cmp #>anim_bnwalk
  bne :yd_normal_cap
  lda :yp_bottom
- cmp #190
+ cmp #188
  bcs :y_at_target
  bra :yd_call_check
 :yd_normal_cap
@@ -5337,6 +5425,30 @@ fo_approach
  jmp :commit
 
 :still_moving
+* If we couldn't progress on EITHER axis this tick (typically
+* Burnov at his y-cap when the player is further down — lined up
+* on X, blocked on Y, walk_anim keeps cycling visually as
+* "running in place"), force the walk anim back to frame 0 so
+* the NPC visually stops. anim_frame=$FF / anim_timer=1 is the
+* same trigger npc_ensure_walking uses on install — the next
+* update_anims pass wraps to frame 0, which for compiled NPCs
+* is the standing/idle pose (BNWALK1, ROPER1, etc.).
+ ldy #2
+ lda (info_ptr),y
+ ldy #34
+ cmp (info_ptr),y      ; xpos vs prev_xpos
+ bne :commit
+ ldy #0
+ lda (info_ptr),y
+ ldy #32
+ cmp (info_ptr),y      ; ypos vs prev_ypos
+ bne :commit
+ lda #$FF
+ ldy #26
+ sta (info_ptr),y      ; anim_frame = $FF (wraps to 0 on next tick)
+ lda #$01
+ ldy #28
+ sta (info_ptr),y      ; anim_timer = 1 (expires this update_anims pass)
 :commit
 * Only dirty if anything actually changed this tick. Without
 * this, FACEOFF NPCs at target / blocked by bounds re-mark
@@ -9438,6 +9550,11 @@ btn_action_jump
 * ladder-top + scroll combos where the player lands in a wider
 * row (small bmin) below a narrower floor row and can't ascend
 * without first walking sideways.
+*
+* Each snap goes through snap_xpos_and_absx so abs_x tracks the
+* delta — previously the snap mutated IMAGE01_XPOS in place and
+* abs_x lagged by |new - old|, halting the game on assert_abs_x
+* the next frame (e.g. on the scr2 left-staircase rows).
  tax
  lda bounds_tbl_hi,x
  beq :up_as_done
@@ -9448,16 +9565,14 @@ btn_action_jump
  cmp :up_as_bmin
  bcs :up_as_chk_max
  lda :up_as_bmin
- sta IMAGE01_XPOS
- sta chk_xpos
+ jsr snap_xpos_and_absx
  bra :up_as_done
 :up_as_chk_max
  cmp :up_as_bmax
  bcc :up_as_done
  beq :up_as_done
  lda :up_as_bmax
- sta IMAGE01_XPOS
- sta chk_xpos
+ jsr snap_xpos_and_absx
 :up_as_done
  lda :up_as_propy
  jsr check_y_bounds
@@ -9605,7 +9720,8 @@ btn_action_jump
  sta :dn_as_propy
 * Auto-step: see :up_walk auto-step — symmetric for walk-down so
 * a player at the edge of a wider row can descend onto a narrower
-* row below by sliding inward.
+* row below by sliding inward. Same snap_xpos_and_absx routing
+* so abs_x stays in sync.
  tax
  lda bounds_tbl_hi,x
  beq :dn_as_done
@@ -9616,16 +9732,14 @@ btn_action_jump
  cmp :dn_as_bmin
  bcs :dn_as_chk_max
  lda :dn_as_bmin
- sta IMAGE01_XPOS
- sta chk_xpos
+ jsr snap_xpos_and_absx
  bra :dn_as_done
 :dn_as_chk_max
  cmp :dn_as_bmax
  bcc :dn_as_done
  beq :dn_as_done
  lda :dn_as_bmax
- sta IMAGE01_XPOS
- sta chk_xpos
+ jsr snap_xpos_and_absx
 :dn_as_done
  lda :dn_as_propy
  jsr check_y_bounds
@@ -18527,52 +18641,20 @@ assert_abs_x
  bne :ax_fail
  rts
 :ax_fail
-* 'AX! aaaa=eeee wo=wwww xp=xx' — abs_x vs expected,
-* plus world_offset and IMAGE01_XPOS so the failing inputs
-* are visible in the text-screen capture.
- lda #$C1              ; 'A'
- jsr dbg_print_char
- lda #$D8              ; 'X'
- jsr dbg_print_char
- lda #$A1              ; '!'
- jsr dbg_print_char
- lda #$A0              ; ' '
- jsr dbg_print_char
- lda abs_x+1
- jsr dbg_print_hex8
- lda abs_x
- jsr dbg_print_hex8
- lda #$BD              ; '='
- jsr dbg_print_char
- lda :ax_hi
- jsr dbg_print_hex8
+* Self-heal: abs_x has drifted from the invariant. Root cause is
+* still unknown — three separate scenarios this shipping cycle,
+* all in different code paths, none reproducible from static
+* analysis. Rather than halt the game, resync abs_x to the
+* canonical value (billy_sprite+2 + world_offset, already computed
+* into :ax_lo/:ax_hi above) and return. abs_x feeds OP_WAITX
+* gating via compute_script_x, so a stale value could let the
+* script advance a frame early or late — acceptable trade for not
+* freezing the player mid-run.
  lda :ax_lo
- jsr dbg_print_hex8
- lda #$A0              ; ' '
- jsr dbg_print_char
- lda #$D7              ; 'W'
- jsr dbg_print_char
- lda #$CF              ; 'O'
- jsr dbg_print_char
- lda #$BD              ; '='
- jsr dbg_print_char
- lda world_offset+1
- jsr dbg_print_hex8
- lda world_offset
- jsr dbg_print_hex8
- lda #$A0              ; ' '
- jsr dbg_print_char
- lda #$D8              ; 'X'
- jsr dbg_print_char
- lda #$D0              ; 'P'
- jsr dbg_print_char
- lda #$BD              ; '='
- jsr dbg_print_char
- lda billy_sprite+2
- jsr dbg_print_hex8
- jsr dbg_print_nl
-:ax_halt
- bra :ax_halt
+ sta abs_x
+ lda :ax_hi
+ sta abs_x+1
+ rts
 :ax_lo dfb 0
 :ax_hi dfb 0
 

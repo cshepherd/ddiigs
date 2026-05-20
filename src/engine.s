@@ -1403,13 +1403,17 @@ _scroll_up
 * scroll_up_rbank=0 ($FF sentinel from OP_UP = no right fill).
  lda scroll_up_rbank
  and #$00FF
- beq :rgap_done
+ bne :rg_proceed
+ jmp :rgap_done
+:rg_proceed
  lda up_dst_start
  clc
  adc up_count
  sta rgap_start        ; first unfilled byte on right
  cmp #110
- bcs :rgap_done         ; no gap (filled to edge)
+ bcc :rg_have_gap       ; gap exists, continue
+ jmp :rgap_done         ; no gap (filled to edge)
+:rg_have_gap
  lda #110
  sec
  sbc rgap_start
@@ -1445,12 +1449,28 @@ _scroll_up
 :rgap_row
  ldy #0
 :rgap_word
+ cpy rgap_count
+ bcs :rgap_row_done
+ iny
+ cpy rgap_count
+ dey
+ bcs :rgap_tail
+* Word fits (Y+1 < count).
  lda [$F0],y
  sta [$F3],y
  iny
  iny
- cpy rgap_count
- bcc :rgap_word
+ bra :rgap_word
+:rgap_tail
+* 1-byte tail for odd rgap_count — see snap_transition's
+* matching :snap_rg_tail comment. Same hazard at PLAYFIELD_EDGE+1.
+ sep $20
+ lda [$F0],y
+ sta [$F3],y
+ rep $20
+ iny
+ bra :rgap_word
+:rgap_row_done
  lda $F0
  clc
  adc #$00A0
@@ -1749,12 +1769,32 @@ _scroll_up
  rep $20
  ldx snap_copy_rows
 :snap_rgrow ldy #0
-:snap_rgwrd lda [$F0],y
+:snap_rgwrd cpy rgap_count
+ bcs :snap_rg_row_done   ; Y >= count → done with this row
+ iny
+ cpy rgap_count          ; Y was pre-incremented to Y+1
+ dey                      ; restore Y for the upcoming store
+ bcs :snap_rg_tail       ; only 1 byte left (Y+1 == count) → 1-byte tail
+* Full word fits: 16-bit store of 2 bytes.
+ lda [$F0],y
  sta [$F3],y
  iny
  iny
- cpy rgap_count
- bcc :snap_rgwrd
+ bra :snap_rgwrd
+:snap_rg_tail
+* Odd count's last byte. 8-bit STA so it doesn't overrun into
+* byte 110 (one past PLAYFIELD_EDGE). The default 16-bit cpy/bcc
+* loop overshoots by 1 byte for odd counts — for scr12 climbs
+* (rgap_count=75) that splatters scr11 byte 75 across $18's
+* right margin for all 113 snap_copy_rows, and any later erase
+* whose union rect spans byte 110 propagates it to $01/$E1.
+ sep $20
+ lda [$F0],y
+ sta [$F3],y
+ rep $20
+ iny
+ bra :snap_rgwrd          ; Y == count → loop guard exits cleanly
+:snap_rg_row_done
  lda $F0
  clc
  adc #$00A0
