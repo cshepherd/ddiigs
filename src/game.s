@@ -9580,13 +9580,14 @@ btn_action_jump
  jsr dbg_print_nl
  rts
 :dbg_wx dfb 0
-:up_cur_bmax dfb 0
+* :up_as_propy / :dn_as_propy survive the auto-step retirement
+* because :up_walk and :ai_do_down still stash the proposed Y
+* in them for the subsequent check_y_bounds call. The other
+* auto-step locals (:up_cur_bmax / :up_as_bmin / :up_as_bmax /
+* :dn_as_bmin / :dn_as_bmax) and step-rule scratch were dead
+* once the stratum bounds took over the up/down walk gates.
 :up_as_propy dfb 0
-:up_as_bmin  dfb 0
-:up_as_bmax  dfb 0
 :dn_as_propy dfb 0
-:dn_as_bmin  dfb 0
-:dn_as_bmax  dfb 0
 :ns_not_space
  jmp :not_up              ; inverted — :not_up moved out of range
 :do_up
@@ -9832,20 +9833,10 @@ btn_action_jump
  sec
  sbc #1               ; proposed Y
  sta :up_as_propy
-* Auto-step (DISABLED): legacy per-screen xpos-snap that fired
-* when proposed row's bmin/bmax (in bounds_tbl_hi/lo) didn't
-* contain the current xpos. It was correct only when world
-* offset matched the canonical scr_origin; in mid-scroll
-* transition states (e.g. scr7 with wo=364 instead of 406)
-* bounds_tbl_hi is indexed by playfield col while xpos is a
-* world+wo position, so the per-screen bound at a different
-* col than the player's actual one gives wrong snaps —
-* visibly "teleporting" Billy from xpos=55 → 54 (= per-screen
-* row-59 bmax) even though world 419 is ~43 bytes shy of the
-* actual wall at world 462. The stratum bounds + ladder
-* fallback in check_y_bounds below handle the cases the
-* auto-step was meant to cover correctly regardless of wo,
-* so this whole snap is now a no-op.
+* Auto-step retired: the per-screen bmin/bmax snap teleported
+* xpos when wo was mid-transition. Stratum world-coord bounds
+* + ladder fallback in check_y_bounds below cover the case it
+* was meant to fix.
 :up_as_done
  lda :up_as_propy
  jsr check_y_bounds
@@ -9881,17 +9872,10 @@ btn_action_jump
  lda #1
  sta via_ladder
 :up_walk_step
-* Step rule (DISABLED): legacy per-screen check, same
-* indexing problem as the auto-step above. When wo is in a
-* mid-scroll transition state the per-screen bmax doesn't
-* correspond to the player's actual scr-local position, so
-* xpos > bmax fires spuriously (visible as "pushed back at
-* xpos=55 on scr7 row 60 when 100px from the diagonal" —
-* bmax=55 per-screen vs actual wall at world 462). check_y_-
-* bounds (stratum world coords) already blocks moves into a
-* wall and grants ladder fallback when applicable, so the
-* step rule's extra "narrower row above → require ladder"
-* gate is redundant.
+* Step rule retired: redundant with check_y_bounds (stratum
+* world coords + ladder fallback). The old "narrower row above
+* → require ladder" gate was per-screen-bmax-indexed, which
+* false-fired in mid-scroll wo states.
 :up_no_step
 * If this upward step is only permitted by the ladder (proposed
 * row is blocked but falls within ladder Y range), also require
@@ -9982,14 +9966,9 @@ btn_action_jump
  clc
  adc #1               ; proposed Y
  sta :dn_as_propy
-* Auto-step (DISABLED): same per-screen / mid-scroll indexing
-* problem as the :up_walk auto-step. With wo != scr_origin the
-* per-screen bmax loaded from bounds_tbl_hi doesn't correspond
-* to the player's actual scr-local position, so the snap pulls
-* xpos in the wrong direction (observed: pressing DOWN on scr7
-* near the second ladder teleported xpos from 89 → 54, the per-
-* screen scr7 row 59 bmax). check_y_bounds (stratum world coords)
-* handles the bounds check below correctly regardless of wo.
+* Auto-step retired (same reason as :up_walk's). Stratum world-
+* coord bounds + ladder fallback in check_y_bounds below cover
+* the down-walk case correctly regardless of wo.
 :dn_as_done
  lda :dn_as_propy
  jsr check_y_bounds

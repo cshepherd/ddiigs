@@ -1188,98 +1188,150 @@ bounds_scr0
  --^
 
 * Screen 1: boxes form an isometric angle
+* Screen 1: bmin-descending staircase rows 40-87, slope reshaped
+* from 1 byte per row to 1 byte per 2 rows so the byte-granular
+* bound tracks the art's ~1-px-per-row diagonal more closely.
+* Anchored at the bottom: rows 86-87 bmin=25 (base, the leftmost
+* reach of the staircase), stepping +1 every 2 rows up to rows
+* 40-41 bmin=48 at the top. (Shifted +25 from the previous
+* 0..23 placement to line up with the visible art.)
 bounds_scr1
  LUP 40
  dfb 0,0
  --^
- dfb $30,109
- dfb $2f,109
- dfb $2e,109
- dfb $2d,109
- dfb $2c,109
- dfb $2b,109
- dfb $2a,109
- dfb $29,109
- dfb $28,109
- dfb $27,109
- dfb $26,109
- dfb $25,109
- dfb $24,109
- dfb $23,109
- dfb $22,109
- dfb $21,109
- dfb $20,109
- dfb $1F,109
- dfb $1E,109
- dfb $1D,109
- dfb $1C,109
- dfb $1B,109
- dfb $1A,109
- dfb $19,109
- dfb $18,109
- dfb $17,109
- dfb $16,109
- dfb $15,109
- dfb $14,109
- dfb $13,109
- dfb $12,109
- dfb $11,109
- dfb $10,109
- dfb $0F,109
- dfb $0E,109
- dfb $0D,109
- dfb $0C,109
- dfb $0B,109
- dfb $0A,109
- dfb $09,109
- dfb $08,109
- dfb $07,109
- dfb $06,109
- dfb $05,109
- dfb $04,109
- dfb $03,109
- dfb $02,109
- dfb $01,109
- dfb $00,109
- LUP 111
+ LUP 2
+ dfb 48,109    ; rows 40-41
+ --^
+ LUP 2
+ dfb 47,109    ; rows 42-43
+ --^
+ LUP 2
+ dfb 46,109    ; rows 44-45
+ --^
+ LUP 2
+ dfb 45,109    ; rows 46-47
+ --^
+ LUP 2
+ dfb 44,109    ; rows 48-49
+ --^
+ LUP 2
+ dfb 43,109    ; rows 50-51
+ --^
+ LUP 2
+ dfb 42,109    ; rows 52-53
+ --^
+ LUP 2
+ dfb 41,109    ; rows 54-55
+ --^
+ LUP 2
+ dfb 40,109    ; rows 56-57
+ --^
+ LUP 2
+ dfb 39,109    ; rows 58-59
+ --^
+ LUP 2
+ dfb 38,109    ; rows 60-61
+ --^
+ LUP 2
+ dfb 37,109    ; rows 62-63
+ --^
+ LUP 2
+ dfb 36,109    ; rows 64-65
+ --^
+ LUP 2
+ dfb 35,109    ; rows 66-67
+ --^
+ LUP 2
+ dfb 34,109    ; rows 68-69
+ --^
+ LUP 2
+ dfb 33,109    ; rows 70-71
+ --^
+ LUP 2
+ dfb 32,109    ; rows 72-73
+ --^
+ LUP 2
+ dfb 31,109    ; rows 74-75
+ --^
+ LUP 2
+ dfb 30,109    ; rows 76-77
+ --^
+ LUP 2
+ dfb 29,109    ; rows 78-79
+ --^
+ LUP 2
+ dfb 28,109    ; rows 80-81
+ --^
+ LUP 2
+ dfb 27,109    ; rows 82-83
+ --^
+ LUP 2
+ dfb 26,109    ; rows 84-85
+ --^
+ LUP 2
+ dfb 25,109    ; rows 86-87
+ --^
+* The bottom LUP was 111 before; bumped to 112 because the
+* original count totalled 199 rows (gen_strata.py flagged it
+* on this rewrite).
+ LUP 112
  dfb 0,109
  --^
 
-* Screen 2: rows 0-39 blocked, rows 40-68 a rising bmax staircase
-* (bmax $30 → $4C, +1 per row), rows 69-199 fully walkable.
+* Screen 2: bmax-ascending staircase rows 40-68, slope reshaped
+* from 1 byte per row to 1 byte per 2 rows so the byte-granular
+* bound tracks the art's ~1-px-per-row diagonal more closely.
+* Anchored at the bottom: rows 67-68 bmax=76 (base, the widest
+* /rightmost reach), stepping -1 every 2 rows up to bmax=62 at
+* row 40. (Row 40 is a singleton because the 29-row range is
+* odd; it inherits the next-pair-down's -1 step.)
 bounds_scr2
  LUP 40
  dfb 0,0
  --^
- dfb 0,$30
- dfb 0,$31
- dfb 0,$32
- dfb 0,$33
- dfb 0,$34
- dfb 0,$35
- dfb 0,$36
- dfb 0,$37
- dfb 0,$38
- dfb 0,$39
- dfb 0,$3A
- dfb 0,$3B
- dfb 0,$3C
- dfb 0,$3D
- dfb 0,$3E
- dfb 0,$3F
- dfb 0,$40
- dfb 0,$41
- dfb 0,$42
- dfb 0,$43
- dfb 0,$44
- dfb 0,$45
- dfb 0,$46
- dfb 0,$47
- dfb 0,$48
- dfb 0,$49
- dfb 0,$4A
- dfb 0,$4B
- dfb 0,$4C
+ dfb 0,62      ; row 40 (singleton — odd row count)
+ LUP 2
+ dfb 0,63      ; rows 41-42
+ --^
+ LUP 2
+ dfb 0,64      ; rows 43-44
+ --^
+ LUP 2
+ dfb 0,65      ; rows 45-46
+ --^
+ LUP 2
+ dfb 0,66      ; rows 47-48
+ --^
+ LUP 2
+ dfb 0,67      ; rows 49-50
+ --^
+ LUP 2
+ dfb 0,68      ; rows 51-52
+ --^
+ LUP 2
+ dfb 0,69      ; rows 53-54
+ --^
+ LUP 2
+ dfb 0,70      ; rows 55-56
+ --^
+ LUP 2
+ dfb 0,71      ; rows 57-58
+ --^
+ LUP 2
+ dfb 0,72      ; rows 59-60
+ --^
+ LUP 2
+ dfb 0,73      ; rows 61-62
+ --^
+ LUP 2
+ dfb 0,74      ; rows 63-64
+ --^
+ LUP 2
+ dfb 0,75      ; rows 65-66
+ --^
+ LUP 2
+ dfb 0,76      ; rows 67-68
+ --^
  LUP 131
  dfb 0,109
  --^
