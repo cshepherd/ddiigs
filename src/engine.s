@@ -1933,8 +1933,6 @@ _scroll_up
 * wrap logic) for the eventual transition to the right neighbor.
  lda scroll_up_screen
  sta current_screen
- stz bounds_right_valid     ; neighbor tables are stale on transition
- stz bounds_left_valid
  stz scroll_up_enabled
  jsl load_screen_bounds_l     ; needs A = screen index — call before inc_border
  jsl inc_border_l             ; new screen scrolled in (vertical)
@@ -2600,6 +2598,28 @@ _init_level
  ldy #0
  lda [$F0],y
  sta ladder_base       ; bank $02 address of ladder_ptrs
+
+* Read strata index offset from header field at $02/0018
+ lda #$0018
+ sta $F0
+ sep $20
+ lda #$02
+ sta $F2
+ rep $20
+ ldy #0
+ lda [$F0],y
+ sta strata_base       ; bank $02 address of strata_index
+
+* Read screen→stratum table offset from header field at $02/001A
+ lda #$001A
+ sta $F0
+ sep $20
+ lda #$02
+ sta $F2
+ rep $20
+ ldy #0
+ lda [$F0],y
+ sta s2s_base          ; bank $02 address of screen_to_stratum
 
 * Read sprite address table offset from header field at $02/0012
  lda #$0012

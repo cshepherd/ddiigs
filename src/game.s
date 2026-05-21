@@ -801,11 +801,10 @@ run_script
  ldy #1
  lda [script_pc],y
  sta scroll_right_screen
- jsr load_right_neighbor_bounds
- ldy #1                ; reload Y — neighbor loader runs in 16-bit and
-                       ; leaves Y at $90 (low byte of 400) when emulation
-                       ; truncates it on return.
- lda [script_pc],y     ; reload A; bank logic below expects idx in A
+* (No longer pre-loads the right-neighbor's bounds. Walk-right's
+* check_x_bounds_walk_right now uses the world-coord stratum
+* bounds, which already cover whichever screen the player is
+* about to scroll into.)
 * scroll_src_bank represents "next content to bring in on right
 * scroll". Each screen N is loaded into bank $03+N.
 *
@@ -891,9 +890,8 @@ run_script
  ldy #1
  lda [script_pc],y
  sta scroll_left_screen
- jsr load_left_neighbor_bounds
- ldy #1                ; reload Y (loader leaves Y in a high state)
- lda [script_pc],y     ; reload A — load_left_neighbor_bounds trashed it
+* (No longer pre-loads the left-neighbor's bounds — see matching
+* note in :do_op_right above.)
 * Configure left source: bank of target screen, offset starts at
 * rightmost byte (109) so first fill pulls real pixels. scr9 is
 * now full-width art so the previous narrow special-case is gone.
@@ -1509,6 +1507,8 @@ run_script
  xce                   ; back to emulation
  sep $30
  mx %11
+ lda #$14
+ sta music_bank        ; track for M-resume / pause-resume
  lda script_pc          ; opcode only (1 byte)
  clc
  adc #1
@@ -2656,24 +2656,247 @@ bounds_tbl_hi                  ; max_x per scanline (0=blocked)
 * these checks, Billy ends up "stuck" once the bounds table swaps
 * on transition. Invalidated on screen transitions and reset by
 * the next OP_RIGHT/OP_LEFT in the new screen's script.
-bounds_tbl_right_lo
- LUP 200
+* (Neighbor-bounds tables retired — see BOUNDS_REFACTOR_PLAN.md.
+* The stratum bounds cover all world_x in the connected screens,
+* so check_x_bounds_walk_left/right no longer needs a separate
+* neighbor-row check. Saves 800 bytes of bank-$00 RAM + 2 valid
+* flags.)
+
+*----------------------------------------------------------
+* stratum_bounds_tbl — bank-$00 working copy of the current
+* stratum's per-row bounds table. Refreshed by
+* load_stratum_bounds when current_screen changes.
+*
+* Layout: 200 rows × 8 bytes per row =
+*   span1_bmin (2b), span1_bmax (2b), span2_bmin (2b), span2_bmax (2b)
+* All values are 16-bit little-endian, both inclusive.
+* Unused span sentinel: bmin=$FFFF, bmax=$0000 (impossible).
+*----------------------------------------------------------
+stratum_bounds_tbl
+ LUP 1600
  dfb 0
  --^
-bounds_tbl_right_hi
- LUP 200
- dfb 0
- --^
-bounds_tbl_left_lo
- LUP 200
- dfb 0
- --^
-bounds_tbl_left_hi
- LUP 200
- dfb 0
- --^
-bounds_right_valid dfb 0
-bounds_left_valid  dfb 0
+
+*----------------------------------------------------------
+* check_x_bounds_world — drop-in replacement for check_x_bounds
+* that reads from the stratum_bounds_tbl (world-coord bounds)
+* instead of the per-screen bounds_tbl_lo/hi.
+*
+* Input:  A = proposed xpos (screen-local)
+* Output: C=0 walkable, C=1 blocked
+* Reads:  IMAGE01_YPOS, world_offset, stratum_bounds_tbl
+* Trashes: A/X/Y (X widened to 16-bit internally)
+*
+* Per-row layout (8 bytes/row): span1_bmin, span1_bmax,
+* span2_bmin, span2_bmax (each 16-bit). Unused-span sentinel
+* is bmin=$FFFF, bmax=$0000 (impossible range, all checks fail).
+*----------------------------------------------------------
+check_x_bounds_world
+* Compute world_x = world_offset + proposed_xpos (8-bit A in).
+ clc
+ adc world_offset
+ sta :cxw_world_x
+ lda #0
+ adc world_offset+1
+ sta :cxw_world_x+1
+* Switch to native 16-bit for table indexing.
+ clc
+ xce
+ rep $30
+ mx %00
+* X = ypos * 8 (row offset in stratum_bounds_tbl).
+ lda IMAGE01_YPOS
+ and #$00FF
+ asl
+ asl
+ asl
+ tax
+* span1 check: bmin1 <= world_x <= bmax1?
+ lda :cxw_world_x
+ cmp stratum_bounds_tbl,x        ; world_x cmp bmin1
+ bcc :cxw_try_span2              ; world_x < bmin1 → fall to span2
+ lda stratum_bounds_tbl+2,x      ; A = bmax1
+ cmp :cxw_world_x                ; bmax1 cmp world_x
+ bcs :cxw_walkable               ; bmax1 >= world_x → walkable
+:cxw_try_span2
+ lda :cxw_world_x
+ cmp stratum_bounds_tbl+4,x
+ bcc :cxw_try_ladder
+ lda stratum_bounds_tbl+6,x
+ cmp :cxw_world_x
+ bcs :cxw_walkable
+:cxw_try_ladder
+* Both spans rejected. Fall through to check_ladder ONLY if a climb
+* is currently active (scroll_up_enabled = 1) — same gate as the
+* legacy check_x_bounds path, to keep cross-screen ladder
+* bleedover blocked when no OP_UP is in effect.
+ sec
+ xce                              ; back to emul 8-bit before check_ladder
+ lda scroll_up_enabled
+ beq :cxw_blocked
+* Restore chk_xpos and Y for check_ladder.
+ lda :cxw_world_x
+ sec
+ sbc world_offset
+ sta chk_xpos
+ lda IMAGE01_YPOS
+ jsr check_ladder
+ bcs :cxw_blocked
+ clc
+ rts
+:cxw_blocked
+ sec
+ rts
+:cxw_walkable
+ sec
+ xce
+ clc
+ rts
+:cxw_world_x ds 2
+
+*----------------------------------------------------------
+* check_x_bounds_world_outer — like check_x_bounds_world but
+* tests the OUTER envelope of the row's two spans, not strict
+* per-span membership. Used by the scroll-right/left gates so a
+* 4-byte scroll can pass THROUGH a narrow gap between spans (e.g.
+* scr1's staircase wall at row 83 leaves a 5-byte gap, world
+* 110..114, between span1=[0,109] and span2=[115,549] — scrolling
+* needs to step across that gap to reach the walkable region on
+* the far side). WALKING stays on the strict check, which still
+* blocks the player from coming to rest inside the gap.
+*
+* For single-span rows the unused-span sentinel ($FFFF, $0000)
+* makes min(span1_bmin, span2_bmin) = span1_bmin and
+* max(span1_bmax, span2_bmax) = span1_bmax, so the outer envelope
+* collapses to span1 — no special casing.
+*----------------------------------------------------------
+check_x_bounds_world_outer
+ clc
+ adc world_offset
+ sta :cxo_world_x
+ lda #0
+ adc world_offset+1
+ sta :cxo_world_x+1
+ clc
+ xce
+ rep $30
+ mx %00
+ lda IMAGE01_YPOS
+ and #$00FF
+ asl
+ asl
+ asl
+ tax
+* outer_min = min(span1_bmin, span2_bmin)
+ lda stratum_bounds_tbl,x
+ cmp stratum_bounds_tbl+4,x
+ bcc :cxo_min_done
+ lda stratum_bounds_tbl+4,x
+:cxo_min_done
+ sta :cxo_outer_min
+* outer_max = max(span1_bmax, span2_bmax)
+ lda stratum_bounds_tbl+2,x
+ cmp stratum_bounds_tbl+6,x
+ bcs :cxo_max_done
+ lda stratum_bounds_tbl+6,x
+:cxo_max_done
+ sta :cxo_outer_max
+* Test world_x ∈ [outer_min, outer_max]
+ lda :cxo_world_x
+ cmp :cxo_outer_min
+ bcc :cxo_blocked
+ lda :cxo_outer_max
+ cmp :cxo_world_x
+ bcs :cxo_walkable
+:cxo_blocked
+ sec
+ xce
+ sec
+ rts
+:cxo_walkable
+ sec
+ xce
+ clc
+ rts
+:cxo_world_x   ds 2
+:cxo_outer_min ds 2
+:cxo_outer_max ds 2
+
+*----------------------------------------------------------
+* dbg_validate_stratum_bounds — iterate Y=0..199 × xpos=0..109
+* comparing check_x_bounds (legacy per-screen) vs
+* check_x_bounds_world (new stratum world-coord). Logs any
+* mismatch via dbg_print as 'V! YY XX old=X new=X' for triage.
+* Trashes everything; intended as a one-shot debug call.
+*----------------------------------------------------------
+dbg_validate_stratum_bounds
+ lda IMAGE01_YPOS
+ sta :dv_save_y
+ lda chk_xpos
+ sta :dv_save_xp
+ stz :dv_y
+:dv_y_loop
+ lda :dv_y
+ sta IMAGE01_YPOS
+ stz :dv_x
+:dv_x_loop
+ lda :dv_x
+ sta chk_xpos
+ jsr check_x_bounds        ; legacy result in C
+ lda #0
+ rol                       ; A = 0 (walkable) or 1 (blocked)
+ sta :dv_old
+ lda :dv_x
+ jsr check_x_bounds_world  ; new result in C
+ lda #0
+ rol
+ cmp :dv_old
+ beq :dv_x_next
+* Mismatch — log it.
+ lda #$D6              ; 'V'
+ jsr dbg_print_char
+ lda #$A1              ; '!'
+ jsr dbg_print_char
+ lda #$A0
+ jsr dbg_print_char
+ lda :dv_y
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda :dv_x
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda :dv_old
+ jsr dbg_print_hex8
+ lda #$A0
+ jsr dbg_print_char
+ lda #0
+ jsr check_x_bounds_world  ; rerun to get C, just to compute display
+ lda #0
+ rol
+ jsr dbg_print_hex8
+ jsr dbg_print_nl
+:dv_x_next
+ inc :dv_x
+ lda :dv_x
+ cmp #110
+ bcc :dv_x_loop
+ inc :dv_y
+ lda :dv_y
+ cmp #200
+ bcc :dv_y_loop
+* Restore caller state.
+ lda :dv_save_y
+ sta IMAGE01_YPOS
+ lda :dv_save_xp
+ sta chk_xpos
+ rts
+:dv_y       dfb 0
+:dv_x       dfb 0
+:dv_old     dfb 0
+:dv_save_y  dfb 0
+:dv_save_xp dfb 0
 
 *----------------------------------------------------------
 * check_y_bounds - Test if a sprite at X position chk_xpos
@@ -2692,165 +2915,38 @@ bounds_left_valid  dfb 0
 * prevent Billy from walking into rows that will be blocked
 * once the bounds table swaps on transition.
 *----------------------------------------------------------
+* check_x_bounds — delegates to check_x_bounds_world (world-coord
+* stratum bounds + ladder fallback). The per-screen bounds_tbl_lo/hi
+* are no longer consulted here; sync_current_screen still keeps them
+* refreshed for any straggling caller, but they'll be retired once
+* all consumers route through the stratum table.
 check_x_bounds
- sta :cxb_x
- lda IMAGE01_YPOS
- tax
- lda bounds_tbl_lo,x
- sta :cxb_min
- lda bounds_tbl_hi,x
- beq :cxb_try_ladder        ; row fully blocked — fall through to ladder
- sta :cxb_max
- lda :cxb_x
- cmp :cxb_min
- bcc :cxb_try_ladder        ; below min — could still be a ladder column
- cmp :cxb_max
- beq :cxb_ok
- bcs :cxb_try_ladder        ; above max — same fallback so a ladder on
-                            ; the right edge of a platform works too
-:cxb_ok clc
- rts
-:cxb_try_ladder
-* Bounds rejected the X. Fall through to the ladder list ONLY if a
-* climb is currently active (scroll_up_enabled = 1). Without this
-* gate, the world-coord ladder list grants walkability on any
-* screen whose world range happens to overlap a ladder's world
-* coords — e.g. scr2's right edge at wo=232 maps screen-x 87..99
-* onto ladder 3's world 319..331 (the scr10→scr12 climb), which
-* let the player walk past scr2's row-63 bmax of 71 into nominally
-* out-of-bounds territory because check_ladder accepts the column.
-* The ladder is climb-active only while scroll_up_enabled is set
-* by an OP_UP for the current screen, so it's the right gate.
- lda scroll_up_enabled
- beq :cxb_blocked
- lda :cxb_x
- sta chk_xpos
- lda IMAGE01_YPOS
- jsr check_ladder
- bcs :cxb_blocked
- clc
- rts
-:cxb_blocked sec
- rts
-:cxb_x dfb 0
-:cxb_min dfb 0
-:cxb_max dfb 0
+ jmp check_x_bounds_world
 
 * Shared scratch — wrappers below stash the proposed X here
 * before delegating to check_x_bounds, so it survives the call.
 proposed_walk_x dfb 0
 
 *----------------------------------------------------------
-* check_x_bounds_walk_right - Like check_x_bounds, but also
-* requires the proposed X to be valid in the right-neighbor
-* screen's bounds (if loaded). Prevents Billy from advancing
-* into a row that's blocked on the screen scrolling in.
+* check_x_bounds_walk_right / _walk_left — collapsed to thin
+* delegators since the world-coord stratum bounds already cover
+* whatever the neighbor screen's row offered. The old neighbor
+* tables (bounds_tbl_left/right_*) are no longer consulted.
 *----------------------------------------------------------
 check_x_bounds_walk_right
- sta proposed_walk_x
- jsr check_x_bounds
- bcs :cxbR_blocked
- lda bounds_right_valid
- beq :cxbR_ok                  ; no neighbor known — current bounds suffice
- lda IMAGE01_YPOS
- tax
- lda bounds_tbl_right_hi,x
- beq :cxbR_ok                  ; neighbor row fully blocked = Y-mismatch
-                               ; (different walkable Y bands between screens);
-                               ; skip neighbor check, let walk proceed and rely
-                               ; on snap-on-transition (TODO) to fix Billy's Y.
- sta :cxbR_max
- lda proposed_walk_x
- cmp bounds_tbl_right_lo,x
- bcc :cxbR_blocked
- cmp :cxbR_max
- beq :cxbR_ok
- bcs :cxbR_blocked
-:cxbR_ok clc
- rts
-:cxbR_blocked sec
- rts
-:cxbR_max dfb 0
+ jmp check_x_bounds_world
 
-*----------------------------------------------------------
-* check_x_bounds_walk_left - Mirror of _walk_right for the left.
-*----------------------------------------------------------
 check_x_bounds_walk_left
- sta proposed_walk_x
- jsr check_x_bounds
- bcs :cxbL_blocked
- lda bounds_left_valid
- beq :cxbL_ok
- lda IMAGE01_YPOS
- tax
- lda bounds_tbl_left_hi,x
- beq :cxbL_ok                  ; neighbor row fully blocked = Y-mismatch
-                               ; (skip neighbor check, allow walk, rely on
-                               ; eventual snap-on-transition).
- sta :cxbL_max
- lda proposed_walk_x
- cmp bounds_tbl_left_lo,x
- bcc :cxbL_blocked
- cmp :cxbL_max
- beq :cxbL_ok
- bcs :cxbL_blocked
-:cxbL_ok clc
- rts
+ jmp check_x_bounds_world
 :cxbL_blocked sec
  rts
 :cxbL_max dfb 0
 
 *----------------------------------------------------------
-* load_right_neighbor_bounds / load_left_neighbor_bounds -
-* Copy screen A's bounds data from bank $02 into the right
-* or left neighbor table and mark the table valid. Called by
-* OP_RIGHT / OP_LEFT handlers.
-*----------------------------------------------------------
-load_right_neighbor_bounds
- sta :lrnb_idx
- clc
- xce
- rep $30
- mx %00
- lda :lrnb_idx
- and #$00FF
- asl
- clc
- adc bounds_base
- sta $F0
- sep $20
- lda #$02
- sta $F2
- rep $20
- ldy #0
- lda [$F0],y
- sta $F0                     ; F0/F2 = bank $02 addr of source table
- sep $20
- lda #$02
- sta $F2
- rep $20
- ldy #0                      ; source byte index
- ldx #0                      ; dest row index
-:lrnb_loop sep $20
- lda [$F0],y
- sta bounds_tbl_right_lo,x
- rep $20
- iny
- sep $20
- lda [$F0],y
- sta bounds_tbl_right_hi,x
- rep $20
- iny
- inx
- cpx #200
- bcc :lrnb_loop
- sec
- xce
- lda #1
- sta bounds_right_valid
- rts
-:lrnb_idx ds 2
-
+* (load_left_neighbor_bounds / load_right_neighbor_bounds —
+* deleted in the bounds refactor. OP_LEFT / OP_RIGHT no longer
+* preload neighbor bounds since the world-coord stratum bounds
+* already cover the neighbor row at scroll time.)
 *----------------------------------------------------------
 * snap_billy_to_valid_y - After a horizontal screen transition,
 * if Billy's current Y_top lands in a row that's blocked on the
@@ -2901,95 +2997,12 @@ snap_billy_to_valid_y
  lda #$03
  sta (info_ptr),y          ; dirty = erase + draw
 :sbtv_done
-* X validation: after a screen transition, billy's xpos may now
-* be outside the NEW screen's bmin/bmax at his current ypos.
-* scr1 row 46 has bmax=109 but scr2 row 46 has bmax=54, so billy
-* can scroll right on scr1 at xpos=90 row 46, then transition into
-* scr2 still at xpos=90 — landing nominally out of bounds because
-* the Y-only snap above doesn't flag a row whose bmax is non-zero.
-* Snap xpos to the row's bmin/bmax via snap_xpos_and_absx so abs_x
-* stays in sync, then commit the new xpos to billy's info block
-* fields (+2 xpos, +34 prev_xpos, +30 dirty) so the next draw
-* repaints him at the snapped position.
- lda IMAGE01_YPOS
- tax
- lda bounds_tbl_hi,x
- beq :sbtv_x_done           ; row fully blocked — leave X alone
-                            ; (rare here: only if the Y-scan above
-                            ; failed to find a walkable row at all)
- sta :sbtv_x_bmax
- lda bounds_tbl_lo,x
- sta :sbtv_x_bmin
- lda IMAGE01_XPOS
- cmp :sbtv_x_bmin
- bcs :sbtv_x_chk_max
- lda :sbtv_x_bmin
- jsr snap_xpos_and_absx
- bra :sbtv_x_commit
-:sbtv_x_chk_max
- cmp :sbtv_x_bmax
- bcc :sbtv_x_done
- beq :sbtv_x_done
- lda :sbtv_x_bmax
- jsr snap_xpos_and_absx
-:sbtv_x_commit
- lda IMAGE01_XPOS
- ldy #2
- sta (info_ptr),y           ; +2 xpos
- ldy #34
- sta (info_ptr),y           ; +34 prev_xpos
- ldy #30
- lda #$03
- sta (info_ptr),y           ; dirty = erase + draw
-:sbtv_x_done
+* (X snap workaround retired in the bounds refactor. Stratum
+* world-coord bounds give the same row Y the same walkable range
+* regardless of which screen the player is "on", so horizontal
+* transitions don't change a row's bmin/bmax — there's nothing
+* for X to be out-of-bounds against.)
  rts
-:sbtv_x_bmin dfb 0
-:sbtv_x_bmax dfb 0
-
-load_left_neighbor_bounds
- sta :llnb_idx
- clc
- xce
- rep $30
- mx %00
- lda :llnb_idx
- and #$00FF
- asl
- clc
- adc bounds_base
- sta $F0
- sep $20
- lda #$02
- sta $F2
- rep $20
- ldy #0
- lda [$F0],y
- sta $F0
- sep $20
- lda #$02
- sta $F2
- rep $20
- ldy #0
- ldx #0
-:llnb_loop sep $20
- lda [$F0],y
- sta bounds_tbl_left_lo,x
- rep $20
- iny
- sep $20
- lda [$F0],y
- sta bounds_tbl_left_hi,x
- rep $20
- iny
- inx
- cpx #200
- bcc :llnb_loop
- sec
- xce
- lda #1
- sta bounds_left_valid
- rts
-:llnb_idx ds 2
 
 *----------------------------------------------------------
 * snap_xpos_and_absx - Slam IMAGE01_XPOS (and chk_xpos) to the
@@ -3023,41 +3036,72 @@ snap_xpos_and_absx
  sta chk_xpos
  rts
 
+* check_y_bounds — world-coord stratum version. Tests whether the
+* sprite at chk_xpos can occupy proposed Y. Includes ladder fallback
+* (sets via_ladder=1 when access is via a ladder column).
+*
+* Input:  A = proposed Y, chk_xpos = sprite's screen X
+* Output: C=0 walkable, C=1 blocked; via_ladder set if ladder-routed.
 check_y_bounds
  stz via_ladder
- sta :proposed
-* Block if the sprite's bottom row would drop out of the playfield.
-* bottom = proposed + FRAME_Y - 1, must be <= 182 (last playfield row);
-* equivalently proposed + FRAME_Y <= 183, i.e., A < 184.
+ sta :cyb_proposed
+* Sprite-fits gate: proposed + FRAME_Y <= 183.
  clc
  adc FRAME_Y
  cmp #184
- bcs :blocked
- lda :proposed
- tax
- lda bounds_tbl_lo,x
- sta :bmin
- lda bounds_tbl_hi,x
- beq :try_ladder       ; row blocked, check ladders
- sta :bmax
+ bcs :cyb_blocked
+* world_x = wo + chk_xpos (16-bit).
  lda chk_xpos
- cmp :bmin
- bcc :try_ladder
- cmp :bmax
- beq :ok
- bcs :try_ladder
-:ok clc
- rts
-:try_ladder
- lda :proposed
- jsr check_ladder      ; C=0 if on ladder
- bcs :blocked
+ clc
+ adc world_offset
+ sta :cyb_world_x
+ lda #0
+ adc world_offset+1
+ sta :cyb_world_x+1
+* Native 16-bit for the stratum row lookup.
+ clc
+ xce
+ rep $30
+ mx %00
+ lda :cyb_proposed
+ and #$00FF
+ asl
+ asl
+ asl
+ tax
+ lda :cyb_world_x
+ cmp stratum_bounds_tbl,x
+ bcc :cyb_span2
+ lda stratum_bounds_tbl+2,x
+ cmp :cyb_world_x
+ bcs :cyb_walkable
+:cyb_span2
+ lda :cyb_world_x
+ cmp stratum_bounds_tbl+4,x
+ bcc :cyb_try_ladder
+ lda stratum_bounds_tbl+6,x
+ cmp :cyb_world_x
+ bcs :cyb_walkable
+:cyb_try_ladder
+ sec
+ xce
+ lda :cyb_proposed
+ jsr check_ladder
+ bcs :cyb_blocked
  lda #1
  sta via_ladder
  clc
  rts
-:blocked sec
+:cyb_walkable
+ sec
+ xce
+ clc
  rts
+:cyb_blocked
+ sec
+ rts
+:cyb_proposed dfb 0
+:cyb_world_x  ds 2
 
 *----------------------------------------------------------
 * check_y_bounds_strict - Same row-bounds test as check_y_bounds
@@ -3066,13 +3110,16 @@ check_y_bounds
 * limits (which check_y_bounds intentionally permits so players
 * can climb). Input/output match check_y_bounds.
 *----------------------------------------------------------
+* check_y_bounds_strict — world-coord stratum version for NPCs.
+* No ladder fallback (enemies can't climb), plus a "NPC floor"
+* gate that rejects rows below npc_min_y so AI doesn't squeeze
+* into staircase / ladder column rows meant only for the player.
+*
+* Input:  A = proposed Y, chk_xpos = sprite's screen X
+* Output: C=0 walkable, C=1 blocked.
 check_y_bounds_strict
  stz via_ladder
- sta :cyb_proposed
-* NPC floor gate: reject any Y below the screen's NPC floor row.
-* Prevents enemies from following players onto staircase / ladder
-* rows that the regular bounds table permits (because they're
-* meant for player traversal).
+ sta :cybs_proposed
  cmp npc_min_y
  bcs :cybs_floor_ok
  bra :cybs_blocked
@@ -3081,32 +3128,53 @@ check_y_bounds_strict
  adc FRAME_Y
  cmp #184
  bcs :cybs_blocked
- lda :cyb_proposed
- tax
- lda bounds_tbl_hi,x
- beq :cybs_blocked
- sta :cyb_bmax
- lda bounds_tbl_lo,x
- sta :cyb_bmin
+* world_x = wo + chk_xpos.
  lda chk_xpos
- cmp :cyb_bmin
- bcc :cybs_blocked
- cmp :cyb_bmax
- beq :cybs_ok
- bcs :cybs_blocked
-:cybs_ok
+ clc
+ adc world_offset
+ sta :cybs_world_x
+ lda #0
+ adc world_offset+1
+ sta :cybs_world_x+1
+ clc
+ xce
+ rep $30
+ mx %00
+ lda :cybs_proposed
+ and #$00FF
+ asl
+ asl
+ asl
+ tax
+ lda :cybs_world_x
+ cmp stratum_bounds_tbl,x
+ bcc :cybs_span2
+ lda stratum_bounds_tbl+2,x
+ cmp :cybs_world_x
+ bcs :cybs_walkable
+:cybs_span2
+ lda :cybs_world_x
+ cmp stratum_bounds_tbl+4,x
+ bcc :cybs_blocked_native
+ lda stratum_bounds_tbl+6,x
+ cmp :cybs_world_x
+ bcs :cybs_walkable
+:cybs_blocked_native
+ sec
+ xce
+ sec
+ rts
+:cybs_walkable
+ sec
+ xce
  clc
  rts
 :cybs_blocked
  sec
  rts
-:cyb_proposed dfb 0
-:cyb_bmin     dfb 0
-:cyb_bmax     dfb 0
-:proposed dfb 0
-:bmin dfb 0
+:cybs_proposed ds 2
+:cybs_world_x  ds 2
 via_ladder dfb 0
-:bmax dfb 0
 chk_xpos dfb 0
 * NPC minimum Y. Computed at load_screen_bounds: first row whose
 * bmax equals the floor bmax (= bmax[199]). Below this row are
@@ -3177,8 +3245,6 @@ sync_current_screen
  jmp :no_change
 :scr_xp_change
  sta current_screen
- stz bounds_right_valid     ; neighbor table is for old screen now
- stz bounds_left_valid
  jsr inc_border             ; new screen scrolled in
 :apply
 * Update scroll_lsrc_bank = bank of left-neighbor screen.
@@ -3255,8 +3321,6 @@ sync_current_screen_left
  cmp current_screen
  beq :scl_done
  sta current_screen
- stz bounds_right_valid     ; neighbor tables are stale on transition
- stz bounds_left_valid
  jsr inc_border             ; new screen scrolled in
  lda current_screen
  clc
@@ -3357,9 +3421,92 @@ load_screen_bounds
 
  sec
  xce                   ; back to emulation mode
+* Also refresh the stratum bounds working copy for this screen.
+* This is the new world-coord bounds table; the per-screen
+* bounds_tbl_lo/hi above will be retired once consumers migrate.
+ lda :scr_idx
+ jsr load_stratum_bounds
  rts
 :scr_idx ds 2
 :nmy_floor dfb 0
+
+*----------------------------------------------------------
+* load_stratum_bounds — copy the current screen's stratum
+* bounds table (1600 bytes) from bank $02 to bank-$00
+* stratum_bounds_tbl. Looks up the stratum index via
+* screen_to_stratum[scr_idx], then strata_index[stratum_idx*2]
+* to get the bank-$02 address of the per-stratum table.
+*
+* Input: A = current screen index
+* Trashes: A, X, Y, $F0-$F5, mode (returns in emul 8-bit)
+*----------------------------------------------------------
+load_stratum_bounds
+ sta :lsb_scr
+ clc
+ xce
+ rep $30
+ mx %00
+
+* Step 1: stratum_idx = screen_to_stratum[scr_idx] (1 byte)
+ lda s2s_base
+ sta $F0
+ sep $20
+ lda #$02
+ sta $F2
+ rep $20
+ lda :lsb_scr
+ and #$00FF
+ tay
+ sep $20
+ lda [$F0],y
+ sta :lsb_stratum
+
+* Step 2: stratum_table_addr = strata_index[stratum_idx*2] (16-bit)
+ rep $20
+ mx %00
+ lda strata_base
+ sta $F0
+ sep $20
+ lda #$02
+ sta $F2
+ rep $20
+ lda :lsb_stratum
+ and #$00FF
+ asl                    ; *2 (word entries)
+ tay
+ lda [$F0],y            ; A = stratum_table address (16-bit, bank $02)
+ sta $F0                ; reuse $F0 as the new source pointer
+ sep $20
+ lda #$02
+ sta $F2                ; $F0..$F2 = $02/stratum_table
+
+* Step 3: dst = bank-$00 stratum_bounds_tbl
+ rep $20
+ lda #stratum_bounds_tbl
+ sta $F3
+ sep $20
+ lda #$00
+ sta $F5                ; $F3..$F5 = $00/stratum_bounds_tbl
+
+* Step 4: copy 1600 bytes (= 800 words). Inner loop uses 16-bit
+* M for word reads/writes and 16-bit X for the counter.
+ rep $30
+ mx %00
+ ldx #800
+ ldy #0
+:lsb_copy
+ lda [$F0],y
+ sta [$F3],y
+ iny
+ iny
+ dex
+ bne :lsb_copy
+
+ sec
+ xce                    ; back to emul 8-bit
+ rts
+:lsb_scr     ds 2
+:lsb_stratum ds 2
 
 *----------------------------------------------------------
 * load_ladders - Copy the global ladder list from bank $02
@@ -3685,9 +3832,46 @@ cps_latch_b   ldal SNES_LATCH        ; bit 7 = P1 Start (raw), bit 6 = P2 Start
  eor #$01               ; toggle 0↔1
  sta paused
  beq :cp_unpaused
- jsr draw_pause_text    ; just paused — render label
+* Just paused — stop music. Skip if user has it manually muted
+* via M; we don't want unpause to undo their intentional mute.
+ lda music_muted
+ bne :cp_paused_text
+ clc
+ xce
+ rep $30
+ jsl NTPstop
+ sec
+ xce
+ sep $30
+ mx %11
+:cp_paused_text
+ jsr draw_pause_text
  rts
 :cp_unpaused
+* Just unpaused — resume music. Same gate on music_muted so an
+* M-muted run stays silent when the user toggles pause. Calls
+* NTPprepare + NTPplay + NTPsetplayvolume (see :pi_m_play for
+* why prepare is required after NTPstop).
+ lda music_muted
+ bne :cp_unpaused_text
+ clc
+ xce
+ rep $30
+ ldx #$00
+ lda music_bank
+ and #$00FF
+ tay
+ lda #$0000
+ jsl NTPprepare
+ lda #$0000
+ jsl NTPplay
+ lda #$0080
+ jsl NTPsetplayvolume
+ sec
+ xce
+ sep $30
+ mx %11
+:cp_unpaused_text
  jsr erase_pause_text   ; just unpaused — restore playfield rect
 :cp_done rts
 
@@ -5243,6 +5427,19 @@ fo_approach
  adc #6
  sta chk_xpos
 :rgt_no_pad
+* Playfield-right-edge clamp. chk_xpos is the NEW right-edge
+* byte after the step. With the stratum world-coord bounds, a
+* row whose walkable world span extends past wo+109 (= the
+* playfield right edge in screen-local terms) lets the NPC
+* step where its sprite draws past byte 109 — visible as
+* Williams pushing 2-3 px off the right side of the playfield
+* in the scr1 staircase region (scr1+scr2 row 40 has stratum
+* bmax=268 = walkable 120 bytes wide in world coords, but a
+* given wo only exposes 110 of those at a time). PLAYER_MAX_X
+* keeps Billy within the playfield; NPCs need an equivalent.
+ lda chk_xpos
+ cmp #PLAYFIELD_EDGE+1     ; new right-edge byte must be <= 109
+ bcs :x_at_target          ; >= 110 → blocked
  ldy #0
  lda (info_ptr),y      ; current ypos
  jsr check_y_bounds_strict
@@ -8475,6 +8672,13 @@ kbd_buf_idx   dfb 0
 kbd_last_event dfb 0  ; debug: latest non-$FF event byte from MCU
 kbd_call_count dfb 0  ; debug: increments every time completion fires
 kbd_err_flag   dfb 0  ; debug: $FF if SyncADBReceive returned w/ C=1
+music_muted    dfb 0  ; M-key toggle: 0=playing, 1=stopped
+music_bank     dfb $13 ; current NTP music bank ($13=mission1, $14=boss).
+                       ; Tracked so M-resume and pause-resume can NTPprepare
+                       ; with the right song before NTPplay (NTPstop appears
+                       ; to deinstall the IRQ; plain NTPplay alone doesn't
+                       ; restart it cleanly, and SFX would still hit the
+                       ; Unclaimed Sound Interrupt).
 
 * ADB scancodes for game input (Toolbox Ref Vol 1 Table 3-5).
 ADB_KEY_W = $0D
@@ -8483,6 +8687,7 @@ ADB_KEY_S = $01
 ADB_KEY_D = $02
 ADB_KEY_J = $26
 ADB_KEY_L = $25
+ADB_KEY_M = $2E
 
 *----------------------------------------------------------
 * process_input - Read keyboard, update Billy's state.
@@ -9154,6 +9359,53 @@ btn_action_jump
 :has_key
  lda $c010
  and #$7f
+* M (or m) → toggle background music. NTPplay/NTPstop must run
+* in native 16-bit mode (same protocol as title.s / OP_END /
+* game_over). Autorepeat is disabled in kbd_init so the $C000
+* strobe is one-shot per press — no edge-detect needed.
+ cmp #'m'
+ beq :pi_m_toggle
+ cmp #'M'
+ bne :pi_m_skip
+:pi_m_toggle
+ sta $c010                ; consume strobe
+ lda music_muted
+ eor #$01
+ sta music_muted
+ beq :pi_m_play           ; new state 0 → unmuted → play
+ clc
+ xce
+ rep $30
+ jsl NTPstop
+ sec
+ xce
+ sep $30
+ mx %11
+ rts
+:pi_m_play
+* NTPstop appears to deinstall the IRQ handler; plain NTPplay
+* doesn't restart things — SFX would still raise the Unclaimed
+* Sound Interrupt. Re-run NTPprepare with the current music
+* bank before NTPplay, and re-apply the SFX-friendly volume.
+ clc
+ xce
+ rep $30
+ ldx #$00
+ lda music_bank
+ and #$00FF
+ tay
+ lda #$0000
+ jsl NTPprepare
+ lda #$0000
+ jsl NTPplay
+ lda #$0080
+ jsl NTPsetplayvolume
+ sec
+ xce
+ sep $30
+ mx %11
+ rts
+:pi_m_skip
 * Grab-state interception. While grab_punch_timer is non-zero
 * the BGRAB1/xHELD2 sub-anim is playing — eat all input.
 * Otherwise: if grabbing, route through handle_grab_input
@@ -9263,6 +9515,14 @@ btn_action_jump
  jsr dbg_golden_state
  rts
 :ns_not_g
+ cmp #'V'
+ bne :ns_not_v_caps
+* Validate stratum bounds against per-screen bounds for the current
+* screen. Iterates all (Y, X) pairs and prints any mismatches.
+* Single-shot diagnostic; trashes lots of state.
+ jsr dbg_validate_stratum_bounds
+ rts
+:ns_not_v_caps
  cmp #' '
  bne :ns_not_space
 * Debug: print abs_x and Billy's world-byte x (world_offset+xpos).
@@ -9555,6 +9815,17 @@ btn_action_jump
 * delta — previously the snap mutated IMAGE01_XPOS in place and
 * abs_x lagged by |new - old|, halting the game on assert_abs_x
 * the next frame (e.g. on the scr2 left-staircase rows).
+*
+* Gate the snap on "player is on a ladder column at current Y."
+* Off-ladder, a tighter row above means a wall edge — should
+* block, not teleport (e.g. scr5 row 62 xpos=1 → row 61 bmin=50
+* was snapping the player from the left wall onto the ledge).
+* check_ladder needs chk_xpos already set (done above) and Y in
+* A; bcs = not on ladder.
+ lda IMAGE01_YPOS
+ jsr check_ladder
+ bcs :up_as_done
+ lda :up_as_propy
  tax
  lda bounds_tbl_hi,x
  beq :up_as_done
@@ -9616,13 +9887,33 @@ btn_action_jump
 * climbing the angled wall edge. Equal/larger proposed bmax is
 * an ordinary vertical walk on a uniform or widening surface
 * (scr5 ledge → corridor transitions, etc.).
+*
+* The rule reads the LEGACY per-screen bounds_tbl_hi (which is
+* still maintained alongside the stratum tables for this and the
+* auto-step path). For a screen-boundary case where current_screen
+* hasn't flipped yet, the per-screen value can be 0 (blocked) on
+* a row whose stratum entry says walkable — e.g. Billy at row 83
+* on scr0 (bounds_tbl_hi[82]=0) where stratum 0 row 82 is the
+* scr1 floor at world 148. Treat per-screen=0 as "screen doesn't
+* claim this row" and skip the step rule — check_y_bounds_world
+* already authorized the move via the stratum bounds.
+*
+* Earlier the test was "proposed bmax < current bmax → block".
+* That blocked ANY up-step into a narrower row regardless of
+* where xpos sat — fine when Billy was right next to the wall
+* edge, wrong when he was far inside the floor. The actual
+* "stepping up into the wall" condition is xpos > proposed_bmax
+* (the new row's right wall would cut into the sprite). Compare
+* xpos vs proposed_bmax directly so low-xpos up-walks on scr2's
+* angled staircase are allowed.
  ldx IMAGE01_YPOS
  lda bounds_tbl_hi,x
- sta :up_cur_bmax
+ beq :up_no_step      ; current row blocked per-screen — defer to stratum
  dex
  lda bounds_tbl_hi,x
- cmp :up_cur_bmax
- bcs :up_no_step      ; proposed >= current → flat or widening
+ beq :up_no_step      ; proposed row blocked per-screen — defer to stratum
+ cmp IMAGE01_XPOS
+ bcs :up_no_step      ; proposed_bmax >= xpos → no wall conflict
 * Proposed bmax < current → narrower row. Require an active
 * ladder + scroll_up_enabled. Use x-only ladder check so the
 * partner can pick up climb-anim from any starting Y, mirroring
@@ -9816,6 +10107,25 @@ btn_action_jump
  bcs :left_scroll_ok
  jmp :left_walk        ; (wo-4) low < min low → walk
 :left_scroll_ok
+* Stratum-bounds gate: scrolling left → world_x decreases by 4.
+* Use OUTER-envelope check (see scroll-right counterpart) so a
+* scroll can step through inter-span gaps to reach a walkable
+* region on the far side. Pass xpos-4 (clamped at 0 if it would
+* underflow) so check_x_bounds_world_outer computes the
+* post-scroll world_x.
+ lda IMAGE01_XPOS
+ cmp #4
+ bcc :lso_xpos_zero      ; xpos < 4 → clamp test xpos to 0
+ sec
+ sbc #4
+ bra :lso_xpos_ok
+:lso_xpos_zero
+ lda #0
+:lso_xpos_ok
+ jsr check_x_bounds_world_outer
+ bcc :lso_bounds_ok
+ jmp :left_walk
+:lso_bounds_ok
 * Co-op right-clamp: a left-scroll shifts the other player's
 * xpos RIGHT by 4 to keep them anchored to the same world
 * position. If their right edge (xpos + frame_x) would push
@@ -10137,6 +10447,22 @@ btn_action_jump
  beq :right_scroll_ok  ; equal → ok (reaching exactly max)
  jmp :walk_right       ; (wo+4) low > max low → walk
 :right_scroll_ok
+* Stratum-bounds gate: scrolling moves wo, leaving xpos unchanged
+* — equivalent in world coords to xpos += 4. Reject the scroll if
+* the post-scroll world position (= wo+xpos+4) would land in a row
+* that's entirely OOB on the stratum's outer envelope at billy's
+* current Y. We use the OUTER envelope (not strict 2-span check)
+* so a 4-byte scroll can step THROUGH narrow gaps between spans
+* (e.g. scr1's row-83 wall base, world 110..114) and reach the
+* walkable territory on the far side. Walking still uses the
+* strict check, so the player can't come to rest inside a gap.
+ lda IMAGE01_XPOS
+ clc
+ adc #4
+ jsr check_x_bounds_world_outer
+ bcc :rso_bounds_ok
+ jmp :walk_right
+:rso_bounds_ok
 * Co-op left-clamp: if Jimmy is active AND the other player is
 * still alive AND within 4 px of xpos=0, a 4-byte right-scroll
 * would push them off the left edge of the playfield. Walk instead.
@@ -12541,11 +12867,21 @@ set_billy_y_target
  cmp active_bspinkick_anim+1
  bne :sy_descend
 :sy_jump
-* If we're already mid-jump (billy_y_target non-zero, i.e. an
-* anim_jump → anim_bspinkick chain or another start_anim during
-* the rise), keep the existing target. Re-computing from the
-* current (already-lifted) ypos would clamp the peak too low.
+* Keep existing target if Billy is mid-arc — re-computing from
+* the current (already-lifted) ypos would clamp the peak too low
+* OR set a less-negative target than billy_y_off, causing the
+* ramp to run the wrong direction.
+*
+* Two-part check: target != 0 (= ramp still active) OR
+* billy_y_off != 0 (= Billy already lifted, mid-arc). The second
+* check catches the narrow window where the spinkick's "last
+* frame" handler just zeroed target but billy_y_off hasn't
+* finished descending yet — without it, a chained jump on that
+* exact frame recomputed target to e.g. -16 while billy_y_off was
+* still -20, and the ramp couldn't reach the new target.
  lda billy_y_target
+ bne :sy_done
+ lda billy_y_off
  bne :sy_done
 * Cap the peak so the player can't go above the playfield top.
 * Normal peak is JUMP_PEAK_Y_OFF (-20), but if they're jumping
@@ -12562,12 +12898,33 @@ set_billy_y_target
  bra :sy_done
 :sy_jump_clamp
 * Available rise = ypos - JUMP_MIN_Y; target = -(available_rise)
-* expressed as (JUMP_MIN_Y - ypos) which is naturally negative.
+* expressed as (JUMP_MIN_Y - ypos), naturally negative for the
+* ypos range where this branch fires (ypos > JUMP_MIN_Y).
+*
+* SAFETY: the dispatch in update_billy_y_off assumes target is
+* either 0 or a NEGATIVE EVEN value (so the by-2 ramp hits target
+* exactly via unsigned cmp). For ypos <= JUMP_MIN_Y the formula
+* gives a non-negative target — clamp to 0 (Billy is already at or
+* above peak). For any odd ypos the formula gives an ODD target —
+* round toward 0 (less negative) so the ramp terminates exactly.
+* The branch only fires for ypos in (JUMP_MIN_Y, 25), so the round
+* produces a target in [-18, 0] — already inside the valid
+* [-20, 0] range, no further cap needed. (An earlier draft tried
+* to cap with `cmp #JUMP_PEAK_Y_OFF; bcs in_range` which is an
+* UNSIGNED compare; for a rounded-to-$00 case it stomped target
+* to -20 and pumped Billy off the top of the screen.)
  ldy #0
  lda #JUMP_MIN_Y
  sec
  sbc (info_ptr),y
+ bpl :sy_clamp_zero        ; A >= 0 → ypos <= JUMP_MIN_Y, can't rise
+ clc
+ adc #1                    ; round odd toward 0 (-1 → 0, -3 → -2, etc.)
+ and #$FE                  ; clear bit 0 (no-op for even, finishes round for odd)
  sta billy_y_target
+ bra :sy_done
+:sy_clamp_zero
+ stz billy_y_target
  bra :sy_done
 :sy_descend
  stz billy_y_target
@@ -12584,6 +12941,14 @@ set_billy_y_target
 * Called once per game-loop tick (after update_anims).
 *----------------------------------------------------------
 update_billy_y_off
+* SAFETY: billy_y_off is only ever meant to be 0 or in -20..-2
+* (= top bit set). A POSITIVE value (top bit clear AND non-zero)
+* would put descend mode into a runaway loop. Snap to 0.
+ lda billy_y_off
+ beq :uby_safety_ok
+ bmi :uby_safety_ok
+ stz billy_y_off
+:uby_safety_ok
  lda billy_y_off
  cmp billy_y_target
  beq :uby_done
@@ -12596,14 +12961,24 @@ update_billy_y_off
 * feet unerased.
  lda billy_sprite       ; current ypos
  sta billy_sprite+32    ; prev_ypos
-* Dispatch on billy_y_target — only ever 0 (descend toward
-* ground) or JUMP_PEAK_Y_OFF = $EC = -20 (rise toward peak).
-* Signed cmp via SBC + N flag would also work, but a direct
-* dispatch is clearer and avoids the unsigned-cmp trap that
-* treats $00 as < $EC.
- lda billy_y_target
- beq :uby_descend       ; target = 0 → Billy on the ground side, increase off+ypos
-* target = -20 ($EC): rise. y_off and ypos both decrease by 2 (Billy moves UP).
+* Direction dispatch: use SIGNED comparison of billy_y_off vs
+* target. If billy_y_off > target (signed), Billy is closer to
+* ground than the target, ramp UP (rise: billy_y_off -= 2, ypos
+* -= 2). If billy_y_off < target, Billy is past the target,
+* ramp DOWN (descend: both += 2). The earlier "target == 0 →
+* descend, else rise" dispatch was wrong whenever target changed
+* mid-arc: e.g. billy_y_off=-20, new target=-16 would rise forever
+* because old code only checked target's sign, not the relative
+* direction between billy_y_off and target.
+*
+* For values both in [-20, 0] (= the design range), SBC's N flag
+* directly reflects the signed sign of the difference — no signed
+* overflow possible because |diff| <= 20 << 127.
+ lda billy_y_off
+ sec
+ sbc billy_y_target
+ bmi :uby_descend       ; billy_y_off < target signed → increment toward target
+* billy_y_off > target signed → decrement toward target (rise)
  lda billy_y_off
  sec
  sbc #2
@@ -12615,7 +12990,6 @@ update_billy_y_off
  sta IMAGE01_YPOS
  bra :uby_dirty
 :uby_descend
-* target = 0: descend. y_off and ypos both increase by 2 (Billy moves DOWN).
  lda billy_y_off
  clc
  adc #2
@@ -18008,6 +18382,16 @@ sfx_amplify
 *----------------------------------------------------------
 sound_play
  mx %11
+* NTPstreamsound relies on NTP's IRQ-driven playback being
+* active to service the SFX oscillators. With music stopped
+* (M-toggle or auto-pause), the IRQ handler is inactive and
+* the SFX firing raises an Unclaimed Sound Interrupt → crash.
+* Skip the SFX entirely while muted; user already accepted
+* a silent run by muting.
+ lda music_muted
+ beq :sp_proceed
+ rts
+:sp_proceed
  php
 
  clc

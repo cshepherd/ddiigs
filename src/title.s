@@ -1317,55 +1317,31 @@ load_ccc
 :err rts
 
 *----------------------------------------------------------
-* load_drugs - Load DRUGS.SHR to bank $02 starting at $02/2000.
-* Same protocol as load_ccc: 1 KB chunks via ProDOS 8 read,
-* destination address advances $1000 per chunk and rolls into
-* the next bank if it wraps. drugs.shr is 32 KB, so it lives
-* entirely in bank $02 ($02/2000..$02/9FFF), including its
-* palette + SCBs at $02/9E00..$02/9FFE.
+* load_drugs - Load DRUGS.PAK and _UnPackBytes-decompress it
+* to bank $02 starting at $02/2000. The updated drugs.shr art
+* has lower entropy than the original so PackBytes RLE shrinks
+* it substantially; we defer to load_titlentp_pak which already
+* implements the load-PAK-into-$17/$2000 + multi-call unpack
+* sequence used for NTPPLAYER/TITLE.NTP/SELECT.
+*
+* Decompressed image still lands at $02/2000..$02/9FFE (32 KB:
+* pixels + SCBs + palette), so the downstream "copy $02/2000 →
+* $01/2000" path needs no changes.
 *----------------------------------------------------------
  mx %11
 load_drugs
- jsr $BF00
- dfb $C8              ; OPEN
- da drugs_open
- bcs :err
- lda drugs_oref
- sta drugs_rref
- sta drugs_cref
-
- lda #$00
- sta t_dest
- lda #$20
- sta t_dest+1          ; destination starts at $xx/2000
+ lda #<drugs_path
+ sta t2_open+1
+ lda #>drugs_path
+ sta t2_open+2
  lda #$02
- sta t_bank
-
-:readlp
- jsr $BF00
- dfb $CA              ; READ
- da drugs_read
- bcs :close
-
- jsr copy_chunk_bank
-
- lda t_dest+1
- clc
- adc #$04              ; advance dest by 1KB
- sta t_dest+1
- bcc :readlp
+ sta t_unpack_bank
  lda #$00
- sta t_dest+1
- inc t_bank
- bra :readlp
-
-:close
- php
- jsr $BF00
- dfb $CC              ; CLOSE
- da drugs_close
- plp
-:err rts
+ sta t_unpack_offset
+ lda #$20
+ sta t_unpack_offset+1
+ jsr load_titlentp_pak
+ rts
 
 *----------------------------------------------------------
 * load_titlentp_pak - Load a TITLE.NTPx.PAK file to bank
@@ -1654,7 +1630,7 @@ drugs_close dfb 1
 drugs_cref dfb 0
 
 drugs_path dfb 17
- asc '/DDIIGS/DRUGS.SHR'
+ asc '/DDIIGS/DRUGS.PAK'
 
 *----------------------------------------------------------
 * fadeOut - Fade all 16 palettes (256 words at $019E00) to

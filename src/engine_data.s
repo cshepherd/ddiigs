@@ -37,3 +37,11 @@ up_dst_start             ds 2
 up_count                 ds 2
 push_ymin                dfb 0
 push_ymax                dfb 0
+
+* Bounds-refactor (Option A): bank-$02 addresses of the strata tables.
+* Read from the level header at init_level via $02/0018 (strata_index)
+* and $02/001A (screen_to_stratum). strata_base holds the address of
+* the strata_index array (4 × 2 bytes), s2s_base holds the address of
+* the screen_to_stratum byte table.
+strata_base              ds 2
+s2s_base                 ds 2
