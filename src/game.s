@@ -5574,9 +5574,14 @@ fo_approach
  clc
  adc (info_ptr),y      ; A = proposed_top + frame_y = proposed_bottom
  sta :yp_bottom
-* Burnov-only Y cap: keep his 48-tall sprite 12 lines above
-* the normal 200 floor (was 10 — tightened by 2 since his feet
-* were still poking into the bottom-of-screen black region).
+* Burnov-only Y cap. The earlier cap "12 lines above the 200
+* floor" (cmp #188) was relative to the playfield bottom, but
+* on scr13 (boss fight) the visible floor in the art is at
+* row 90, not 200 — Burnov's 48-tall sprite would happily walk
+* his feet 9+ rows below the floor before the 188 cap fired.
+* Tighten to cmp #91 so proposed_bottom max = 90 = bottom row
+* of the visible scr13 floor. With frame_y=48 this caps top
+* at 42, putting Burnov's feet at row 89 (just on the floor).
 * Detect via walk_anim == anim_bnwalk (bank check no longer
 * works — see right/left padding above).
  ldy #52
@@ -5588,7 +5593,7 @@ fo_approach
  cmp #>anim_bnwalk
  bne :yd_normal_cap
  lda :yp_bottom
- cmp #188
+ cmp #91
  bcs :y_at_target
  bra :yd_call_check
 :yd_normal_cap

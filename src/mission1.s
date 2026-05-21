@@ -501,6 +501,15 @@ level_script
                                   ; outside this screen's walkable bounds.
     db OP_WAITCLR       ; wait for enemies defeated
 
+* Hold for ~1.5 seconds so the final BURNGONE SFX (~2-3s
+* playback, triggered at the start of the dissolve anim)
+* finishes before OP_END calls NTPstop + COMPLETE-jingle
+* NTPplay. Without this the SFX tail (even the very-quiet
+* end) leaks into the start of the game-over jingle. 60 VBLs
+* covered the audible part but a softer remnant still bled
+* through; bumped to 90 VBLs.
+    db OP_WAIT,90
+
     db OP_END           ; end of level
 
 sfx_table
@@ -1129,16 +1138,24 @@ ladders dfb 3                   ; ladder count
  dw 453                         ; x_left
  dw 460                         ; x_right
  dfb 0,41                       ; y_top=0, y_bottom=41
-* Ladder 3: screen 12 → screen 10 above.
-* Visible scr9 ladder art is centered at world ~321 (col 25 with
-* wo=296). Bounds are asymmetric (319..331, width 12, center=325)
-* so the snap formula center stays at 325 — formula gives
-* 325-296-3 = 26, with -5 scr12 nudge → xpos=21 (Billy center
-* col 25, on visible). x_left=319 widens the left side so
-* check_ladder accepts swx=317 (xpos=21, with LADDER_TOL=2).
+* Ladder 3: screen 9 → screen 12 above (per OP_UP,12 in the
+* level script; the older comment said "12 → 10" which was
+* incorrect). Visible scr9 ladder art is centered at world ~321
+* (col 25 with wo=296). Bounds are asymmetric (319..331, width
+* 12, center=325) so the snap formula center stays at 325 —
+* formula gives 325-296-3 = 26, with -5 scr12 nudge → xpos=21
+* (Billy center col 25, on visible). x_left=319 widens the
+* left side so check_ladder accepts swx=317 (xpos=21, with
+* LADDER_TOL=2).
+*
+* y_bottom=46 (NOT 68) so the engage-row gate in check_ladder
+* (proposed_y == y_bottom) accepts when the player is at
+* ypos=47 — scr9's only walkable row, the de-facto floor row
+* for this ladder. Climb traversal up through ypos=1 still
+* works via is_climbing=1 bypass.
  dw 319                         ; x_left  (center=325, 12-byte wide bounds)
  dw 331                         ; x_right
- dfb 0,68                       ; y_top=0, y_bottom=68
+ dfb 0,46                       ; y_top=0, y_bottom=46
 
 *==========================================================
 * Per-screen Y bounds tables
@@ -1407,7 +1424,14 @@ bounds_scr9
  dfb 0,0
  --^
  LUP 1
- dfb 22,109
+ dfb 98,109       ; row 47 [98, 109] in scr9-local cols. Stratum
+                  ; origin=220 → world [318, 329]. The OP_SNAP-
+                  ; STATE_DEFER for ladder3 puts Billy at xpos=21
+                  ; wo=296 = world 317; the platform he stands on
+                  ; should end at xpos=22 (= world 318), one byte
+                  ; left of the ladder3 art at world 329. With
+                  ; bmin=98 the player can't walk farther left than
+                  ; xpos=22 from the locked-wo state.
  --^
  LUP 152
  dfb 0,0
@@ -1419,7 +1443,13 @@ bounds_scr10
  dfb 0,0
  --^
  LUP 1
- dfb 0,85
+ dfb 0,$0D        ; row 47 [0, 13] in scr10-local cols. Stratum
+                  ; origin=440 → world [440, 453]. Billy lands at
+                  ; world 453 (xpos=81 wo=372) after the OP_SNAP-
+                  ; STATE pop; the platform should not extend any
+                  ; farther right than that. Left side stays open
+                  ; so the descent path scroll-left into scr8/scr9
+                  ; (OP_LEFT,8 / OP_LEFT,9 below) still works.
  --^
  LUP 152
  dfb 0,0
@@ -1448,15 +1478,69 @@ bounds_scr12
  dfb 0,0
  --^
 
+* Screen 13: boss fight. Floor at row 79, ceiling staircases up
+* from row 51 to row 16 along a 1-byte-per-2-rows diagonal
+* (= ~1 pixel per row, approximating the pixel-wise diagonal in
+* the art that we can't represent exactly with our byte-granular
+* X bounds). Base at X=9 row 51, top at X=26 row 16. Past X=26
+* the ceiling stays at row 16 through the right edge. (Shifted
+* 2 more bytes / 4 px left from the previous X=11..28 placement
+* to align with the visible art.)
+*
+* Walkable layout:
+*   X = 0..8    → rows 52..79  (min Y = 52)
+*   X = 9..26   → rows (9 + (51-R)/2)..79  (paired-row diagonal)
+*   X = 27..109 → rows 16..79  (min Y = 16)
+*
+* Encoded per-row: each pair of rows (51,50), (49,48), ... shares
+* the same bmin, stepping +1 every 2 rows from 9 (rows 50-51)
+* to 26 (rows 16-17). Rows 52..79 are full-width [0, 109];
+* everything above row 16 and below row 79 is blocked.
 bounds_scr13
- LUP 32
- dfb 0,0
+ LUP 16
+ dfb 0,0          ; rows 0..15 — blocked (above the ceiling)
  --^
- LUP 48
- dfb 0,109
+ dfb 26,109       ; row 16
+ dfb 26,109       ; row 17
+ dfb 25,109       ; row 18
+ dfb 25,109       ; row 19
+ dfb 24,109       ; row 20
+ dfb 24,109       ; row 21
+ dfb 23,109       ; row 22
+ dfb 23,109       ; row 23
+ dfb 22,109       ; row 24
+ dfb 22,109       ; row 25
+ dfb 21,109       ; row 26
+ dfb 21,109       ; row 27
+ dfb 20,109       ; row 28
+ dfb 20,109       ; row 29
+ dfb 19,109       ; row 30
+ dfb 19,109       ; row 31
+ dfb 18,109       ; row 32
+ dfb 18,109       ; row 33
+ dfb 17,109       ; row 34
+ dfb 17,109       ; row 35
+ dfb 16,109       ; row 36
+ dfb 16,109       ; row 37
+ dfb 15,109       ; row 38
+ dfb 15,109       ; row 39
+ dfb 14,109       ; row 40
+ dfb 14,109       ; row 41
+ dfb 13,109       ; row 42
+ dfb 13,109       ; row 43
+ dfb 12,109       ; row 44
+ dfb 12,109       ; row 45
+ dfb 11,109       ; row 46
+ dfb 11,109       ; row 47
+ dfb 10,109       ; row 48
+ dfb 10,109       ; row 49
+ dfb 9,109        ; row 50
+ dfb 9,109        ; row 51
+ LUP 28
+ dfb 0,109        ; rows 52..79 — full-width floor area
  --^
  LUP 120
- dfb 0,0
+ dfb 0,0          ; rows 80..199 — blocked (below the floor)
  --^
 
 *==========================================================
