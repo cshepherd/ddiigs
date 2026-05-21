@@ -20596,11 +20596,17 @@ kill_objects
  inc spr_ptr+1
  bra :ko_loop
 :ko_done
-* If either player was carrying a weapon (pipe or mace), strip
-* it. run_script runs in Billy's swap context so billy_*_armed
-* reflects Billy and jimmy_stash_*_armed reflects Jimmy.
+* If either player was carrying a weapon (pipe, mace, or
+* knife), strip it. run_script runs in Billy's swap context so
+* billy_*_armed reflects Billy and jimmy_stash_*_armed reflects
+* Jimmy. Knife was previously missing from the OR — picking up
+* a dropped knife at the same time OP_WAITCLR satisfied left
+* billy_knife_armed=1 + idle_addr=BKNIFE1 surviving past the
+* OP_KILLOBJ disarm, letting the player keep the knife into the
+* next encounter (and through the rest of the level).
  lda billy_pipe_armed
  ora billy_mace_armed
+ ora billy_knife_armed
  beq :ko_chk_jimmy_arm
  jsr billy_disarm_weapon
 :ko_chk_jimmy_arm
@@ -20608,6 +20614,7 @@ kill_objects
  beq :ko_real_done
  lda jimmy_stash_pipe_armed
  ora jimmy_stash_mace_armed
+ ora jimmy_stash_knife_armed
  beq :ko_real_done
  jsr jimmy_disarm_weapon
 :ko_real_done
