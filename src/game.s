@@ -3176,6 +3176,17 @@ check_y_bounds_strict
 :cybs_world_x  ds 2
 via_ladder dfb 0
 chk_xpos dfb 0
+* is_climbing: sticky flag indicating the player is in the middle
+* of a climb sequence. Set when an up-walk advances ypos via a
+* ladder match; cleared when the player walks horizontally or
+* their up/down walk doesn't engage a ladder. check_ladder uses
+* it to distinguish CONTINUING a climb (relaxed: accept any
+* proposed_y in [y_top, y_bottom]) from STARTING one (strict:
+* proposed_y must equal y_bottom, i.e. the player must be at
+* the ladder's floor row to engage). Prevents accidentally
+* triggering a climb by walking near a ladder column at a Y
+* above the floor.
+is_climbing dfb 0
 * NPC minimum Y. Computed at load_screen_bounds: first row whose
 * bmax equals the floor bmax (= bmax[199]). Below this row are
 * staircases / ladder columns that the player can traverse but
@@ -3626,7 +3637,18 @@ check_ladder
  lda ladder_buf+5,x    ; y_bottom
  cmp :prop_y
  bcc :cl_next
-* On ladder
+* On ladder per x + y range. Engage gate: if the player isn't
+* already mid-climb (is_climbing=0), require proposed_y to equal
+* y_bottom — i.e. the player must be at the ladder's floor row
+* (ypos = y_bottom + 1, proposed_y = y_bottom) to START a climb.
+* If they're already climbing (is_climbing=1), any proposed_y in
+* the y range is fine (continuation).
+ lda is_climbing
+ bne :cl_on_ladder
+ lda :prop_y
+ cmp ladder_buf+5,x    ; y_bottom
+ bne :cl_next          ; engage row mismatch — not at floor, reject
+:cl_on_ladder
  lda :prop_y
  clc
  rts
@@ -9805,45 +9827,20 @@ btn_action_jump
  sec
  sbc #1               ; proposed Y
  sta :up_as_propy
-* Auto-step: if proposed row is walkable but xpos sits outside
-* its bmin/bmax range, snap xpos onto the nearer edge. Fixes
-* ladder-top + scroll combos where the player lands in a wider
-* row (small bmin) below a narrower floor row and can't ascend
-* without first walking sideways.
-*
-* Each snap goes through snap_xpos_and_absx so abs_x tracks the
-* delta — previously the snap mutated IMAGE01_XPOS in place and
-* abs_x lagged by |new - old|, halting the game on assert_abs_x
-* the next frame (e.g. on the scr2 left-staircase rows).
-*
-* Gate the snap on "player is on a ladder column at current Y."
-* Off-ladder, a tighter row above means a wall edge — should
-* block, not teleport (e.g. scr5 row 62 xpos=1 → row 61 bmin=50
-* was snapping the player from the left wall onto the ledge).
-* check_ladder needs chk_xpos already set (done above) and Y in
-* A; bcs = not on ladder.
- lda IMAGE01_YPOS
- jsr check_ladder
- bcs :up_as_done
- lda :up_as_propy
- tax
- lda bounds_tbl_hi,x
- beq :up_as_done
- sta :up_as_bmax
- lda bounds_tbl_lo,x
- sta :up_as_bmin
- lda IMAGE01_XPOS
- cmp :up_as_bmin
- bcs :up_as_chk_max
- lda :up_as_bmin
- jsr snap_xpos_and_absx
- bra :up_as_done
-:up_as_chk_max
- cmp :up_as_bmax
- bcc :up_as_done
- beq :up_as_done
- lda :up_as_bmax
- jsr snap_xpos_and_absx
+* Auto-step (DISABLED): legacy per-screen xpos-snap that fired
+* when proposed row's bmin/bmax (in bounds_tbl_hi/lo) didn't
+* contain the current xpos. It was correct only when world
+* offset matched the canonical scr_origin; in mid-scroll
+* transition states (e.g. scr7 with wo=364 instead of 406)
+* bounds_tbl_hi is indexed by playfield col while xpos is a
+* world+wo position, so the per-screen bound at a different
+* col than the player's actual one gives wrong snaps —
+* visibly "teleporting" Billy from xpos=55 → 54 (= per-screen
+* row-59 bmax) even though world 419 is ~43 bytes shy of the
+* actual wall at world 462. The stratum bounds + ladder
+* fallback in check_y_bounds below handle the cases the
+* auto-step was meant to cover correctly regardless of wo,
+* so this whole snap is now a no-op.
 :up_as_done
  lda :up_as_propy
  jsr check_y_bounds
@@ -9879,53 +9876,17 @@ btn_action_jump
  lda #1
  sta via_ladder
 :up_walk_step
-* Step rule: if the proposed row's bmax is less than the
-* current row's bmax, the row above is narrower — that's a
-* "step up into a wall," which should require a ladder. Catches
-* scr2's rising staircase: walking up at low xpos passes the
-* bmin/bmax check at every row even though visually Billy is
-* climbing the angled wall edge. Equal/larger proposed bmax is
-* an ordinary vertical walk on a uniform or widening surface
-* (scr5 ledge → corridor transitions, etc.).
-*
-* The rule reads the LEGACY per-screen bounds_tbl_hi (which is
-* still maintained alongside the stratum tables for this and the
-* auto-step path). For a screen-boundary case where current_screen
-* hasn't flipped yet, the per-screen value can be 0 (blocked) on
-* a row whose stratum entry says walkable — e.g. Billy at row 83
-* on scr0 (bounds_tbl_hi[82]=0) where stratum 0 row 82 is the
-* scr1 floor at world 148. Treat per-screen=0 as "screen doesn't
-* claim this row" and skip the step rule — check_y_bounds_world
-* already authorized the move via the stratum bounds.
-*
-* Earlier the test was "proposed bmax < current bmax → block".
-* That blocked ANY up-step into a narrower row regardless of
-* where xpos sat — fine when Billy was right next to the wall
-* edge, wrong when he was far inside the floor. The actual
-* "stepping up into the wall" condition is xpos > proposed_bmax
-* (the new row's right wall would cut into the sprite). Compare
-* xpos vs proposed_bmax directly so low-xpos up-walks on scr2's
-* angled staircase are allowed.
- ldx IMAGE01_YPOS
- lda bounds_tbl_hi,x
- beq :up_no_step      ; current row blocked per-screen — defer to stratum
- dex
- lda bounds_tbl_hi,x
- beq :up_no_step      ; proposed row blocked per-screen — defer to stratum
- cmp IMAGE01_XPOS
- bcs :up_no_step      ; proposed_bmax >= xpos → no wall conflict
-* Proposed bmax < current → narrower row. Require an active
-* ladder + scroll_up_enabled. Use x-only ladder check so the
-* partner can pick up climb-anim from any starting Y, mirroring
-* the lenient retry above.
- lda scroll_up_enabled
- beq :up_blocked_ladder
- lda #0
- jsr check_ladder
- bcs :up_blocked_ladder
- lda #1
- sta via_ladder       ; force climb anim
- jmp :up_do_move
+* Step rule (DISABLED): legacy per-screen check, same
+* indexing problem as the auto-step above. When wo is in a
+* mid-scroll transition state the per-screen bmax doesn't
+* correspond to the player's actual scr-local position, so
+* xpos > bmax fires spuriously (visible as "pushed back at
+* xpos=55 on scr7 row 60 when 100px from the diagonal" —
+* bmax=55 per-screen vs actual wall at world 462). check_y_-
+* bounds (stratum world coords) already blocks moves into a
+* wall and grants ladder fallback when applicable, so the
+* step rule's extra "narrower row above → require ladder"
+* gate is redundant.
 :up_no_step
 * If this upward step is only permitted by the ladder (proposed
 * row is blocked but falls within ladder Y range), also require
@@ -9963,10 +9924,17 @@ btn_action_jump
  dec IMAGE01_YPOS
  lda via_ladder
  beq :up_walkframe
+* Climb step (via_ladder=1). Mark is_climbing so subsequent
+* frames bypass check_ladder's engage-row gate.
+ lda #$01
+ sta is_climbing
  dec IMAGE01_YPOS        ; ladder: 2 px/VBL (NES-feel pacing)
  jsr advance_climb
  bra :up_after_anim
 :up_walkframe
+* Regular up-walk (no ladder). Clear is_climbing — player has
+* left the ladder (or never started a climb).
+ stz is_climbing
  jsr advance_walk        ; vertical walk — cycle walk frames
 :up_after_anim
  jsr save_sprite
@@ -10009,28 +9977,14 @@ btn_action_jump
  clc
  adc #1               ; proposed Y
  sta :dn_as_propy
-* Auto-step: see :up_walk auto-step — symmetric for walk-down so
-* a player at the edge of a wider row can descend onto a narrower
-* row below by sliding inward. Same snap_xpos_and_absx routing
-* so abs_x stays in sync.
- tax
- lda bounds_tbl_hi,x
- beq :dn_as_done
- sta :dn_as_bmax
- lda bounds_tbl_lo,x
- sta :dn_as_bmin
- lda IMAGE01_XPOS
- cmp :dn_as_bmin
- bcs :dn_as_chk_max
- lda :dn_as_bmin
- jsr snap_xpos_and_absx
- bra :dn_as_done
-:dn_as_chk_max
- cmp :dn_as_bmax
- bcc :dn_as_done
- beq :dn_as_done
- lda :dn_as_bmax
- jsr snap_xpos_and_absx
+* Auto-step (DISABLED): same per-screen / mid-scroll indexing
+* problem as the :up_walk auto-step. With wo != scr_origin the
+* per-screen bmax loaded from bounds_tbl_hi doesn't correspond
+* to the player's actual scr-local position, so the snap pulls
+* xpos in the wrong direction (observed: pressing DOWN on scr7
+* near the second ladder teleported xpos from 89 → 54, the per-
+* screen scr7 row 59 bmax). check_y_bounds (stratum world coords)
+* handles the bounds check below correctly regardless of wo.
 :dn_as_done
  lda :dn_as_propy
  jsr check_y_bounds
@@ -10038,10 +9992,16 @@ btn_action_jump
  inc IMAGE01_YPOS
  lda via_ladder
  beq :down_walkframe
+* Climb-down step. Mark is_climbing (mirrors :up_do_move) so
+* subsequent frames bypass the engage-row gate.
+ lda #$01
+ sta is_climbing
  inc IMAGE01_YPOS       ; ladder: 2 px/VBL (NES-feel pacing)
  jsr advance_climb
  bra :down_after_anim
 :down_walkframe
+* Regular down-walk (no ladder). Clear is_climbing.
+ stz is_climbing
  jsr advance_walk       ; vertical walk — cycle walk frames
 :down_after_anim
  jsr save_sprite
@@ -10107,6 +10067,9 @@ btn_action_jump
  bcs :left_scroll_ok
  jmp :left_walk        ; (wo-4) low < min low → walk
 :left_scroll_ok
+* Horizontal scroll abandons any climb sequence (parallel to
+* :right_scroll_ok and the walk paths).
+ stz is_climbing
 * Stratum-bounds gate: scrolling left → world_x decreases by 4.
 * Use OUTER-envelope check (see scroll-right counterpart) so a
 * scroll can step through inter-span gaps to reach a walkable
@@ -10347,6 +10310,10 @@ btn_action_jump
 :lso_done
  bra :finish_left
 :left_walk
+* Walking horizontally ends any climb sequence — clear the
+* sticky is_climbing flag so the next up-press has to engage
+* from the floor row.
+ stz is_climbing
 * Co-op walk boost: if a scroll-left this frame queued a boost
 * and we're pressing left, step by 4 instead of 1 so we keep
 * up with the scroll's world advance.
@@ -10447,6 +10414,9 @@ btn_action_jump
  beq :right_scroll_ok  ; equal → ok (reaching exactly max)
  jmp :walk_right       ; (wo+4) low > max low → walk
 :right_scroll_ok
+* Horizontal scroll abandons any climb sequence (parallel to
+* :walk_right / :left_walk clearing it for the no-scroll path).
+ stz is_climbing
 * Stratum-bounds gate: scrolling moves wo, leaving xpos unchanged
 * — equivalent in world coords to xpos += 4. Reject the scroll if
 * the post-scroll world position (= wo+xpos+4) would land in a row
@@ -10574,6 +10544,9 @@ btn_action_jump
 :rso_done
  bra :finish_right
 :walk_right
+* Walking horizontally ends any climb sequence (see :left_walk
+* counterpart for rationale).
+ stz is_climbing
 * Co-op walk boost: if a scroll-right this frame queued a boost
 * and we're pressing right, step by 4 instead of 1.
  lda walk_boost_right
@@ -12978,7 +12951,13 @@ update_billy_y_off
  sec
  sbc billy_y_target
  bmi :uby_descend       ; billy_y_off < target signed → increment toward target
-* billy_y_off > target signed → decrement toward target (rise)
+* billy_y_off > target signed → decrement toward target (rise).
+* No ceiling check: Billy is ~20 px tall and a 20-px peak is
+* fine even when the peak row itself is "blocked" — he's in
+* the air and will descend back through. What matters is where
+* he LANDS, which the per-step X check in update_anims's
+* advance-position block gates against using landing_y =
+* current_y - billy_y_off (signed).
  lda billy_y_off
  sec
  sbc #2
@@ -13102,11 +13081,15 @@ update_anims
  bne :has_anim
  jmp :next            ; no animation, skip
 :has_anim
-* Check flags bit 0: advance position per VBL
+* Check flags bit 0: advance position per VBL. Branch inverted
+* + jmp because the advance-position body grew past beq's
+* ±128-byte reach (added X-bounds checks in jump steps).
  ldy #2
  lda (anim_ptr),y     ; flags
  and #$01
- beq :no_advance
+ bne :flag_advance
+ jmp :no_advance
+:flag_advance
 * Snapshot current xpos/ypos/frame_x/frame_y into prev_* BEFORE
 * modifying xpos. Without this, each VBL the advance-position
 * code clobbers xpos but leaves prev_xpos stale at the pre-
@@ -13150,6 +13133,24 @@ update_anims
  lda IMAGE01_XPOS
  cmp #PLAYER_MAX_X
  bcs :adv_done
+* Stratum-bounds gate: check the LANDING position, not the
+* mid-air one. landing_y = current_y - billy_y_off (signed);
+* with billy_y_off negative during the arc, this evaluates to
+* current_y + |y_off| = the pre-jump row Billy will descend
+* back to. Testing the mid-air row would block jumps that fly
+* through legitimately-blocked airspace (e.g. above a ledge),
+* even though Billy lands fine. We DO need to stop xpos drift
+* whose accumulated effect would put the landing position
+* inside a wall — so the test is against landing_y.
+ lda IMAGE01_XPOS
+ clc
+ adc #1
+ sta chk_xpos
+ lda IMAGE01_YPOS
+ sec
+ sbc billy_y_off       ; signed: y_off<0 → A += |y_off|
+ jsr check_y_bounds
+ bcs :adv_done
  inc IMAGE01_XPOS
 * If player (controller=1 at info+22), also advance abs_x so
 * jumps contribute to world-position tracking the same as walks.
@@ -13169,6 +13170,16 @@ update_anims
  lda IMAGE01_XPOS
  cmp #2
  bcc :adv_done
+* Same landing-position stratum-bounds gate as the right path.
+ lda IMAGE01_XPOS
+ sec
+ sbc #1
+ sta chk_xpos
+ lda IMAGE01_YPOS
+ sec
+ sbc billy_y_off
+ jsr check_y_bounds
+ bcs :adv_done
  dec IMAGE01_XPOS
  ldy #22
  lda (info_ptr),y

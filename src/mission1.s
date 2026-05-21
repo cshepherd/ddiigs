@@ -1117,14 +1117,18 @@ ladders dfb 3                   ; ladder count
  dw 348                         ; x_left (world byte)
  dw 355                         ; x_right
  dfb 0,68                       ; y_top=0, y_bottom=68
-* Ladder 2: screen 7 far right → screen 10 above.
-* Screen 7 spans world bytes 440..549 (UP_X_ANCHOR=330 + 110 for
-* screen 5, then +110 for its right neighbor screen 7). Best
-* guess for "far right" = screen 7 bytes ~90..97 = world 530..537.
-* Verify with draw_ladder_debug outline and adjust if needed.
- dw 453                         ; x_left (screen 7 byte 90)
+* Ladder 2: screen 7 → screen 10 above.
+* x: world [453, 460] (LADDER_TOL widens engage by 2 each side).
+* y: [0, 41]. y_bottom=41 (NOT 59) because the engage-row gate
+* in check_ladder requires proposed_y == y_bottom (= player at
+* ypos = y_bottom + 1 = 42). Row 42 is scr7's top walkable row
+* — the player is "directly below" the ladder (which goes up
+* off-screen) when standing there. Once a climb engages, the
+* is_climbing flag bypasses the engage gate so traversal works
+* through the full y range up to y_top=0.
+ dw 453                         ; x_left
  dw 460                         ; x_right
- dfb 0,59                       ; y_top=0, y_bottom=59
+ dfb 0,41                       ; y_top=0, y_bottom=41
 * Ladder 3: screen 12 → screen 10 above.
 * Visible scr9 ladder art is centered at world ~321 (col 25 with
 * wo=296). Bounds are asymmetric (319..331, width 12, center=325)
