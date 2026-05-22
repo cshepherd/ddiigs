@@ -1115,12 +1115,10 @@ _scroll_up
  and #$00FF
  cmp #5
  beq :ffs_setup_scr5
+ cmp #10
+ beq :ffs_setup_scr10
  cmp #12
  beq :ffs_setup_scr12
-* Ladder 2 (scr10) setup is deferred: its OP_SNAPSTATE_DEFER is
-* still active and hardcodes byte offsets calibrated for old
-* origins (scr5=330, scr7=440). Wire :ffs_setup_scr10 in once
-* that SNAPSTATE_DEFER is stripped too.
  jmp :ffs_done
 :ffs_setup_scr5
 * Ladder 1: scr3 → scr5. Source stratum (ground) overlays scr2 +
@@ -1134,6 +1132,25 @@ _scroll_up
  lda #220
  sta ffs_left_origin
  lda #330
+ sta ffs_right_origin
+ bra :ffs_paint
+:ffs_setup_scr10
+* Ladder 2: scr7 → scr10. Source stratum (mid) overlays scr5 +
+* scr7. NOTE the origins here are the ART-relative origins
+* (scr5=330, scr7=440), NOT the strata-bounds origins (296/406).
+* The strata origins were shifted for bounds reasons; the art
+* files still expect the older origins. With wo=372 the formula
+* (wo - scr5_origin) gives scr5 byte 42 — matching the original
+* OP_SNAPSTATE_DEFER repaint that this code replaces.
+ sep $20
+ lda #$08               ; scr5 bank
+ sta ffs_left_bank
+ lda #$0A               ; scr7 bank
+ sta ffs_right_bank
+ rep $20
+ lda #330
+ sta ffs_left_origin
+ lda #440
  sta ffs_right_origin
  bra :ffs_paint
 :ffs_setup_scr12
@@ -1858,13 +1875,15 @@ _scroll_up
  and #$00FF
  cmp #12
  beq :snap_lower_go
-* :snap_lower_go is ONLY for narrow targets (target screen has
-* fewer than 183 rows of content, so the bottom 70 playfield
-* rows need fill from the source stratum). Full-height targets
-* like scr5 (ladder 1) have 183 rows of art in their target
-* bank and the main snap_copy paints all of it — no lower band
-* needed. scr10 stays gated off until its OP_SNAPSTATE_DEFER
-* is stripped too.
+* :snap_lower_go is ONLY for narrow targets whose bank has fewer
+* than 183 rows of content. scr12 has rows 0..112 of art and
+* rows 113..199 empty, so it needs the bottom 70 playfield rows
+* filled from the source stratum (scr9+scr8). scr5 (ladder 1)
+* and scr10 (ladder 2) are full-height: their banks have art at
+* rows 113+ too (scr10 has an empty middle at rows 100..112 but
+* content resumes at 113). For those, the main snap_copy paints
+* all 183 rows of target art and :snap_lower_go would overpaint
+* the target's bottom with source-stratum art — wrong.
  jmp :snap_lower_done
 :snap_lower_go
 * Left fill — src = left byte (wo - left_origin), dst = col 0,

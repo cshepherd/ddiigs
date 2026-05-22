@@ -313,53 +313,18 @@ level_script
     db OP_WAITCLR
     db OP_KILLOBJ       ; clean up any dropped knives
 
-* Pre-climb golden state for ladder2 (recorded 'g' below ladder2
-* on scr7). DEFERRED: applied at first scroll_up call (= climb
-* start). Two repaint regions paint scr5 (left) and scr7 (right)
-* at canonical wo=372.
-    db OP_SNAPSTATE_DEFER
-    dw $0174            ; world_offset = 372
-    dw $01C4            ; abs_x = 452
-    db $50              ; IMAGE01_XPOS = 80
-    db $07              ; current_screen = scr7
-    db $0A              ; scroll_src_bank (scr7)
-    db $2A              ; scroll_src_off = 42
-    db $09              ; scroll_lsrc_bank (scr6)
-    db $6D              ; scroll_lsrc_off = 109
-    dw $01B8            ; scroll_up_anchor = 440
-    db $B6              ; scroll_up_off = 182 (full-height default)
-    dw $0000            ; scroll_min_wo
-    dw $FFFF            ; scroll_max_wo
-* Repaint region 1: scr5 (bank $08) byte 42 → cols [0..67].
-* wo=372, scr5_origin=330, scr5 byte 42 sits at world 372 = col 0.
-    db $08              ; region 1 bank (scr5)
-    db $2A              ; region 1 source byte = 42
-    db $44              ; region 1 count = 68
-    db $00              ; region 1 dst col = 0
-* Repaint region 2: scr7 (bank $0A) byte 0 → cols [68..109].
-* scr7_origin=440 = col 68.
-    db $0A              ; region 2 bank (scr7)
-    db $00              ; region 2 source byte = 0
-    db $2A              ; region 2 count = 42
-    db $44              ; region 2 dst col = 68
-    db OP_UP,10,8,$ff     ; Up to screen 8, left=screen 9, right=none
-* Post-climb golden state for ladder2 (recorded 'g' on scr10).
-* lsrc_bank=$0B (scr8) and lsrc_off=$29 (=41) from snap_transition
-* fix; this is the canonical lsrc to continue scrolling left
-* through scr8 toward scr9.
-    db OP_SNAPSTATE
-    dw $0174            ; world_offset = 372
-    dw $01C4            ; abs_x = 452
-    db $50              ; IMAGE01_XPOS = 80
-    db $0A              ; current_screen = scr10
-    db $0D              ; scroll_src_bank (scr10)
-    db $2A              ; scroll_src_off = 42
-    db $0B              ; scroll_lsrc_bank (scr8) ← from snap fix
-    db $29              ; scroll_lsrc_off = 41 ← lwidth-up_dst_start-1
-    dw $01B8            ; scroll_up_anchor = 440
-    db $1A              ; scroll_up_off = 26
-    dw $0000            ; scroll_min_wo
-    dw $FFFF            ; scroll_max_wo
+* Ladder 2 (scr7 → scr10) climb. SNAPSTATE blocks removed for
+* the world-coord climb refactor (see ladder 1's comment). The
+* engine now derives:
+*   - lower-band scr5+scr7 art via :ffs_setup_scr10 (= the
+*     equivalent of the old pre-climb repaint regions).
+*   - scr10 art placement via anchor=440 (set by OP_UP handler).
+*   - post-climb scroll_lsrc_bank=$0B / scroll_lsrc_off=$29 via
+*     snap_transition's :snap_lsrc_check_lbank using OP_UP's
+*     scroll_up_lbank=8.
+*   - post-climb scroll_src_bank=$0D via sync_current_screen's
+*     linear derivation (current_screen=10 → $0D).
+    db OP_UP,10,8,$ff     ; Up to screen 10, left=screen 8, right=none
 
     db OP_WAITXREV
     dw $0195              ; wait for player to descend back to abs_x <= 788
