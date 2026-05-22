@@ -86,6 +86,51 @@ out/mission1blit_32: src/mission1blit_32.s
 	cd src && merlin32 mission1blit_32.s
 	mv src/mission1blit_32 out/mission1blit_32
 
+# Bank $33 immediate-mode blit blobs for Jimmy's compiled poses.
+# Same shape as mission1blit_32 (Billy), regenerated from
+# src/mission1jimmy.s by tools/generate_mission1jimmyblit.py.
+src/mission1jimmyblit_33.s: src/mission1jimmy.s tools/generate_mission1jimmyblit.py tools/compile_sprite.py
+	python3 tools/generate_mission1jimmyblit.py
+
+out/mission1jimmyblit_33: src/mission1jimmyblit_33.s
+	mkdir -p out
+	cd src && merlin32 mission1jimmyblit_33.s
+	mv src/mission1jimmyblit_33 out/mission1jimmyblit_33
+
+# Banks $34-$38 immediate-mode blit blobs for mission12 legacy
+# sprites (Linda mace, Williams pipe/knife, Billy armed, Burnov,
+# Burnov dissolve, thrown weapons). The source sprites live in
+# raw-HEX form in src/mission12.s; tools/generate_mission12blit.py
+# compiles them on the fly via tools/compile_mission12.py and emits
+# the per-bank blit files.
+src/mission12blit_34.s src/mission12blit_35.s src/mission12blit_36.s src/mission12blit_37.s src/mission12blit_38.s: src/mission12.s tools/generate_mission12blit.py tools/compile_mission12.py tools/compile_sprite.py
+	python3 tools/generate_mission12blit.py
+
+out/mission12blit_34: src/mission12blit_34.s
+	mkdir -p out
+	cd src && merlin32 mission12blit_34.s
+	mv src/mission12blit_34 out/mission12blit_34
+
+out/mission12blit_35: src/mission12blit_35.s
+	mkdir -p out
+	cd src && merlin32 mission12blit_35.s
+	mv src/mission12blit_35 out/mission12blit_35
+
+out/mission12blit_36: src/mission12blit_36.s
+	mkdir -p out
+	cd src && merlin32 mission12blit_36.s
+	mv src/mission12blit_36 out/mission12blit_36
+
+out/mission12blit_37: src/mission12blit_37.s
+	mkdir -p out
+	cd src && merlin32 mission12blit_37.s
+	mv src/mission12blit_37 out/mission12blit_37
+
+out/mission12blit_38: src/mission12blit_38.s
+	mkdir -p out
+	cd src && merlin32 mission12blit_38.s
+	mv src/mission12blit_38 out/mission12blit_38
+
 out/mission1jimmy: src/mission1jimmy.s
 	mkdir -p out
 	cd src && merlin32 mission1jimmy.s
@@ -111,7 +156,7 @@ out/ddii: src/ddii.s
 	cd src && merlin32 ddii.s
 	mv src/ddii out/ddii
 
-$(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.shr assets/mission13.shr assets/mission14.shr assets/mission15.shr assets/mission16.shr assets/mission17.shr assets/mission18.shr assets/mission19.shr assets/mission110.shr assets/mission111.shr assets/mission112.shr assets/mission113.shr assets/mission114.shr assets/CONCEPT3\#C10000 assets/INTRO\#C10000 assets/keycontrols\#C10000 assets/joycontrols\#C10000 assets/snescontrols\#C10000 assets/moves\#C10000 out/game out/title out/mission1 out/mission12 out/mission13 out/cutscene out/cutscene1 out/cutscene2 out/ddii out/mission14 out/engine out/mission1jimmy out/mission13blit_30 out/mission13blit_31 out/mission1blit_32
+$(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.shr assets/mission13.shr assets/mission14.shr assets/mission15.shr assets/mission16.shr assets/mission17.shr assets/mission18.shr assets/mission19.shr assets/mission110.shr assets/mission111.shr assets/mission112.shr assets/mission113.shr assets/mission114.shr assets/CONCEPT3\#C10000 assets/INTRO\#C10000 assets/keycontrols\#C10000 assets/joycontrols\#C10000 assets/snescontrols\#C10000 assets/moves\#C10000 out/game out/title out/mission1 out/mission12 out/mission13 out/cutscene out/cutscene1 out/cutscene2 out/ddii out/mission14 out/engine out/mission1jimmy out/mission13blit_30 out/mission13blit_31 out/mission1blit_32 out/mission1jimmyblit_33 out/mission12blit_34 out/mission12blit_35 out/mission12blit_36 out/mission12blit_37 out/mission12blit_38
 	mkdir -p out
 	rm -f $(IMGFILE)
 	$(CADIUS) CREATEVOLUME $(IMGFILE) $(VOLNAME) 1440KB --quiet
@@ -201,6 +246,32 @@ $(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.sh
 	cp out/mission1blit_32 out/MISSION1BLIT32\#060000
 	$(CADIUS) ADDFILE $(IMGFILE) /$(VOLNAME)/MISSION1/ out/MISSION1BLIT32\#060000 --quiet
 	rm out/MISSION1BLIT32\#060000
+	# Immediate-mode blit blobs for Jimmy's compiled poses (bank $33).
+	# Mirrors Billy's set 1:1 (JIMMY01-03 walk, JJUMP/JKICK/JPUNCH/
+	# JPUNCHED/JCLIMB equivalents). ProDOS file name M1JIMMYBLIT33
+	# (15-char ProDOS limit; longer MISSION1JIMMYBLIT33 doesn't fit).
+	cp out/mission1jimmyblit_33 out/M1JIMMYBLIT33\#060000
+	$(CADIUS) ADDFILE $(IMGFILE) /$(VOLNAME)/MISSION1/ out/M1JIMMYBLIT33\#060000 --quiet
+	rm out/M1JIMMYBLIT33\#060000
+	# Immediate-mode blit blobs for mission12's legacy sprites
+	# (banks $34-$38). 70 sprites total: Linda mace, Williams pipe/
+	# knife, thrown weapons, Billy armed (mace/pipe/knife/walk),
+	# Burnov (boss), Burnov dissolve, Linda flame walk.
+	cp out/mission12blit_34 out/M12BLIT34\#060000
+	$(CADIUS) ADDFILE $(IMGFILE) /$(VOLNAME)/MISSION1/ out/M12BLIT34\#060000 --quiet
+	rm out/M12BLIT34\#060000
+	cp out/mission12blit_35 out/M12BLIT35\#060000
+	$(CADIUS) ADDFILE $(IMGFILE) /$(VOLNAME)/MISSION1/ out/M12BLIT35\#060000 --quiet
+	rm out/M12BLIT35\#060000
+	cp out/mission12blit_36 out/M12BLIT36\#060000
+	$(CADIUS) ADDFILE $(IMGFILE) /$(VOLNAME)/MISSION1/ out/M12BLIT36\#060000 --quiet
+	rm out/M12BLIT36\#060000
+	cp out/mission12blit_37 out/M12BLIT37\#060000
+	$(CADIUS) ADDFILE $(IMGFILE) /$(VOLNAME)/MISSION1/ out/M12BLIT37\#060000 --quiet
+	rm out/M12BLIT37\#060000
+	cp out/mission12blit_38 out/M12BLIT38\#060000
+	$(CADIUS) ADDFILE $(IMGFILE) /$(VOLNAME)/MISSION1/ out/M12BLIT38\#060000 --quiet
+	rm out/M12BLIT38\#060000
 	# Jimmy color-shifted sprites (bank $1D) — generated by
 	# tools/generate_jimmy_blocks.py from the Billy originals in
 	# mission1.s + mission12.s.

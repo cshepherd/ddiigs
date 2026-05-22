@@ -189,47 +189,35 @@ DEBUG_LSRC  equ 1
  stz file_dest+1
  jsr load_file
 
-* Load MISSION13BLIT30 / MISSION13BLIT31 — immediate-mode blit
-* blobs for mission13's compiled NPCs. Bank $30/$31 ("greenfield"
-* range $30-$3F reserved for compiled sprite code). Each file
-* has a header at $3N/0000 with (offset_to_addr_tbl, num_sprites)
-* and a parallel BLIT address table; _init_mission13blit walks
-* both to populate compiled_dispatch_tbl in bank $00.
-* These two files push the disk past the 1600-block (800KB)
-* floppy capacity, so the .po image must be mounted as a hard-drive
-* image to be readable.
- lda #<m13blit30_path
+* Load every immediate-mode blit file driven by a (path, bank) table
+* (blit_load_table below). Each entry is 3 bytes: 2-byte pointer to
+* the ProDOS path string + 1-byte target bank. The loader iterates
+* the table and runs each file through load_file. Adding a new blit
+* file = add one entry, no new inline load block here. Counts: 2x
+* mission13blit ($30/$31), 1x mission1blit ($32), 1x mission1jimmyblit
+* ($33), 5x mission12blit ($34-$38). Pushes the disk past 1600 blocks
+* so the .po image must be HDD-mounted in the emulator.
+ ldx #0
+:blit_load_loop
+ cpx #blit_load_table_end-blit_load_table
+ bcs :blit_load_done
+ lda blit_load_table,x
  sta file_open+1
- lda #>m13blit30_path
+ lda blit_load_table+1,x
  sta file_open+2
- lda #$30
+ lda blit_load_table+2,x
  sta file_bank
  stz file_dest
  stz file_dest+1
+ phx
  jsr load_file
- lda #<m13blit31_path
- sta file_open+1
- lda #>m13blit31_path
- sta file_open+2
- lda #$31
- sta file_bank
- stz file_dest
- stz file_dest+1
- jsr load_file
-
-* Load MISSION1BLIT32 — immediate-mode blit blobs for Billy's
-* compiled poses (IMAGE01-03 walk, JUMP1-3, KICK1-2, PUNCH11/12/21/22,
-* BPUNCHED, BCLIMB1-2). Bank $32. Header layout matches the
-* mission13blit files, so init_mission1blit walks the same shape.
- lda #<m1blit32_path
- sta file_open+1
- lda #>m1blit32_path
- sta file_open+2
- lda #$32
- sta file_bank
- stz file_dest
- stz file_dest+1
- jsr load_file
+ plx
+ txa
+ clc
+ adc #3
+ tax
+ bra :blit_load_loop
+:blit_load_done
 
 * Load /DDIIGS/ENGINE (scroll/blit pipeline) to bank $1F. Game
 * code calls into it via JSL at fixed addresses ($1F/0000,
@@ -478,6 +466,8 @@ DEBUG_LSRC  equ 1
  jsl init_jimmy
  jsr init_mission13blit
  jsr init_mission1blit
+ jsr init_mission1jimmyblit
+ jsr init_mission12blit
 
 * Apply the selection-screen game type ($300):
 *   0 (GT_1P)     → leave jimmy_active at 0 (single player)
@@ -18886,6 +18876,357 @@ init_mission1blit
 :im1b_frame_mir_addr   dw 0
 
 *----------------------------------------------------------
+* init_mission1jimmyblit - Same shape as init_mission1blit but for
+* Jimmy's compiled poses (mission1jimmyblit_33 in bank $33). Reads
+* frame addrs from bank $1D (mission1jimmy.s) using a different
+* offsets table since Jimmy's spr_addr_tbl starts at $1D/$0002
+* with consecutive entries (no scattered "extras" section like
+* mission1.s — every compiled sprite is 8 bytes in the table).
+*
+* Native + MX %00 at entry/exit. Caller wraps with jsr.
+*----------------------------------------------------------
+init_mission1jimmyblit
+ phb
+ clc
+ xce
+ rep $30
+ mx %00
+ phk
+ plb
+
+ stz $F0
+ sep $20
+ lda #$33
+ sta $F2
+ rep $20
+ ldy #0
+ lda [$F0],y
+ sta $F0
+
+ ldy #0
+ ldx #0
+:im1j_loop
+ mx %00
+ cpx #:im1j_offsets_end-:im1j_offsets
+ bcc :im1j_in_range
+ jmp :im1j_done
+:im1j_in_range
+
+ lda [$F0],y
+ sta :im1j_blit_data_addr
+ iny
+ iny
+ sep $20
+ lda [$F0],y
+ sta :im1j_blit_data_bank
+ rep $20
+ iny
+
+ lda [$F0],y
+ sta :im1j_blit_mir_addr
+ iny
+ iny
+ sep $20
+ lda [$F0],y
+ sta :im1j_blit_mir_bank
+ rep $20
+ iny
+
+ phy
+ phx
+
+ stz $F0
+ sep $20
+ lda #$1D
+ sta $F2
+ rep $20
+
+ sep $20
+ lda :im1j_offsets,x
+ sta :im1j_tmp_off
+ stz :im1j_tmp_off+1
+ rep $20
+ lda :im1j_tmp_off
+ tay
+ lda [$F0],y
+ sta :im1j_frame_data_addr
+
+ sep $20
+ lda :im1j_offsets+1,x
+ sta :im1j_tmp_off
+ stz :im1j_tmp_off+1
+ rep $20
+ lda :im1j_tmp_off
+ tay
+ lda [$F0],y
+ sta :im1j_frame_mir_addr
+
+ ldx compiled_dispatch_count
+ lda :im1j_frame_data_addr
+ sta compiled_dispatch_tbl,x
+ lda :im1j_blit_data_addr
+ sta compiled_dispatch_tbl+2,x
+ sep $20
+ lda :im1j_blit_data_bank
+ sta compiled_dispatch_tbl+4,x
+ stz compiled_dispatch_tbl+5,x
+ rep $20
+ lda :im1j_frame_mir_addr
+ sta compiled_dispatch_tbl+6,x
+ lda :im1j_blit_mir_addr
+ sta compiled_dispatch_tbl+8,x
+ sep $20
+ lda :im1j_blit_mir_bank
+ sta compiled_dispatch_tbl+10,x
+ stz compiled_dispatch_tbl+11,x
+ rep $20
+ txa
+ clc
+ adc #12
+ sta compiled_dispatch_count
+
+ stz $F0
+ sep $20
+ lda #$33
+ sta $F2
+ rep $20
+ ldy #0
+ lda [$F0],y
+ sta $F0
+
+ plx
+ ply
+
+ inx
+ inx
+ jmp :im1j_loop
+
+:im1j_done
+ sec
+ xce
+ plb
+ rts
+
+* (data_offset, mirror_offset) per Jimmy sprite in mission1jimmy.s's
+* spr_addr_tbl. Both are bank-$1D offsets. Order matches names list
+* in tools/generate_mission1jimmyblit.py.
+:im1j_offsets
+ dfb $02,$06      ; JIMMY01
+ dfb $0A,$0E      ; JIMMY02
+ dfb $12,$16      ; JIMMY03
+ dfb $1A,$1E      ; JJUMP1
+ dfb $22,$26      ; JJUMP2
+ dfb $2A,$2E      ; JJUMP3
+ dfb $32,$36      ; JKICK1
+ dfb $3A,$3E      ; JKICK2
+ dfb $42,$46      ; JPUNCH11
+ dfb $4A,$4E      ; JPUNCH12
+ dfb $52,$56      ; JPUNCH21
+ dfb $5A,$5E      ; JPUNCH22
+ dfb $6E,$72      ; JPUNCHED  (skipping $62-$6D JSPIN/JUPPER legacy)
+ dfb $7A,$7E      ; JCLIMB1   (skipping $76-$79 JFALL/JFALLEN legacy)
+ dfb $82,$86      ; JCLIMB2
+:im1j_offsets_end
+
+:im1j_tmp_off          dw 0
+:im1j_blit_data_addr   dw 0
+:im1j_blit_data_bank   dfb 0
+:im1j_blit_mir_addr    dw 0
+:im1j_blit_mir_bank    dfb 0
+:im1j_frame_data_addr  dw 0
+:im1j_frame_mir_addr   dw 0
+
+*----------------------------------------------------------
+* init_mission12blit - Build compiled_dispatch_tbl entries for the
+* legacy mission12 sprites that we've compiled to immediate-mode
+* blits in banks $34-$38. The blit files all share the same header
+* format (offset_to_blit_addr_tbl, num_sprites_in_this_file) so
+* this routine iterates them via the per-file-bank loop.
+*
+* Frame addresses come from mission12.s's spr_addr_tbl (bank $19,
+* starting at $19/$0014). First entry there is spr_flail (offset
+* $14); the migrated set starts at spr_lmace1 ($16). For each
+* migrated sprite we generate TWO dispatch entries:
+*   - (FRAME_ADDR,           blit_data, blit_bank_data)
+*   - (FRAME_ADDR | $8000,   blit_mir,  blit_bank_mir)
+* try_immediate_dispatch ORs $8000 into the search key when
+* mirror=1 for bank $19, which makes the mirror entry hit.
+*
+* Native + MX %00 at entry/exit.
+*----------------------------------------------------------
+init_mission12blit
+ phb
+ clc
+ xce
+ rep $30
+ mx %00
+ phk
+ plb
+
+* Initial mission12 spr_addr_tbl byte offset = $0018 (skip
+* spr_flail at $0016). spr_addr_tbl starts at $19/$0016, with
+* spr_flail at +0 and spr_lmace1 (first migrated sprite) at +2.
+* This is incremented by 2 per sprite processed across all 5 files.
+ lda #$0018
+ sta :im12_m12_off
+
+* Process each of the 5 blit files in order.
+ lda #$34
+ jsr :im12_process_file
+ lda #$35
+ jsr :im12_process_file
+ lda #$36
+ jsr :im12_process_file
+ lda #$37
+ jsr :im12_process_file
+ lda #$38
+ jsr :im12_process_file
+
+ sec
+ xce
+ plb
+ rts
+
+* :im12_process_file
+*   In: A = source bank byte. Reads its blit_addr_tbl + num_sprites
+*       from $bank/0000 and appends 2 dispatch entries per sprite.
+*       Continues :im12_m12_off across calls.
+:im12_process_file
+ mx %00
+ sta :im12_bank
+
+ stz $F0
+ sep $20
+ lda :im12_bank
+ sta $F2
+ rep $20
+
+* Header: word 0 = addr_tbl_offset, word 2 = num_sprites.
+ ldy #0
+ lda [$F0],y
+ sta :im12_tbl_off
+ ldy #2
+ lda [$F0],y
+ sta :im12_remain
+
+* Set $F0 = blit_addr_tbl pointer.
+ lda :im12_tbl_off
+ sta $F0
+
+ ldy #0                       ; Y = byte offset within blit_addr_tbl
+:im12_loop
+ mx %00
+ lda :im12_remain
+ bne :im12_in_range
+ jmp :im12_file_done
+:im12_in_range
+
+* Read blit_addr_data (low/high) and blit_bank_data.
+ lda [$F0],y
+ sta :im12_blit_data_addr
+ iny
+ iny
+ sep $20
+ lda [$F0],y
+ sta :im12_blit_data_bank
+ rep $20
+ iny
+
+* Read blit_addr_mir + blit_bank_mir.
+ lda [$F0],y
+ sta :im12_blit_mir_addr
+ iny
+ iny
+ sep $20
+ lda [$F0],y
+ sta :im12_blit_mir_bank
+ rep $20
+ iny
+
+ phy
+
+* Look up frame_addr for this sprite in mission12's spr_addr_tbl
+* (bank $19). The offset is in :im12_m12_off, kept across calls.
+ stz $F0
+ sep $20
+ lda #$19
+ sta $F2
+ rep $20
+ ldy :im12_m12_off
+ lda [$F0],y                  ; FRAME_ADDR for this sprite
+ sta :im12_frame_addr
+
+* Append entry 1: key = FRAME_ADDR, orient = 0, blit = data.
+ ldx compiled_dispatch_count
+ lda :im12_frame_addr
+ sta compiled_dispatch_tbl,x
+ lda :im12_blit_data_addr
+ sta compiled_dispatch_tbl+2,x
+ sep $20
+ lda :im12_blit_data_bank
+ sta compiled_dispatch_tbl+4,x
+ stz compiled_dispatch_tbl+5,x  ; orient = 0 (data)
+ rep $20
+ txa
+ clc
+ adc #6
+ tax
+* Append entry 2: key = FRAME_ADDR (raw), orient = 1, blit = mir.
+* Disambiguation comes from the orient byte, not from twiddling the
+* key — that avoids collisions when frame_addr already has bit 15 set.
+ lda :im12_frame_addr
+ sta compiled_dispatch_tbl,x
+ lda :im12_blit_mir_addr
+ sta compiled_dispatch_tbl+2,x
+ sep $20
+ lda :im12_blit_mir_bank
+ sta compiled_dispatch_tbl+4,x
+ lda #$01
+ sta compiled_dispatch_tbl+5,x  ; orient = 1 (mirror)
+ rep $20
+ txa
+ clc
+ adc #6
+ sta compiled_dispatch_count
+
+* Bump mission12 spr_addr_tbl offset by 2 (one word = next sprite).
+ lda :im12_m12_off
+ clc
+ adc #2
+ sta :im12_m12_off
+
+* Re-establish $bank/blit_addr_tbl pointer for next iteration.
+ stz $F0
+ sep $20
+ lda :im12_bank
+ sta $F2
+ rep $20
+ lda :im12_tbl_off
+ sta $F0
+
+ ply
+
+* Decrement file's remaining count.
+ lda :im12_remain
+ dec
+ sta :im12_remain
+ jmp :im12_loop
+
+:im12_file_done
+ rts
+
+* Scratch locals (separate from other init routines).
+:im12_bank             dfb 0
+:im12_remain           dw 0
+:im12_tbl_off          dw 0
+:im12_m12_off          dw 0
+:im12_blit_data_addr   dw 0
+:im12_blit_data_bank   dfb 0
+:im12_blit_mir_addr    dw 0
+:im12_blit_mir_bank    dfb 0
+:im12_frame_addr       dw 0
+
+*----------------------------------------------------------
 * Set file_open pathname pointer and file_bank before calling.
 *----------------------------------------------------------
  mx %11                ; emulation mode
@@ -19026,6 +19367,46 @@ m13blit31_path dfb 32
 
 m1blit32_path dfb 31
  asc '/DDIIGS/MISSION1/MISSION1BLIT32'
+
+m1jblit33_path dfb 30
+ asc '/DDIIGS/MISSION1/M1JIMMYBLIT33'
+
+m12blit34_path dfb 26
+ asc '/DDIIGS/MISSION1/M12BLIT34'
+m12blit35_path dfb 26
+ asc '/DDIIGS/MISSION1/M12BLIT35'
+m12blit36_path dfb 26
+ asc '/DDIIGS/MISSION1/M12BLIT36'
+m12blit37_path dfb 26
+ asc '/DDIIGS/MISSION1/M12BLIT37'
+m12blit38_path dfb 26
+ asc '/DDIIGS/MISSION1/M12BLIT38'
+
+* Per-blit-file load table. Each entry is (path_ptr, dest_bank).
+* The boot's :blit_load_loop walks this and load_files each entry.
+* Order matters: the per-cohort init routines (init_mission13blit,
+* init_mission1blit, init_mission1jimmyblit, init_mission12blit)
+* expect their respective banks to be populated before they run.
+blit_load_table
+ da m13blit30_path
+ dfb $30
+ da m13blit31_path
+ dfb $31
+ da m1blit32_path
+ dfb $32
+ da m1jblit33_path
+ dfb $33
+ da m12blit34_path
+ dfb $34
+ da m12blit35_path
+ dfb $35
+ da m12blit36_path
+ dfb $36
+ da m12blit37_path
+ dfb $37
+ da m12blit38_path
+ dfb $38
+blit_load_table_end
 
 mission1jimmy_path dfb 30
  asc '/DDIIGS/MISSION1/MISSION1JIMMY'
@@ -22407,6 +22788,15 @@ draw_sprite PHB
  PHK
  PLB
  REP $30
+* Immediate-mode dispatch — same shared scan as draw_sprite_compiled
+* uses. Legacy mission12 sprites (sprite_bank=$19) route here, so
+* an entry-time match jumps into draw_sprite_immediate's body
+* (dsi_modes_ready) past its own mode-entry. On miss, fall through
+* to the legacy AND-with-mask draw below.
+ jsr try_immediate_dispatch
+ bcc :ds_not_immediate
+ jmp dsi_modes_ready
+:ds_not_immediate
  TSC
  SEC
  SBC #10
@@ -22793,6 +23183,92 @@ draw_other_sprite
 *   DP 7-9  mask   long pointer (offset 7-8, bank 9)
 *   DP A    end_x  (= FRAME_X, the byte-width loop bound)
 *----------------------------------------------------------
+*----------------------------------------------------------
+* try_immediate_dispatch - Shared scan of compiled_dispatch_tbl.
+* Called by both draw_sprite_compiled and the legacy draw_sprite
+* after their mode-entry (MX=00, DBR=$00, native mode).
+*
+* Input:  sprite_bank, FRAME_ADDR, info_ptr (for legacy mirror).
+* Output: C=1 if matched (and dsi_blit_addr/dsi_blit_bank are set);
+*         C=0 if not a migrated bank or no key match.
+* Clobbers: A, X, Y.
+*
+* Entry layout (6 bytes): key(2) + blit_addr(2) + blit_bank(1) + orient(1).
+*   key    = FRAME_ADDR (raw, no transformation).
+*   orient = 0 for the data entry, 1 for the legacy mirror entry.
+*
+* Search-key derivation:
+*   Compiled banks ($1B, $02, $1D): key = FRAME_ADDR, orient = 0.
+*     Mirror is already encoded — DATA_MIRROR has its own distinct
+*     FRAME_ADDR, and both compiled entries are stored with orient=0.
+*   Legacy bank ($19, mission12): FRAME_ADDR is the same for both
+*     orientations (engine reads info+4 mirror flag separately), so
+*     orient is set to that mirror flag and the scan matches both
+*     key and orient. Avoids the old "OR $8000 into key" trick that
+*     collided for frame_addrs >= $8000.
+*----------------------------------------------------------
+try_immediate_dispatch
+ mx %00                  ; live CPU enters here with REP $30 already done;
+                         ; Merlin's static MX tracker, however, is at %11
+                         ; because the previous routine ended `sec; xce`.
+                         ; Without this directive, immediate operands like
+                         ; `and #$00FF` assemble as 8-bit (2 bytes) and the
+                         ; 16-bit CPU then eats the next opcode byte.
+ lda sprite_bank
+ and #$00FF
+ cmp #$001B
+ beq :tid_compiled_key
+ cmp #$0002
+ beq :tid_compiled_key
+ cmp #$001D
+ beq :tid_compiled_key
+ cmp #$0019
+ bne :tid_miss
+* Legacy: key = FRAME_ADDR, orient = info+4 (mirror flag).
+ ldy #4
+ lda (info_ptr),y
+ and #$00FF
+ sta :tid_scan_orient
+ bra :tid_use_frame
+:tid_compiled_key
+ stz :tid_scan_orient
+:tid_use_frame
+ lda FRAME_ADDR
+ sta :tid_scan_key
+ ldx #0
+:tid_scan
+ cpx compiled_dispatch_count
+ bcs :tid_miss
+ lda compiled_dispatch_tbl,x
+ cmp :tid_scan_key
+ bne :tid_scan_next
+* Key matched — check orient byte at +5.
+ sep $20
+ lda compiled_dispatch_tbl+5,x
+ cmp :tid_scan_orient
+ rep $20
+ beq :tid_found
+:tid_scan_next
+ txa
+ clc
+ adc #6
+ tax
+ bra :tid_scan
+:tid_found
+ lda compiled_dispatch_tbl+2,x
+ sta dsi_blit_addr
+ sep $20
+ lda compiled_dispatch_tbl+4,x
+ sta dsi_blit_bank
+ rep $20
+ sec
+ rts
+:tid_miss
+ clc
+ rts
+:tid_scan_key    dw 0
+:tid_scan_orient dw 0
+
 draw_sprite_compiled
  PHB
  PHP
@@ -22803,38 +23279,10 @@ draw_sprite_compiled
  PLB
  REP $30
 * Immediate-mode dispatch. Post mode-entry, MX=00.
-* Fast gate: only banks that own migrated immediate blits run the
-* scan. Mission13 NPCs live in $1B; Billy's compiled poses in $02.
-* Anything else (Jimmy at $1D, armed NPCs at $1C, etc.) skips the
-* scan entirely.
- lda sprite_bank
- and #$00FF
- cmp #$001B
- beq :dsc_bank_ok
- cmp #$0002
- bne :dsc_not_immediate
-:dsc_bank_ok
-* Linear scan compiled_dispatch_tbl for a FRAME_ADDR match. X is
-* the byte offset into the table; each entry is 6 bytes.
- ldx #0
-:dsc_scan
- cpx compiled_dispatch_count
- bcs :dsc_not_immediate           ; off end of valid entries
- lda compiled_dispatch_tbl,x
- cmp FRAME_ADDR
- beq :dsc_found
- txa
- clc
- adc #6
- tax
- bra :dsc_scan
-:dsc_found
- lda compiled_dispatch_tbl+2,x
- sta dsi_blit_addr
- sep $20
- lda compiled_dispatch_tbl+4,x
- sta dsi_blit_bank
- rep $20
+* Delegated to try_immediate_dispatch so the same scan code can
+* serve both draw_sprite_compiled and the legacy draw_sprite path.
+ jsr try_immediate_dispatch
+ bcc :dsc_not_immediate
  jmp dsi_modes_ready
 :dsc_not_immediate
  TSC
@@ -23091,8 +23539,15 @@ dsi_blit_bank dfb 0    ; bank byte for the JSL operand patch
 * for the mirrored DATA paired with BLIT_MIRROR. Same scan loop
 * handles both.
 *----------------------------------------------------------
-compiled_dispatch_tbl   ds 600
-compiled_dispatch_count dw 0
+* compiled_dispatch_tbl + compiled_dispatch_count live in the free
+* bank-$00 RAM hole between ddii.s ($1000-$13FF after PIC) and
+* game.s ($2000+). Using EQU keeps the ~2 KB off the game.s
+* image so we don't blow through ddii.s's $9F00 read cap as the
+* dispatch table grows with each migrated cohort. Current usage
+* after mission13+mission1+mission1jimmy+mission12 is 264 entries
+* × 6 = 1584 bytes; 2048 bytes leaves headroom for mission14.
+compiled_dispatch_tbl   equ $1400      ; up to 2048 bytes ($1400-$1BFF, ~341 entries × 6)
+compiled_dispatch_count equ $1C00      ; 2-byte count (16-bit)
 
 wait_for_vbl
   sep $20
