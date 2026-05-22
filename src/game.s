@@ -20853,6 +20853,18 @@ check_punch_hit
  beq :tcj_is_jimmy
  jmp :advance
 :tcj_is_jimmy
+* Skip Jimmy entirely until P2 joins. jimmy_sprite sits in
+* sprite_table from boot at a static (ypos=100, xpos=31); without
+* this gate, NPC punches whose bbox overlaps that stale position
+* fall through to :uf_target_jimmy → inc jimmy_stash_fall_count and
+* zero P2 palette slots. Then when '2' is pressed mid-game, P2's
+* health bar appears already drained. Bug repros intermittently
+* depending on whether enemy hit positions happen to overlap the
+* static slot.
+ lda jimmy_active
+ bne :tcj_active
+ jmp :advance
+:tcj_active
 * Fall through to the same friendly-fire gate Billy uses — NPCs
 * can hit Jimmy freely, but Billy's punches drop unless
 * friendly_fire is on.
