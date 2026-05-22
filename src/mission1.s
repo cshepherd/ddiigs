@@ -354,53 +354,27 @@ level_script
 * scroll_up call (= climb start). Two repaint regions canonicalize
 * the playfield: scr9 (right portion bytes 76..109) at cols 0..33,
 * scr8 (left portion bytes 0..75) at cols 34..109.
-    db OP_SNAPSTATE_DEFER
-    dw $0128            ; world_offset = 296
-    dw $013D            ; abs_x = 317 (= wo + xpos)
-    db $15              ; IMAGE01_XPOS = 21 (snap formula 26 - scr12 nudge 5)
-    db $09              ; current_screen = scr9
-    db $0C              ; scroll_src_bank (scr9)
-    db $00              ; scroll_src_off = 0
-    db $0C              ; scroll_lsrc_bank (scr9)
-    db $45              ; scroll_lsrc_off = 69
-    dw $00DD            ; scroll_up_anchor = 221 (scr12) — match game.s
-    db $70              ; scroll_up_off = 112
-    dw $0128            ; scroll_min_wo = 296
-    dw $0128            ; scroll_max_wo = 296
-* Repaint region 1: scr9 (bank $0C) byte 76 → cols [0..33]
-* (= 34 bytes). With wo=296, scr9_origin=220, scr9 byte 76 sits
-* at world 296 = playfield col 0; scr9 fills until scr8 at col 34.
-    db $0C              ; region 1 bank (scr9)
-    db $4C              ; region 1 source byte = 76
-    db $22              ; region 1 count = 34
-    db $00              ; region 1 dst col = 0
-* Repaint region 2: scr8 (bank $0B) byte 0 → cols [34..109]
-* (= 76 bytes). scr8_origin=330 = col 34 with wo=296.
-    db $0B              ; region 2 bank (scr8)
-    db $00              ; region 2 source byte = 0
-    db $4C              ; region 2 count = 76
-    db $22              ; region 2 dst col = 34
-
+* Ladder 3 (scr9 → scr12) climb. SNAPSTATE blocks removed for
+* the world-coord climb refactor (see ladder 1/2's comments).
+* The engine derives:
+*   - lower-band scr9+scr8 art via :ffs_setup_scr12 (was already
+*     active even before this refactor — scr12 was the original
+*     dynamic case the engine was built around).
+*   - bottom-band scr9+scr8 at rows 113..182 via :snap_lower_go
+*     (scr12 is narrow + only-top-rows-of-art, so the bottom
+*     band must come from somewhere else).
+*   - anchor=221 for scr12 from OP_UP handler.
+*   - post-climb scroll_lsrc_bank=$0E (scr11) from
+*     snap_transition's :snap_lsrc_check_lbank using OP_UP's
+*     scroll_up_lbank.
+*   - scroll_max_wo needs to UNLOCK after the climb so the
+*     OP_WAITX/OP_RIGHT,13 progression can run. Pre-climb
+*     OP_SCRMAX dw 296 (above) locked it; OP_SNAPSTATE used to
+*     re-open it — replace with an explicit OP_SCRMAX dw $FFFF
+*     immediately after OP_UP completes.
     db OP_UP,12,$FF,11    ; enable climb on ladder 3 (scr12→scr10, scr11 rfill)
-* Post-climb golden state for ladder3 (recorded 'g' on scr12 after
-* climb completed). Fires after snap_transition; commits engine
-* state to the recorded post-climb checkpoint and unlocks
-* scroll_max_wo so OP_WAITX/OP_RIGHT can progress off scr12.
-* scroll_min_wo stays at 296 — leftward scroll back through scr12
-* remains locked.
-    db OP_SNAPSTATE
-    dw $0128            ; world_offset = 296
-    dw $013D            ; abs_x = 317
-    db $15              ; IMAGE01_XPOS = 21
-    db $0C              ; current_screen = scr12
-    db $0E              ; scroll_src_bank (scr11)
-    db $4B              ; scroll_src_off = 75
-    db $0E              ; scroll_lsrc_bank (scr11)
-    db $6D              ; scroll_lsrc_off = 109
-    dw $00DD            ; scroll_up_anchor = 221
-    db $1C              ; scroll_up_off = 28
-    dw $0128            ; scroll_min_wo = 296
-    dw $FFFF            ; scroll_max_wo (unlocked)
+    db OP_SCRMAX
+    dw $FFFF              ; unlock right-scroll on scr12 post-climb
 
     db OP_NPC           ; williams with pipe at top of ladder
     dw williams_pipe_sprite
