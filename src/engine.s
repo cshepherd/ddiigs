@@ -45,6 +45,10 @@ info_ptr = $E2
          jml _init_mission14           ; $1F/0018
          jml _init_jimmy               ; $1F/001C
          jml _init_mission12blit       ; $1F/0020
+         jml _init_mission14blit       ; $1F/0024
+         jml _init_mission13blit       ; $1F/0028
+         jml _init_mission1blit        ; $1F/002C
+         jml _init_mission1jimmyblit   ; $1F/0030
 
          PUT engine_externs.s
 
@@ -6289,3 +6293,604 @@ _init_mission12blit
 :im12_blit_mir_addr    dw 0
 :im12_blit_mir_bank    dfb 0
 :im12_frame_addr       dw 0
+
+*----------------------------------------------------------
+* _init_mission14blit - Same shape as init_mission13blit but
+* walks mission14blit_39 / mission14blit_3a (banks $39 and $3A)
+* and reads frame addrs from the mission14 cache var base
+* (spr_lfwalk1c_data + 25 consecutive 8-byte slots, matching
+* mission14.s declaration order: LFWALK1/2/3, LMACE1/2/3,
+* WPIPEWALK1/2/3, WPIPE1-4/6, WKNIFE1/2, BNPUNCH1/2,
+* BNBILLY1/2/3, BNFALL1, BNFALLEN, BNJIMMY1/2/3).
+*
+* Each migrated frame contributes two dispatch entries (data +
+* mirror, 6 bytes each). Compiled FRAME_ADDRs for data vs mirror
+* are already distinct (different bank-$1C labels), so both
+* entries use orient = 0.
+*
+* Native + MX %00 on entry/exit.
+*----------------------------------------------------------
+_init_mission14blit
+ phb
+ clc
+ xce
+ rep $30
+ mx %00
+ phk
+ plb
+
+ ldx #$0000                   ; first sprite index = 0
+ lda #$39
+ jsr :im14_process_file
+
+ lda #$3A
+ jsr :im14_process_file
+
+ sec
+ xce
+ plb
+ mx %11
+ rtl
+
+:im14_process_file
+ mx %00
+ sta :im14_bank
+
+ stz $F0
+ sep $20
+ lda :im14_bank
+ sta $F2
+ rep $20
+
+ ldy #0
+ lda [$F0],y
+ sta :im14_tbl_off
+ ldy #2
+ lda [$F0],y
+ sta :im14_remain
+
+ lda :im14_tbl_off
+ sta $F0
+
+ ldy #0
+:im14_loop
+ mx %00
+ lda [$F0],y
+ sta :im14_blit_data_addr
+ iny
+ iny
+ sep $20
+ lda [$F0],y
+ sta :im14_blit_data_bank
+ rep $20
+ iny
+
+ lda [$F0],y
+ sta :im14_blit_mir_addr
+ iny
+ iny
+ sep $20
+ lda [$F0],y
+ sta :im14_blit_mir_bank
+ rep $20
+ iny
+
+ phy
+
+* Cache-var base for mission14 is spr_lfwalk1c_data; each
+* sprite slot is 8 bytes. sprite_idx * 8 -> A.
+ txa
+ asl
+ asl
+ asl
+ tay
+ lda spr_lfwalk1c_data,y
+ sta :im14_frame_data_addr
+ lda spr_lfwalk1c_data_mir,y
+ sta :im14_frame_mir_addr
+
+ phx
+ ldx compiled_dispatch_count
+ lda :im14_frame_data_addr
+ sta compiled_dispatch_tbl,x
+ lda :im14_blit_data_addr
+ sta compiled_dispatch_tbl+2,x
+ sep $20
+ lda :im14_blit_data_bank
+ sta compiled_dispatch_tbl+4,x
+ stz compiled_dispatch_tbl+5,x
+ rep $20
+ lda :im14_frame_mir_addr
+ sta compiled_dispatch_tbl+6,x
+ lda :im14_blit_mir_addr
+ sta compiled_dispatch_tbl+8,x
+ sep $20
+ lda :im14_blit_mir_bank
+ sta compiled_dispatch_tbl+10,x
+ stz compiled_dispatch_tbl+11,x
+ rep $20
+ txa
+ clc
+ adc #12
+ sta compiled_dispatch_count
+ plx
+ inx
+
+ ply
+
+ lda :im14_remain
+ dec
+ sta :im14_remain
+ bne :im14_loop
+
+ rts
+
+:im14_bank             dw 0
+:im14_remain           dw 0
+:im14_tbl_off          dw 0
+:im14_blit_data_addr   dw 0
+:im14_blit_data_bank   dfb 0
+:im14_blit_mir_addr    dw 0
+:im14_blit_mir_bank    dfb 0
+:im14_frame_data_addr  dw 0
+:im14_frame_mir_addr   dw 0
+
+*----------------------------------------------------------
+* _init_mission13blit - Migrated from game.s. Builds the first
+* batch of compiled_dispatch_tbl entries from mission13blit_30
+* + mission13blit_31 headers and mission13's DATA cache vars
+* (spr_william1c_data + 31 consecutive 8-byte slots, populated
+* earlier by _init_mission13). 32 sprites × 2 entries = 64.
+*
+* Each frame contributes 2 dispatch entries (data + mirror,
+* 6 bytes each). Compiled sprites have distinct DATA vs
+* DATA_MIRROR addresses, so both entries get orient = 0 and
+* are disambiguated by their keys alone.
+*
+* This is the FIRST init to run, so it zeros compiled_dispatch_count.
+* The other init_*blit routines append.
+*
+* Native + MX %00 on entry/exit. Caller wraps with JSL.
+*----------------------------------------------------------
+_init_mission13blit
+ phb
+ clc
+ xce
+ rep $30
+ mx %00
+ phk
+ plb
+
+ stz compiled_dispatch_count
+
+ ldx #$0000
+ lda #$30
+ jsr :imb_process_file
+
+ lda #$31
+ jsr :imb_process_file
+
+ sec
+ xce
+ plb
+ mx %11
+ rtl
+
+:imb_process_file
+ mx %00
+ sta :imb_bank
+
+ stz $F0
+ sep $20
+ lda :imb_bank
+ sta $F2
+ rep $20
+
+ ldy #0
+ lda [$F0],y
+ sta :imb_tbl_off
+ ldy #2
+ lda [$F0],y
+ sta :imb_remain
+
+ lda :imb_tbl_off
+ sta $F0
+
+ ldy #0
+
+:imb_loop
+ lda [$F0],y
+ sta :imb_blit_data_addr
+ iny
+ iny
+ sep $20
+ lda [$F0],y
+ sta :imb_blit_data_bank
+ rep $20
+ iny
+
+ lda [$F0],y
+ sta :imb_blit_mir_addr
+ iny
+ iny
+ sep $20
+ lda [$F0],y
+ sta :imb_blit_mir_bank
+ rep $20
+ iny
+
+ phy
+
+ txa
+ asl
+ asl
+ asl
+ tay
+ lda spr_william1c_data,y
+ sta :imb_frame_data_addr
+ lda spr_william1c_data_mir,y
+ sta :imb_frame_mir_addr
+
+ phx
+ ldx compiled_dispatch_count
+ lda :imb_frame_data_addr
+ sta compiled_dispatch_tbl,x
+ lda :imb_blit_data_addr
+ sta compiled_dispatch_tbl+2,x
+ sep $20
+ lda :imb_blit_data_bank
+ sta compiled_dispatch_tbl+4,x
+ stz compiled_dispatch_tbl+5,x
+ rep $20
+ lda :imb_frame_mir_addr
+ sta compiled_dispatch_tbl+6,x
+ lda :imb_blit_mir_addr
+ sta compiled_dispatch_tbl+8,x
+ sep $20
+ lda :imb_blit_mir_bank
+ sta compiled_dispatch_tbl+10,x
+ stz compiled_dispatch_tbl+11,x
+ rep $20
+ txa
+ clc
+ adc #12
+ sta compiled_dispatch_count
+ plx
+ inx
+
+ ply
+
+ lda :imb_remain
+ dec
+ sta :imb_remain
+ bne :imb_loop
+
+ rts
+
+:imb_bank             dw 0
+:imb_remain           dw 0
+:imb_tbl_off          dw 0
+:imb_blit_data_addr   dw 0
+:imb_blit_data_bank   dfb 0
+:imb_blit_mir_addr    dw 0
+:imb_blit_mir_bank    dfb 0
+:imb_frame_data_addr  dw 0
+:imb_frame_mir_addr   dw 0
+
+*----------------------------------------------------------
+* _init_mission1blit - Migrated from game.s. Walks
+* mission1blit_32 in lockstep with the :im1b_offsets table
+* below (which maps each Billy sprite to its DATA / DATA_MIRROR
+* offsets in mission1's bank-$02 spr_addr_tbl). Mission1's
+* layout is "scattered" — no clean 8-byte stride — so the
+* offsets are hardcoded per sprite. Order must match the
+* names list in tools/generate_mission1blit.py.
+*
+* Native + MX %00 on entry/exit. Caller wraps with JSL.
+*----------------------------------------------------------
+_init_mission1blit
+ phb
+ clc
+ xce
+ rep $30
+ mx %00
+ phk
+ plb
+
+ stz $F0
+ sep $20
+ lda #$32
+ sta $F2
+ rep $20
+ ldy #0
+ lda [$F0],y
+ sta $F0
+
+ ldy #0
+ ldx #0
+:im1b_loop
+ mx %00
+ cpx #:im1b_offsets_end-:im1b_offsets
+ bcc :im1b_in_range
+ jmp :im1b_done
+:im1b_in_range
+
+ lda [$F0],y
+ sta :im1b_blit_data_addr
+ iny
+ iny
+ sep $20
+ lda [$F0],y
+ sta :im1b_blit_data_bank
+ rep $20
+ iny
+
+ lda [$F0],y
+ sta :im1b_blit_mir_addr
+ iny
+ iny
+ sep $20
+ lda [$F0],y
+ sta :im1b_blit_mir_bank
+ rep $20
+ iny
+
+ phy
+ phx
+
+ stz $F0
+ sep $20
+ lda #$02
+ sta $F2
+ rep $20
+
+ sep $20
+ lda :im1b_offsets,x
+ sta :im1b_tmp_off
+ stz :im1b_tmp_off+1
+ rep $20
+ lda :im1b_tmp_off
+ tay
+ lda [$F0],y
+ sta :im1b_frame_data_addr
+
+ sep $20
+ lda :im1b_offsets+1,x
+ sta :im1b_tmp_off
+ stz :im1b_tmp_off+1
+ rep $20
+ lda :im1b_tmp_off
+ tay
+ lda [$F0],y
+ sta :im1b_frame_mir_addr
+
+ ldx compiled_dispatch_count
+ lda :im1b_frame_data_addr
+ sta compiled_dispatch_tbl,x
+ lda :im1b_blit_data_addr
+ sta compiled_dispatch_tbl+2,x
+ sep $20
+ lda :im1b_blit_data_bank
+ sta compiled_dispatch_tbl+4,x
+ stz compiled_dispatch_tbl+5,x
+ rep $20
+ lda :im1b_frame_mir_addr
+ sta compiled_dispatch_tbl+6,x
+ lda :im1b_blit_mir_addr
+ sta compiled_dispatch_tbl+8,x
+ sep $20
+ lda :im1b_blit_mir_bank
+ sta compiled_dispatch_tbl+10,x
+ stz compiled_dispatch_tbl+11,x
+ rep $20
+ txa
+ clc
+ adc #12
+ sta compiled_dispatch_count
+
+ stz $F0
+ sep $20
+ lda #$32
+ sta $F2
+ rep $20
+ ldy #0
+ lda [$F0],y
+ sta $F0
+
+ plx
+ ply
+
+ inx
+ inx
+ jmp :im1b_loop
+
+:im1b_done
+ sec
+ xce
+ plb
+ mx %11
+ rtl
+
+:im1b_offsets
+ dfb $1C,$80      ; IMAGE01
+ dfb $1E,$86      ; IMAGE02
+ dfb $20,$8C      ; IMAGE03
+ dfb $22,$C2      ; JUMP1
+ dfb $24,$C8      ; JUMP2
+ dfb $26,$CE      ; JUMP3
+ dfb $28,$B6      ; KICK1
+ dfb $2A,$BC      ; KICK2
+ dfb $2C,$9E      ; PUNCH11
+ dfb $2E,$A4      ; PUNCH12
+ dfb $30,$AA      ; PUNCH21
+ dfb $32,$B0      ; PUNCH22
+ dfb $34,$D4      ; BPUNCHED
+ dfb $6A,$92      ; BCLIMB1
+ dfb $6C,$98      ; BCLIMB2
+:im1b_offsets_end
+
+:im1b_tmp_off          dw 0
+:im1b_blit_data_addr   dw 0
+:im1b_blit_data_bank   dfb 0
+:im1b_blit_mir_addr    dw 0
+:im1b_blit_mir_bank    dfb 0
+:im1b_frame_data_addr  dw 0
+:im1b_frame_mir_addr   dw 0
+
+*----------------------------------------------------------
+* _init_mission1jimmyblit - Migrated from game.s. Walks
+* mission1jimmyblit_33 (bank $33) in lockstep with :im1j_offsets,
+* which maps each Jimmy sprite to its DATA / DATA_MIRROR offsets
+* in mission1jimmy.s's bank-$1D spr_addr_tbl. Order matches
+* tools/generate_mission1jimmyblit.py.
+*
+* Native + MX %00 on entry/exit. Caller wraps with JSL.
+*----------------------------------------------------------
+_init_mission1jimmyblit
+ phb
+ clc
+ xce
+ rep $30
+ mx %00
+ phk
+ plb
+
+ stz $F0
+ sep $20
+ lda #$33
+ sta $F2
+ rep $20
+ ldy #0
+ lda [$F0],y
+ sta $F0
+
+ ldy #0
+ ldx #0
+:im1j_loop
+ mx %00
+ cpx #:im1j_offsets_end-:im1j_offsets
+ bcc :im1j_in_range
+ jmp :im1j_done
+:im1j_in_range
+
+ lda [$F0],y
+ sta :im1j_blit_data_addr
+ iny
+ iny
+ sep $20
+ lda [$F0],y
+ sta :im1j_blit_data_bank
+ rep $20
+ iny
+
+ lda [$F0],y
+ sta :im1j_blit_mir_addr
+ iny
+ iny
+ sep $20
+ lda [$F0],y
+ sta :im1j_blit_mir_bank
+ rep $20
+ iny
+
+ phy
+ phx
+
+ stz $F0
+ sep $20
+ lda #$1D
+ sta $F2
+ rep $20
+
+ sep $20
+ lda :im1j_offsets,x
+ sta :im1j_tmp_off
+ stz :im1j_tmp_off+1
+ rep $20
+ lda :im1j_tmp_off
+ tay
+ lda [$F0],y
+ sta :im1j_frame_data_addr
+
+ sep $20
+ lda :im1j_offsets+1,x
+ sta :im1j_tmp_off
+ stz :im1j_tmp_off+1
+ rep $20
+ lda :im1j_tmp_off
+ tay
+ lda [$F0],y
+ sta :im1j_frame_mir_addr
+
+ ldx compiled_dispatch_count
+ lda :im1j_frame_data_addr
+ sta compiled_dispatch_tbl,x
+ lda :im1j_blit_data_addr
+ sta compiled_dispatch_tbl+2,x
+ sep $20
+ lda :im1j_blit_data_bank
+ sta compiled_dispatch_tbl+4,x
+ stz compiled_dispatch_tbl+5,x
+ rep $20
+ lda :im1j_frame_mir_addr
+ sta compiled_dispatch_tbl+6,x
+ lda :im1j_blit_mir_addr
+ sta compiled_dispatch_tbl+8,x
+ sep $20
+ lda :im1j_blit_mir_bank
+ sta compiled_dispatch_tbl+10,x
+ stz compiled_dispatch_tbl+11,x
+ rep $20
+ txa
+ clc
+ adc #12
+ sta compiled_dispatch_count
+
+ stz $F0
+ sep $20
+ lda #$33
+ sta $F2
+ rep $20
+ ldy #0
+ lda [$F0],y
+ sta $F0
+
+ plx
+ ply
+
+ inx
+ inx
+ jmp :im1j_loop
+
+:im1j_done
+ sec
+ xce
+ plb
+ mx %11
+ rtl
+
+:im1j_offsets
+ dfb $02,$06      ; JIMMY01
+ dfb $0A,$0E      ; JIMMY02
+ dfb $12,$16      ; JIMMY03
+ dfb $1A,$1E      ; JJUMP1
+ dfb $22,$26      ; JJUMP2
+ dfb $2A,$2E      ; JJUMP3
+ dfb $32,$36      ; JKICK1
+ dfb $3A,$3E      ; JKICK2
+ dfb $42,$46      ; JPUNCH11
+ dfb $4A,$4E      ; JPUNCH12
+ dfb $52,$56      ; JPUNCH21
+ dfb $5A,$5E      ; JPUNCH22
+ dfb $6E,$72      ; JPUNCHED
+ dfb $7A,$7E      ; JCLIMB1
+ dfb $82,$86      ; JCLIMB2
+:im1j_offsets_end
+
+:im1j_tmp_off          dw 0
+:im1j_blit_data_addr   dw 0
+:im1j_blit_data_bank   dfb 0
+:im1j_blit_mir_addr    dw 0
+:im1j_blit_mir_bank    dfb 0
+:im1j_frame_data_addr  dw 0
+:im1j_frame_mir_addr   dw 0
