@@ -270,60 +270,20 @@ level_script
      db OP_NPC           ; William from right
      dw william_sprite
      db $58,$5f,$01,BEHAV_FACEOFF
-* Pre-climb golden state for ladder1 (recorded via 'g' key
-* below first ladder). DEFERRED: applied at the first scroll_up
-* call once climb begins. Includes a repaint region that paints
-* scr3 art at canonical position so the lower playfield art
-* matches the restored engine state.
-    db OP_SNAPSTATE_DEFER
-    dw $0128            ; world_offset
-    dw $015C            ; abs_x
-    db $34              ; IMAGE01_XPOS
-    db $02              ; current_screen
-    db $06              ; scroll_src_bank
-    db $4C              ; scroll_src_off
-    db $04              ; scroll_lsrc_bank
-    db $6D              ; scroll_lsrc_off
-    dw $014A            ; scroll_up_anchor
-    db $B6              ; scroll_up_off
-    dw $0000            ; scroll_min_wo
-    dw $FFFF            ; scroll_max_wo
-* Repaint config (two regions, 4 bytes each):
-*   Region 1: scr3 (bank $06, byte 0) → playfield cols [34..109]
-*     (= 76 bytes) for all 183 rows. With wo=$0128=296 and
-*     scr3_origin=330, scr3 byte 0 sits at world 330 = playfield
-*     col 330-296 = 34.
-*   Region 2: scr2 (bank $05, byte 76) → playfield cols [0..33]
-*     (= 34 bytes). With wo=296 and scr2_origin=220, the visible
-*     scr2 starts at byte (296 - 220) = 76 and runs through byte
-*     109 (= scr2's right edge), filling cols 0..33.
-    db $06              ; region 1 bank (scr3)
-    db $00              ; region 1 source byte
-    db $4C              ; region 1 count = 76
-    db $22              ; region 1 dst col (= 34)
-    db $05              ; region 2 bank (scr2)
-    db $4C              ; region 2 source byte = 76
-    db $22              ; region 2 count = 34
-    db $00              ; region 2 dst col = 0
+* Ladder 1 (scr3 → scr5) climb. Previously bracketed by
+* OP_SNAPSTATE_DEFER (pre-climb) + OP_SNAPSTATE (post-climb)
+* which pinned wo/abs_x/xpos/banks to canonical values and
+* repainted scr2/scr3 lower band. With the world-coord climb
+* refactor in progress, the engine derives those values from
+* the current wo at climb time: anchor=330 (from OP_UP handler
+* default) places scr5 art relative to wherever Billy was when
+* he engaged the ladder; the lower band is painted by
+* :ffs_setup_scr5 in engine.s; scroll_src/lsrc banks are
+* re-derived by sync_current_screen after :snap_transition.
+* If anything misaligns, that's the work to do next — don't
+* re-add SNAPSTATE.
     db OP_WAITCLR
     db OP_UP,5,6,7      ; Up to screen 5, left=screen 6, right=screen 7
-* Post-climb golden state for ladder1 (recorded above first
-* ladder). Fires after OP_UP completes — snap_transition has
-* already run, so playfield matches canonical state. This op
-* commits engine state to the recorded post-climb checkpoint.
-    db OP_SNAPSTATE
-    dw $0128            ; world_offset
-    dw $015C            ; abs_x
-    db $34              ; IMAGE01_XPOS
-    db $05              ; current_screen
-    db $08              ; scroll_src_bank
-    db $4C              ; scroll_src_off
-    db $07              ; scroll_lsrc_bank
-    db $6D              ; scroll_lsrc_off
-    dw $014A            ; scroll_up_anchor
-    db $1A              ; scroll_up_off
-    dw $0000            ; scroll_min_wo
-    dw $FFFF            ; scroll_max_wo
 
 ; upper level (screen 5)
     db OP_SCRLOCK       ; lock scrolling on upper level

@@ -1091,14 +1091,21 @@ _scroll_up
  rep $30
  mx %00
 
-* First-call setup for scr12 climb: paint the FULL post-snap
-* lower layout (scr9 right portion + all of scr8) across all 183
-* rows, BEFORE Step 1's shift. Replaces pre-climb scr9+scr10
-* with scr9[82..109] at cols [up_dst_start..up_dst_start+
-* up_count-1] and scr8[0..81] at cols [up_dst_start+up_count..
-* 109]. Mirrors snap_transition's lower-fill but for all rows so
-* the climb animation shows the post-snap layout throughout.
-* Cost ~100ms one-time at climb start.
+* First-call setup: paint the lower band (two source screens that
+* the source stratum overlays the playfield with at climb start)
+* across all 183 rows, BEFORE Step 1's shift. Mirrors snap_-
+* transition's lower-fill but for all rows so the climb animation
+* shows the post-snap layout throughout. Cost ~100ms one-time at
+* climb start.
+*
+* Per-target setup populates ffs_left_bank/left_origin (= the
+* source-stratum screen whose world range starts to the LEFT of
+* the right neighbor) and ffs_right_bank/right_origin (= the
+* screen whose world range starts at right_origin and extends
+* rightward). The split happens at right_origin: source bytes
+* in [wo, right_origin) come from left; bytes in [right_origin,
+* wo+110) come from right. This generalizes the old scr12-only
+* hardcoding to all three mission-1 climbs.
  lda climb_started
  and #$00FF
  beq :ffs_check_screen
@@ -1106,42 +1113,76 @@ _scroll_up
 :ffs_check_screen
  lda scroll_up_screen
  and #$00FF
+ cmp #5
+ beq :ffs_setup_scr5
  cmp #12
- beq :ffs_do
+ beq :ffs_setup_scr12
+* Ladder 2 (scr10) setup is deferred: its OP_SNAPSTATE_DEFER is
+* still active and hardcodes byte offsets calibrated for old
+* origins (scr5=330, scr7=440). Wire :ffs_setup_scr10 in once
+* that SNAPSTATE_DEFER is stripped too.
  jmp :ffs_done
-:ffs_do
+:ffs_setup_scr5
+* Ladder 1: scr3 → scr5. Source stratum (ground) overlays scr2 +
+* scr3 at the climb-start wo. scr2 origin=220, scr3 origin=330.
+ sep $20
+ lda #$05               ; scr2 bank
+ sta ffs_left_bank
+ lda #$06               ; scr3 bank
+ sta ffs_right_bank
+ rep $20
+ lda #220
+ sta ffs_left_origin
+ lda #330
+ sta ffs_right_origin
+ bra :ffs_paint
+:ffs_setup_scr12
+* Ladder 3: scr9 → scr12. Source stratum (skywalk) overlays scr9
+* + scr8. scr9 origin=220, scr8 origin=330. (Note: scr8's origin
+* is to the RIGHT of scr9's in world coords, so scr8 is the
+* "right" screen in this pair even though its bank number is
+* lower than scr9's.)
+ sep $20
+ lda #$0C               ; scr9 bank
+ sta ffs_left_bank
+ lda #$0B               ; scr8 bank
+ sta ffs_right_bank
+ rep $20
+ lda #220
+ sta ffs_left_origin
+ lda #330
+ sta ffs_right_origin
+:ffs_paint
  sep $20
  lda #1
  sta climb_started
  rep $20
 * compute_up_align populates up_src_start, up_count, up_dst_start
 * from world_offset and scroll_up_anchor. Step 2 will call it
-* again with the same inputs (no narrow pin for scr12 wide).
+* again with the same inputs.
  jsr compute_up_align
  lda up_count
- bne :ffs_paint
+ bne :ffs_paint_left
  jmp :ffs_done
-:ffs_paint
-* --- scr9 fill: geometric position, NOT anchor-derived. scr9 covers
-* world 220..329; for wo, scr9 byte (wo-220) sits at playfield col 0,
-* and scr9 fills through col (329-wo) inclusive (= 330-wo bytes).
-* This decouples the lower band from scr12's anchor so the relative
-* alignment between scr12 (upper) and scr8/scr9 (lower) reflects the
-* true world geometry rather than scr12's source-byte offset.
+:ffs_paint_left
+* --- Left screen fill: covers world [left_origin, right_origin).
+* For wo, left byte (wo - left_origin) sits at playfield col 0,
+* count = right_origin - wo (= bytes from wo to right_origin
+* exclusive, the left-screen-visible portion).
  lda world_offset
  sec
- sbc #220
+ sbc ffs_left_origin
  clc
  adc #$2000
- sta $F0                ; src = scr9 byte (wo-220)
+ sta $F0                ; src = left byte (wo - left_origin)
  lda #$2000
  sta $F3                ; dst = col 0
- lda #330
+ lda ffs_right_origin
  sec
  sbc world_offset
- sta ffs_s9_count      ; count = 330 - wo (= scr9 visible bytes)
+ sta ffs_s9_count       ; count = right_origin - wo
  sep $20
- lda #$0C               ; scr9 bank
+ lda ffs_left_bank
  sta $F2
  lda #$18
  sta $F5
@@ -1164,24 +1205,24 @@ _scroll_up
  sta $F3
  dex
  bne :ffs_s9_row
-* --- scr8 fill: scr8 covers world 330..439; for wo, scr8 byte 0
-* sits at playfield col (330-wo), filling through col 109 (= wo-220
-* bytes total, mirroring scr9's count). ---
+* --- Right screen fill: covers world [right_origin, ...). For wo,
+* right byte 0 sits at playfield col (right_origin - wo),
+* count = wo + 110 - right_origin (= visible right bytes).
  lda world_offset
  sec
- sbc #220
- sta ffs_count         ; count = wo - 220 (= scr8 visible bytes)
+ sbc ffs_left_origin
+ sta ffs_count          ; count = wo - left_origin
  beq :ffs_s8_jmp_done
  lda #$2000
- sta $F0                ; src = scr8 byte 0
- lda #330
+ sta $F0                ; src = right byte 0
+ lda ffs_right_origin
  sec
  sbc world_offset
  clc
  adc #$2000
- sta $F3                ; dst = col (330 - wo)
+ sta $F3                ; dst = col (right_origin - wo)
  sep $20
- lda #$0B               ; scr8 bank
+ lda ffs_right_bank
  sta $F2
  lda #$18
  sta $F5
@@ -1808,35 +1849,41 @@ _scroll_up
 :snap_rgap_done
 
 * Lower-screen fill: after a short (113-row-tall) target copy,
-* fill the remaining 70 playfield rows (113..182) from scr9 + scr8,
-* using GEOMETRIC per-screen world origins (mirrors FFS during-climb).
-* scr9 covers world 220..329; scr8 covers world 330..439. For wo=296,
-* scr9 byte 76 lands at col 0 (count 34), scr8 byte 0 lands at col 34
-* (count 76). Decoupling from scr12's anchor keeps the lower band
-* aligned across the during-climb / post-snap boundary.
+* fill the remaining 70 playfield rows (113..182) from the source
+* stratum's two overlapping screens, using GEOMETRIC per-screen
+* world origins (mirrors :ffs_do during-climb). Uses the ffs_*
+* descriptor cells populated by :ffs_setup_scrN at climb start —
+* enables this paint for ALL three ladders (was scr12-only).
  lda scroll_up_screen
  and #$00FF
  cmp #12
  beq :snap_lower_go
+* :snap_lower_go is ONLY for narrow targets (target screen has
+* fewer than 183 rows of content, so the bottom 70 playfield
+* rows need fill from the source stratum). Full-height targets
+* like scr5 (ladder 1) have 183 rows of art in their target
+* bank and the main snap_copy paints all of it — no lower band
+* needed. scr10 stays gated off until its OP_SNAPSTATE_DEFER
+* is stripped too.
  jmp :snap_lower_done
 :snap_lower_go
-* scr9 fill — src = scr9 byte (wo-220), dst = col 0,
-* count = 330 - wo (visible scr9 bytes).
+* Left fill — src = left byte (wo - left_origin), dst = col 0,
+* count = right_origin - wo (visible left bytes).
  lda world_offset
  sec
- sbc #220
+ sbc ffs_left_origin
  clc
  adc #$2000
- sta $F0               ; src = scr9 byte (wo-220)
+ sta $F0
  lda #$66A0
- sta $F3               ; dst = $18/(row 113, col 0)
- lda #330
+ sta $F3                ; dst = $18/(row 113, col 0)
+ lda ffs_right_origin
  sec
  sbc world_offset
- sta snap_lo_s9_count ; count = 330 - wo
+ sta snap_lo_s9_count   ; count = right_origin - wo
  beq :snap_lo_s9_done
  sep $20
- lda #$0C              ; scr9 bank
+ lda ffs_left_bank
  sta $F2
  lda #$18
  sta $F5
@@ -1860,23 +1907,23 @@ _scroll_up
  dex
  bne :snap_drow
 :snap_lo_s9_done
-* scr8 lower fill — src = scr8 byte 0, dst = col (330-wo),
-* count = wo - 220 (visible scr8 bytes).
+* Right fill — src = right byte 0, dst = col (right_origin - wo),
+* count = wo - left_origin (visible right bytes).
  lda world_offset
  sec
- sbc #220
- sta lower_rgap_count ; count = wo - 220
+ sbc ffs_left_origin
+ sta lower_rgap_count   ; count = wo - left_origin
  beq :no_scr8_fill
  lda #$2000
- sta $F0               ; src = scr8 byte 0
- lda #330
+ sta $F0
+ lda ffs_right_origin
  sec
  sbc world_offset
  clc
  adc #$66A0
- sta $F3               ; dst = $18/(row 113, col 330-wo)
+ sta $F3                ; dst = $18/(row 113, col right_origin-wo)
  sep $20
- lda #$0B               ; scr8 bank
+ lda ffs_right_bank
  sta $F2
  lda #$18
  sta $F5
@@ -1899,13 +1946,24 @@ _scroll_up
  sta $F3
  dex
  bne :snap_dr_row
-* Initialize scr8_src_off so subsequent scroll_right lower-fill
-* picks up where this snap left off.
+* scr8_src_off init is currently scr12-specific (tracks scr8 byte
+* position for subsequent scroll_right lower-fill). For other
+* ladders we don't yet have an equivalent — leave the field at
+* whatever it was. Gate on scroll_up_screen == 12 explicitly.
+ lda scroll_up_screen
+ and #$00FF
+ cmp #12
+ bne :snap_lower_done
  lda lower_rgap_count
  sta scr8_src_off
  stz scr8_src_off+1
  bra :snap_lower_done
 :no_scr8_fill
+* Same gate as above — only scr12 climb resets scr8_src_off.
+ lda scroll_up_screen
+ and #$00FF
+ cmp #12
+ bne :snap_lower_done
  stz scr8_src_off
  stz scr8_src_off+1
 :snap_lower_done

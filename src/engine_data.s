@@ -38,6 +38,17 @@ up_count                 ds 2
 push_ymin                dfb 0
 push_ymax                dfb 0
 
+* Ladder-refactor: per-target lower-band fill descriptors. Set by
+* engine.s :ffs_setup before each climb's first paint. The pair
+* (left_bank, left_origin) and (right_bank, right_origin) tells
+* :ffs_paint and :snap_lower_paint which banks to read and what
+* world byte sits at playfield col 0 for each side. Generalizes
+* the old scr12-only scr9/scr8 hardcoding.
+ffs_left_bank            ds 1
+ffs_left_origin          ds 2
+ffs_right_bank           ds 1
+ffs_right_origin         ds 2
+
 * Bounds-refactor (Option A): bank-$02 addresses of the strata tables.
 * Read from the level header at init_level via $02/0018 (strata_index)
 * and $02/001A (screen_to_stratum). strata_base holds the address of
