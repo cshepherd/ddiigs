@@ -11169,6 +11169,25 @@ process_input_jimmy
 :pij_jimmy_found
  jsr load_sprite          ; spr_ptr now points at Jimmy's slot
 
+* Tick Jimmy's grab_punch_timer. Mirrors the block above
+* pi_action_dispatch in process_input (Billy's path). Without
+* this, Jimmy's timer sets to GRAB_PUNCH_DURATION on start_grab_punch
+* and never decrements — grab_check then swallows every input, so
+* L doesn't fire follow-up grab punches and AWAY doesn't release.
+* On the 1->0 transition, restore BGRAB2/xHELD1 if still grabbing.
+* info_ptr is already Jimmy from the load_sprite above, so
+* end_grab_punch_subframe can be called directly without rescanning
+* the sprite table.
+ lda grab_punch_timer
+ beq :pij_no_gp_dec
+ dec grab_punch_timer
+ bne :pij_no_gp_dec
+ lda grab_target
+ ora grab_target+1
+ beq :pij_no_gp_dec
+ jsr end_grab_punch_subframe
+:pij_no_gp_dec
+
  jsr pi_action_dispatch
 
 * No extra save_sprite here — process_input's walk handlers
