@@ -1337,109 +1337,6 @@ run_script
  sta script_pc+1
  jmp :exec_loop
 :not_scrmax
- cmp #OP_SNAPSTATE
- beq :do_snapstate
- jmp :not_snapstate
-:do_snapstate
-* OP_SNAPSTATE: copy 17-byte inline payload into engine state
-* vars. Used to restore a "golden" state recorded via the 'g'
-* debug key. Place at script positions where canonical state is
-* desired (e.g., right before OP_UP for pre-climb golden, and
-* immediately after OP_UP for post-climb golden).
- ldy #1
- lda [script_pc],y     ; world_offset low
- sta world_offset
- ldy #2
- lda [script_pc],y     ; world_offset high
- sta world_offset+1
- ldy #3
- lda [script_pc],y     ; abs_x low
- sta abs_x
- ldy #4
- lda [script_pc],y     ; abs_x high
- sta abs_x+1
- ldy #5
- lda [script_pc],y     ; IMAGE01_XPOS
- sta IMAGE01_XPOS
- sta billy_sprite+2
- sta billy_sprite+34   ; prev_xpos = new xpos (no stale erase)
- ldy #6
- lda [script_pc],y     ; current_screen
- sta current_screen
- ldy #7
- lda [script_pc],y     ; scroll_src_bank
- sta scroll_src_bank
- ldy #8
- lda [script_pc],y     ; scroll_src_off
- sta scroll_src_off
- ldy #9
- lda [script_pc],y     ; scroll_lsrc_bank
- sta scroll_lsrc_bank
- ldy #10
- lda [script_pc],y     ; scroll_lsrc_off
- sta scroll_lsrc_off
- ldy #11
- lda [script_pc],y     ; scroll_up_anchor low
- sta scroll_up_anchor
- ldy #12
- lda [script_pc],y     ; scroll_up_anchor high
- sta scroll_up_anchor+1
- ldy #13
- lda [script_pc],y     ; scroll_up_off
- sta scroll_up_off
- ldy #14
- lda [script_pc],y     ; scroll_min_wo low
- sta scroll_min_wo
- ldy #15
- lda [script_pc],y     ; scroll_min_wo high
- sta scroll_min_wo+1
- ldy #16
- lda [script_pc],y     ; scroll_max_wo low
- sta scroll_max_wo
- ldy #17
- lda [script_pc],y     ; scroll_max_wo high
- sta scroll_max_wo+1
-* Reload the new screen's bounds table since current_screen may
-* have changed.
- lda current_screen
- jsr load_screen_bounds
-* Advance script_pc by 18 (opcode + 17 data bytes).
- lda script_pc
- clc
- adc #18
- sta script_pc
- lda script_pc+1
- adc #0
- sta script_pc+1
- jmp :exec_loop
-:not_snapstate
- cmp #OP_SNAPSTATE_DEFER
- beq :do_snapstate_defer
- jmp :not_snapstate_defer
-:do_snapstate_defer
-* OP_SNAPSTATE_DEFER: copy 25-byte inline payload (= bytes 1..25,
-* skipping the opcode at offset 0) to pending_snap_buf, set flag.
-* scroll_up's :su_normal applies state + repaints on first call.
- ldx #0
- ldy #1
-:dsd_loop
- lda [script_pc],y
- sta pending_snap_buf,x
- iny
- inx
- cpx #25
- bne :dsd_loop
- lda #1
- sta pending_snap_flag
- lda script_pc
- clc
- adc #26
- sta script_pc
- lda script_pc+1
- adc #0
- sta script_pc+1
- jmp :exec_loop
-:not_snapstate_defer
  cmp #OP_WAITY
  bne :not_waity
  ldy #1
@@ -3211,22 +3108,6 @@ world_offset dw 0
 * mean "no limit". Set by OP_SCRMIN/OP_SCRMAX, reset at level init.
 scroll_min_wo dw $0000
 scroll_max_wo dw $FFFF
-
-* Pending golden state for OP_SNAPSTATE_DEFER. The op stores its
-* 25-byte payload here and sets pending_snap_flag; scroll_up's
-* :su_normal entry applies state and runs repaints on first call.
-* Buffer layout:
-*   +0..+16: 17 bytes of engine state (matches OP_SNAPSTATE).
-*   +17:  region 1 repaint bank (0 = skip region 1).
-*   +18:  region 1 repaint source byte offset.
-*   +19:  region 1 repaint count (8-bit).
-*   +20:  region 1 repaint destination column.
-*   +21:  region 2 repaint bank (0 = skip region 2).
-*   +22:  region 2 repaint source byte offset.
-*   +23:  region 2 repaint count (8-bit).
-*   +24:  region 2 repaint destination column.
-pending_snap_flag dfb 0
-pending_snap_buf  ds 25
 
 *----------------------------------------------------------
 * load_screen_bounds - Copy bounds table (400 bytes) and
@@ -8387,21 +8268,13 @@ OP_WAITNPC  = 12
 OP_WAITXREV = 13      ; wait for player X to descend to <= threshold
 OP_SCRMIN   = 14      ; set minimum world_offset (left-scroll clamp)
 OP_SCRMAX   = 15      ; set maximum world_offset (right-scroll clamp)
-OP_SNAPSTATE = 16     ; restore engine to a recorded "golden" state.
-                      ; 17-byte inline payload: wo(2), abs_x(2),
-                      ; xpos(1), current_screen(1), scroll_src_bank(1),
-                      ; scroll_src_off(1), scroll_lsrc_bank(1),
-                      ; scroll_lsrc_off(1), scroll_up_anchor(2),
-                      ; scroll_up_off(1), scroll_min_wo(2), scroll_max_wo(2).
-OP_SNAPSTATE_DEFER = 17 ; like OP_SNAPSTATE but applied at next
-                      ; scroll_up call (= after climb has begun).
-                      ; Payload extends to 25 bytes: 17 bytes of
-                      ; engine state, then 8 bytes of repaint config
-                      ; (two regions of 4 bytes each):
-                      ;   db bank, db byte, db count, db dst (region 1)
-                      ;   db bank, db byte, db count, db dst (region 2)
-                      ; Engine repaints 183 rows from bank/byte+row*$A0
-                      ; to $18/(dst + row*$A0). Bank=0 skips that region.
+* Opcodes 16 and 17 (OP_SNAPSTATE / OP_SNAPSTATE_DEFER) removed in
+* the world-coord climb refactor. Their job — pinning canonical
+* engine state pre/post-climb and repainting the playfield with
+* the source stratum's lower band — is now done dynamically by
+* the engine (anchors per target in OP_UP, lower-band paint via
+* :ffs_setup_scrN in engine.s, post-climb scroll_lsrc derived
+* from scroll_up_lbank in :snap_transition).
 OP_BOSSMUSIC = 18     ; switch to BOSS.NTP music (no params).
 OP_WAIT     = 19      ; wait N frames before continuing the script.
                       ; 1-byte param: frame count (1-255).

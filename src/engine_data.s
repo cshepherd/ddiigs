@@ -14,8 +14,6 @@ old_lo                   dfb 0
 nfp                      dfb 0
 nfc                      dfb 0
 prev_start               dfb 0
-rg1_count                dw 0
-rg2_count                dw 0
 ufill_top                ds 2
 utmp                     ds 2
 rgap_start               ds 2

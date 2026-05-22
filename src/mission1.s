@@ -23,11 +23,9 @@ OP_WAITNPC  EQU 12 ; wait for a particular count of NPC sprites to be active (pa
 OP_WAITXREV EQU 13 ; wait for abs_x to descend to <= threshold (params: X position)
 OP_SCRMIN   EQU 14 ; clamp world_offset from below (params: 2-byte wo minimum)
 OP_SCRMAX   EQU 15 ; clamp world_offset from above (params: 2-byte wo maximum)
-OP_SNAPSTATE EQU 16 ; restore engine to a "golden" state (17-byte payload)
-                    ; Payload order: dw wo, dw abs_x, db xpos, db cs,
-                    ; db ssrc_bank, db ssrc_off, db lsrc_bank, db lsrc_off,
-                    ; dw up_anchor, db up_off, dw min_wo, dw max_wo
-OP_SNAPSTATE_DEFER EQU 17 ; same as OP_SNAPSTATE but applied at next scroll_up
+; Opcodes 16 + 17 (OP_SNAPSTATE / OP_SNAPSTATE_DEFER) removed in the
+; world-coord climb refactor. Their work is now done dynamically by
+; the engine — no per-ladder state pinning required.
 OP_BOSSMUSIC EQU 18 ; trigger boss music (no params)
 OP_WAIT     EQU 19 ; wait N frames before continuing the script (params: 1-byte frame count)
 OP_KILLOBJ  EQU 20 ; remove all non-player, non-NPC objects (e.g. dropped items) (no params)
