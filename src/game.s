@@ -22363,15 +22363,19 @@ draw_other_sprite
 * Destination is hardcoded to bank $01 (shadowed to $E1).
 *
 * Inner loop (per byte) is branchless:
-*   LDA [scr],Y / AND [mask],Y / ORA [data],Y / STA [scr],Y
+*   LDA scr_abs,Y / AND [mask],Y / ORA [data],Y / STA scr_abs,Y
+* Screen reads/writes are absolute,Y with DBR=$01 (cheaper than
+* the [dp],Y form they replaced — 4+5 cyc vs 7+8). The abs operand
+* is self-modified per row at :dsc_scr_lda+1 / :dsc_scr_sta+1.
+* Data and mask stay long-indirect since they live in bank $02.
 * Mirror sprites use pre-computed _DATA_MIRROR / _MASK_MIRROR
 * arrays — there is no separate mirror branch here.
 *
 * DP layout after the 11-byte stack carve-out:
-*   DP 0-2  screen long pointer (offset 0-1, bank 2)
+*   DP 0-2  unused (was screen long pointer pre-abs,Y refactor)
 *   DP 4-6  data   long pointer (offset 4-5, bank 6)
 *   DP 7-9  mask   long pointer (offset 7-8, bank 9)
-*   DP A    end_x  (= IMAGE01_XPOS + FRAME_X)
+*   DP A    end_x  (= FRAME_X, the byte-width loop bound)
 *----------------------------------------------------------
 draw_sprite_compiled
  PHB
@@ -22396,10 +22400,9 @@ draw_sprite_compiled
  ORA #%01000000
  STAL $E0C029
 
-* Bank bytes (8-bit stores so they don't clobber adjacent DP bytes
-* that the 16-bit offset writes below will overwrite anyway).
- LDA #$01              ; destination bank $01 (shadowed to $E1)
- STA 2                 ; DP 2 = screen bank
+* Bank bytes for the [4]/[7] long-indirect data/mask reads. Screen
+* no longer uses long-indirect — its bank is set by switching DBR
+* to $01 just before the inner loop.
  LDA sprite_bank
  STA 6                 ; DP 6 = data bank
  STA 9                 ; DP 9 = mask bank
@@ -22434,9 +22437,10 @@ draw_sprite_compiled
  BPL :dsc_off_ok
  JMP :dsc_done
 :dsc_off_ok
-* DP 0-1 = ypos * $A0 + $2000 + IMAGE01_XPOS
-* (Pre-adding IMAGE01_XPOS lets the inner loop use Y as a sprite-byte
-*  index from 0..FRAME_X-1 against all three pointers in lockstep.)
+* Screen base address = $2000 + ypos*$A0 + IMAGE01_XPOS. Patched
+* into both inner-loop abs,Y operands so the loop can use the
+* cheaper LDA/STA abs,Y form instead of LDA/STA [dp],Y. Row tail
+* re-patches both operands by adding $A0 each iteration.
  LDA IMAGE01_YPOS
  ASL
  ASL
@@ -22452,7 +22456,8 @@ draw_sprite_compiled
  ADC #$2000
  CLC
  ADC IMAGE01_XPOS
- STA 0
+ STA :dsc_scr_lda+1
+ STA :dsc_scr_sta+1
 
  LDA FRAME_ADDR
  STA 4                 ; DP 4-5 = data offset
@@ -22464,13 +22469,20 @@ draw_sprite_compiled
  STA $0A               ; DP $0A = byte width (loop bound, Y < FRAME_X)
  LDX FRAME_Y           ; X = row counter
 
+* Switch DBR=$01 so the inner loop's abs,Y screen access lands in
+* the SHR shadow bank. PHB at routine entry stashed the caller's
+* DBR; the final PLB in :dsc_done restores it.
+ LDA #$01
+ PHA
+ PLB
+
 :dsc_row
  LDY #0                ; sprite-byte index, runs 0..FRAME_X-1
 :dsc_byte
- LDA [0],Y
+:dsc_scr_lda LDA $0000,Y     ; abs,Y, operand self-modified per row
  AND [7],Y
  ORA [4],Y
- STA [0],Y
+:dsc_scr_sta STA $0000,Y     ; abs,Y, operand self-modified per row
  INY
  CPY $0A
  BCC :dsc_byte
@@ -22478,19 +22490,22 @@ draw_sprite_compiled
  DEX
  BEQ :dsc_done
 
-* Advance pointers to next row (16-bit math)
+* Advance pointers to next row (16-bit math). DBR=$01 here, so
+* FRAME_X must be read via long addressing (ADCL) — plain ADC
+* would land in bank $01 instead of bank $00.
  REP $20
- LDA 0
+ LDAL :dsc_scr_lda+1
  CLC
  ADC #$00A0
- STA 0
+ STAL :dsc_scr_lda+1
+ STAL :dsc_scr_sta+1
  LDA 4
  CLC
- ADC FRAME_X
+ ADCL FRAME_X
  STA 4
  LDA 7
  CLC
- ADC FRAME_X
+ ADCL FRAME_X
  STA 7
  SEP $20
  BRA :dsc_row
