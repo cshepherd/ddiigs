@@ -44,6 +44,7 @@ info_ptr = $E2
          jml _init_mission13           ; $1F/0014
          jml _init_mission14           ; $1F/0018
          jml _init_jimmy               ; $1F/001C
+         jml _init_mission12blit       ; $1F/0020
 
          PUT engine_externs.s
 
@@ -6117,3 +6118,174 @@ _init_jimmy
  xce
  mx %11
  rtl
+
+*----------------------------------------------------------
+* _init_mission12blit - Migrated from game.s to free bank-$00
+* space. Builds compiled_dispatch_tbl entries for the legacy
+* mission12 sprites compiled to immediate-mode blits in banks
+* $34-$38. Same logic as the in-game.s version was; only
+* difference is RTL at the end and a leading underscore on
+* the global label so it matches the JML jump-table target.
+*
+* Frame addresses come from mission12.s's spr_addr_tbl (bank
+* $19, starting at $19/$0016). spr_flail at offset +0 is
+* skipped; spr_lmace1 (first migrated sprite) is at +2.
+*
+* Each sprite contributes 2 dispatch entries: (data, orient=0)
+* and (mirror, orient=1). Sharing the FRAME_ADDR as the key
+* between the two relies on try_immediate_dispatch's orient
+* byte check at entry+5.
+*
+* Native + MX %00 on entry/exit. Caller wraps with JSL.
+*----------------------------------------------------------
+_init_mission12blit
+ phb
+ clc
+ xce
+ rep $30
+ mx %00
+ phk
+ plb
+
+ lda #$0018
+ sta :im12_m12_off
+
+ lda #$34
+ jsr :im12_process_file
+ lda #$35
+ jsr :im12_process_file
+ lda #$36
+ jsr :im12_process_file
+ lda #$37
+ jsr :im12_process_file
+ lda #$38
+ jsr :im12_process_file
+
+ sec
+ xce
+ plb
+ mx %11
+ rtl
+
+:im12_process_file
+ mx %00
+ sta :im12_bank
+
+ stz $F0
+ sep $20
+ lda :im12_bank
+ sta $F2
+ rep $20
+
+ ldy #0
+ lda [$F0],y
+ sta :im12_tbl_off
+ ldy #2
+ lda [$F0],y
+ sta :im12_remain
+
+ lda :im12_tbl_off
+ sta $F0
+
+ ldy #0
+:im12_loop
+ mx %00
+ lda :im12_remain
+ bne :im12_in_range
+ jmp :im12_file_done
+:im12_in_range
+
+ lda [$F0],y
+ sta :im12_blit_data_addr
+ iny
+ iny
+ sep $20
+ lda [$F0],y
+ sta :im12_blit_data_bank
+ rep $20
+ iny
+
+ lda [$F0],y
+ sta :im12_blit_mir_addr
+ iny
+ iny
+ sep $20
+ lda [$F0],y
+ sta :im12_blit_mir_bank
+ rep $20
+ iny
+
+ phy
+
+ stz $F0
+ sep $20
+ lda #$19
+ sta $F2
+ rep $20
+ ldy :im12_m12_off
+ lda [$F0],y
+ sta :im12_frame_addr
+
+* Entry 1: key = FRAME_ADDR, orient = 0, blit = data.
+ ldx compiled_dispatch_count
+ lda :im12_frame_addr
+ sta compiled_dispatch_tbl,x
+ lda :im12_blit_data_addr
+ sta compiled_dispatch_tbl+2,x
+ sep $20
+ lda :im12_blit_data_bank
+ sta compiled_dispatch_tbl+4,x
+ stz compiled_dispatch_tbl+5,x
+ rep $20
+ txa
+ clc
+ adc #6
+ tax
+* Entry 2: key = FRAME_ADDR, orient = 1, blit = mir.
+ lda :im12_frame_addr
+ sta compiled_dispatch_tbl,x
+ lda :im12_blit_mir_addr
+ sta compiled_dispatch_tbl+2,x
+ sep $20
+ lda :im12_blit_mir_bank
+ sta compiled_dispatch_tbl+4,x
+ lda #$01
+ sta compiled_dispatch_tbl+5,x
+ rep $20
+ txa
+ clc
+ adc #6
+ sta compiled_dispatch_count
+
+ lda :im12_m12_off
+ clc
+ adc #2
+ sta :im12_m12_off
+
+ stz $F0
+ sep $20
+ lda :im12_bank
+ sta $F2
+ rep $20
+ lda :im12_tbl_off
+ sta $F0
+
+ ply
+
+ lda :im12_remain
+ dec
+ sta :im12_remain
+ jmp :im12_loop
+
+:im12_file_done
+ rts
+
+:im12_bank             dfb 0
+:im12_remain           dw 0
+:im12_tbl_off          dw 0
+:im12_m12_off          dw 0
+:im12_blit_data_addr   dw 0
+:im12_blit_data_bank   dfb 0
+:im12_blit_mir_addr    dw 0
+:im12_blit_mir_bank    dfb 0
+:im12_frame_addr       dw 0
