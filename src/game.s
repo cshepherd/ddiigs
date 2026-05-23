@@ -13071,17 +13071,30 @@ update_anims
  bne :flag_advance
  jmp :no_advance
 :flag_advance
-* Snapshot current xpos/ypos/frame_x/frame_y into prev_* BEFORE
-* modifying xpos. Without this, each VBL the advance-position
-* code clobbers xpos but leaves prev_xpos stale at the pre-
-* animation value, so the NEXT frame's erase_all erases at the
-* wrong spot (typically a no-op on clean background) and the
-* previous frame's drawing stays on screen as an artifact trail.
-* This mirrors what save_sprite does for walk: walk goes through
-* save_sprite inside process_input, which snapshots prev from
-* the old block values before writing new ones. The position-
-* advance path here bypasses save_sprite entirely, so it has to
-* do the snapshot itself.
+* Snapshot current xpos/ypos into prev_* BEFORE modifying xpos.
+* Without this, each VBL the advance-position code clobbers xpos
+* but leaves prev_xpos stale at the pre-animation value, so the
+* NEXT frame's erase_all erases at the wrong spot (typically a
+* no-op on clean background) and the previous frame's drawing
+* stays on screen as an artifact trail.
+*
+* DO NOT snapshot prev_frame_x/y here. :flag_advance doesn't
+* modify cur_frame_x/y, so a snapshot every VBL just keeps prev=cur.
+* But on the very first VBL of an anim that took over from another
+* render path (e.g. walk→jump in the same input frame), info+10 has
+* the new anim's frame_x while the last-drawn-on-screen pixels
+* still reflect the prior render's wider frame (walk's IMAGE03 is
+* 11 wide vs JUMP1's 10). save_sprite (called by the walk path
+* right before start_anim) leaves prev_frame_x at the correct
+* prior-frame width; overwriting it here shrinks the erase rect
+* and leaves a vertical sliver of the wider walk frame's rightmost
+* column visible mid-jump. Symptom: 1-byte × 3-row chunk at Billy's
+* lower-right (where IMAGE03's foot pixels live) that survives
+* until the post-jump landing erase covers it.
+*
+* save_anim_state on frame transitions correctly updates
+* prev_frame_x/y from the old info+10/12 — that path is where
+* prev frame dims should be managed.
  ldy #2
  lda (info_ptr),y
  ldy #34
@@ -13090,14 +13103,6 @@ update_anims
  lda (info_ptr),y
  ldy #32
  sta (info_ptr),y     ; prev_ypos <- current ypos
- ldy #10
- lda (info_ptr),y
- ldy #36
- sta (info_ptr),y     ; prev_frame_x <- current frame_x
- ldy #12
- lda (info_ptr),y
- ldy #38
- sta (info_ptr),y     ; prev_frame_y <- current frame_y
 * Halve the horizontal component of the jump: only step xpos on
 * every other VBL by toggling jump_x_toggle. The previous-rect
 * snapshots above still run unconditionally so erase_all unions
@@ -14122,11 +14127,13 @@ update_anims
  dex
  bra :ne_rescue_y_loop
 :ne_rescue_y_done
-* Commit rescued ypos to info+0 and prev_ypos.
+* Commit rescued ypos to info+0. Do NOT touch prev_ypos: the un-
+* bump above set prev_ypos = bumped (= FALLEN's drawn y), and
+* erase_all next frame needs that to cover the FALLEN drawn rect.
+* Overwriting prev_ypos here strands the FALLEN pixels on screen
+* as residue when the rescue moves the body to a different row.
  txa
  ldy #0
- sta (info_ptr),y
- ldy #32
  sta (info_ptr),y
 * Read bmin/bmax for this row. If the row is fully blocked
 * (bmax==0 from rescue bailing at row 0), skip the X clamp.
@@ -14146,11 +14153,10 @@ update_anims
  sta :ne_rescue_oldx
  cmp :ne_rescue_xmin
  bcs :ne_rescue_xmax_chk
-* Snap xpos = bmin.
+* Snap xpos = bmin. Do NOT touch prev_xpos — erase_all next frame
+* still needs to clear at the FALLEN-drawn x.
  lda :ne_rescue_xmin
  ldy #2
- sta (info_ptr),y
- ldy #34
  sta (info_ptr),y
  ldy #22
  lda (info_ptr),y
@@ -14182,14 +14188,13 @@ update_anims
  cmp :ne_rescue_xmax
  bcc :ne_no_rescue
  beq :ne_no_rescue
-* Snap xpos = bmax - idle_x.
+* Snap xpos = bmax - idle_x. Do NOT touch prev_xpos — erase_all
+* next frame still needs to clear at the FALLEN-drawn x.
  lda :ne_rescue_xmax
  ldy #44
  sec
  sbc (info_ptr),y
  ldy #2
- sta (info_ptr),y
- ldy #34
  sta (info_ptr),y
  ldy #22
  lda (info_ptr),y
@@ -15076,6 +15081,41 @@ update_anims
  ldy #32
  sta (info_ptr),y       ; prev_ypos = clamped (erase anchor)
 :nfb_y_ok
+* NPC-only UP clamp: align FALLEN feet with the standing floor row.
+* Target ypos = npc_min_y + idle_y - frame_y. Setting cur_ypos to
+* npc_min_y alone leaves FALLEN floating (its 15-row body would
+* end at npc_min_y+15, well above the standing floor at npc_min_y+
+* idle_y). Targeting npc_min_y + (idle_y - frame_y) puts FALLEN's
+* bottom row at standing's bottom row (= the visual floor).
+*
+* Only clamp UP (cur < target). If the +FALL_Y_OFFSET bump already
+* put the body at or past the target, leave it — could be a fall
+* into a below-floor pit or a hit that was already at floor.
+ ldy #22
+ lda (info_ptr),y
+ cmp #$01
+ beq :nfb_skip_npc_clamp
+ cmp #$02
+ beq :nfb_skip_npc_clamp
+* tgt = npc_min_y + idle_y - frame_y
+ lda npc_min_y
+ clc
+ ldy #46
+ adc (info_ptr),y           ; A = npc_min_y + idle_y
+ ldy #12
+ sec
+ sbc (info_ptr),y           ; A = npc_min_y + idle_y - frame_y
+ sta :nfb_npc_tgt
+ ldy #0
+ lda (info_ptr),y           ; cur_ypos (post-bump, post-DOWN-clamp)
+ cmp :nfb_npc_tgt
+ bcs :nfb_skip_npc_clamp    ; cur_ypos >= target, leave alone
+ lda :nfb_npc_tgt
+ ldy #0
+ sta (info_ptr),y
+ ldy #32
+ sta (info_ptr),y           ; prev_ypos = clamped (erase anchor)
+:nfb_skip_npc_clamp
 * Body just landed — fire SND_FALLEN.
  ldx #SND_FALLEN
  jsr sound_trigger
@@ -15101,6 +15141,7 @@ update_anims
 :kick_saved_fy   dfb 0
 :nfb_new_xpos    dfb 0
 :nfb_delta       dfb 0
+:nfb_npc_tgt     dfb 0
 :ne_rescue_xmin  dfb 0
 :ne_rescue_xmax  dfb 0
 :ne_rescue_oldx  dfb 0
