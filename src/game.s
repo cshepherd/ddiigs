@@ -7551,6 +7551,57 @@ erase_all
  bne :do_erase
  jmp :skip_erase
 :do_erase
+* No-movement skip: if prev_* == cur_* on all four position/size
+* fields AND no animation is active, the sprite hasn't actually
+* changed — `:do_erase` would just wipe its rect to bg (from bank
+* $18) and immediately repaint, but during that wipe it'd ALSO
+* clobber any other sprite's paint inside the rect that came from
+* this frame's earlier interleaved-draw (e.g. a lower-y sprite
+* drawn just before us at an overlapping position). Then our
+* compiled blit's transparent bytes read the freshly-wiped $01 and
+* see bg, not the lower sprite.
+* Skipping the erase preserves the lower sprite at our transparent
+* bytes (we still overwrite opaque bytes with our paint).
+*
+* Anim-active gate (info+24/+25): animations like spinkick keep
+* the same frame_x/frame_y across frames but cycle frame_addr —
+* the prev_*/cur_* size check wouldn't catch the content change,
+* so the previous frame's pixels would persist (visible ghost).
+* If anim_ptr is non-zero, fall through to the full erase.
+ ldy #24
+ lda (info_ptr),y
+ iny
+ ora (info_ptr),y     ; A = anim_ptr.lo | anim_ptr.hi
+ bne :de_movement     ; anim active → must wipe between frames
+ ldy #0
+ lda (info_ptr),y
+ ldy #32
+ cmp (info_ptr),y
+ bne :de_movement
+ ldy #2
+ lda (info_ptr),y
+ ldy #34
+ cmp (info_ptr),y
+ bne :de_movement
+ ldy #10
+ lda (info_ptr),y
+ ldy #36
+ cmp (info_ptr),y
+ bne :de_movement
+ ldy #12
+ lda (info_ptr),y
+ ldy #38
+ cmp (info_ptr),y
+ bne :de_movement
+* No anim and all four prev/cur fields match — skip the wipe-and-
+* mark, just re-flag dirty so the interleaved draw fires.
+ ldy #30
+ lda (info_ptr),y
+ and #$FD
+ ora #$01
+ sta (info_ptr),y
+ jmp :skip_erase
+:de_movement
 * Compute the erase rect. It must cover both the prev-drawn
 * pixels (so no ghost) and the area the new frame will draw
 * (so transparent pixels in a grown/shifted frame don't reveal
@@ -7692,9 +7743,9 @@ erase_all
  jsr dbg_print_nl
 :skip_er_debug
  fin
- jsr mark_overlapping    ; flag other sprites whose prev drawn rect
-                          ; intersects the union we're about to erase
  jsr erase
+ jsr mark_overlapping    ; flag (forward) / immediately redraw (behind)
+                          ; sprites overlapping the just-erased rect
 * Sync prev_* to current_* so subsequent frames' union erases don't
 * compound stale prev values. The erase above just cleaned up the
 * old-rect region based on prev, and draw_all will repaint at current.
@@ -20708,8 +20759,10 @@ remove_from_sprite_table
 mark_overlapping
  lda spr_ptr
  pha
+ sta :caller_sp_lo     ; remember caller's sprite_table position
  lda spr_ptr+1
  pha
+ sta :caller_sp_hi
  lda info_ptr
  pha
  lda info_ptr+1
@@ -20751,7 +20804,8 @@ mark_overlapping
  bne :not_self
  lda info_ptr+1
  cmp :self_hi
- beq :mo_advance
+ bne :not_self
+ jmp :mo_advance
 :not_self
 * Read other sprite's prev position (what's on screen)
  ldy #32
@@ -20791,11 +20845,67 @@ mark_overlapping
  bcc :mo_advance       ; erase_bottom <= oth_top, no overlap
  beq :mo_advance
 
-* Overlap detected — mark for redraw (set bit 0)
+* Overlap detected. Dispatch by table position relative to caller:
+*   AHEAD  (later in table)  → set needs_draw bit; the still-to-
+*                              come iteration handles redraw via
+*                              its own interleaved-draw → correct
+*                              z-order (higher-y sprite on top).
+*   BEHIND (earlier in table) → already processed this erase_all
+*                              pass; their drawn pixels were just
+*                              partially wiped by the caller's
+*                              erase. Redraw them NOW (before the
+*                              caller's own upcoming interleaved
+*                              draw paints on top). Setting needs_
+*                              draw + deferring to draw_all would
+*                              put the behind sprite ABOVE the
+*                              caller → broken painter's order.
+ lda spr_ptr+1
+ cmp :caller_sp_hi
+ bcc :mo_redraw_behind
+ bne :mo_set_bit
+ lda spr_ptr
+ cmp :caller_sp_lo
+ bcc :mo_redraw_behind
+ beq :mo_advance       ; equal = self (filtered above); be defensive
+:mo_set_bit
  ldy #30
  lda (info_ptr),y
  ora #$01
  sta (info_ptr),y
+ bra :mo_advance
+
+:mo_redraw_behind
+* Behind sprite — repaint NOW. Globals were left in erase-rect
+* state by the caller's erase; load_sprite reads other's info+*
+* into them. frame_x_off is the sprite's compiled-blit lunge
+* offset (Billy/Jimmy globals vs NPC info+68) — must be set
+* before dispatch or the redraw lands at the wrong column.
+ jsr load_sprite
+ ldy #22
+ lda (info_ptr),y
+ cmp #$01
+ bne :mo_rb_chk_jimmy
+ lda billy_cur_x_off
+ sta frame_x_off
+ bra :mo_rb_off_done
+:mo_rb_chk_jimmy
+ cmp #$02
+ bne :mo_rb_npc_off
+ lda jimmy_cur_x_off
+ sta frame_x_off
+ bra :mo_rb_off_done
+:mo_rb_npc_off
+ ldy #68
+ lda (info_ptr),y
+ sta frame_x_off
+:mo_rb_off_done
+ lda MASK_ADDR
+ ora MASK_ADDR+1
+ beq :mo_rb_legacy
+ jsr draw_sprite_compiled
+ bra :mo_advance
+:mo_rb_legacy
+ jsr draw_sprite
 
 :mo_advance
  lda spr_ptr
@@ -20819,6 +20929,8 @@ mark_overlapping
 
 :self_lo dfb 0
 :self_hi dfb 0
+:caller_sp_lo dfb 0
+:caller_sp_hi dfb 0
 :erase_right dfb 0
 :erase_bottom dfb 0
 :oth_x dfb 0
