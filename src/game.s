@@ -3777,7 +3777,10 @@ cps_latch_b   ldal SNES_LATCH        ; bit 7 = P1 Start (raw), bit 6 = P2 Start
  clc
  xce
  rep $30
- jsl NTPstop
+; quiet NTP don't stop it, else you get unclaimed sound irq
+ lda #$0000
+ jsl NTPsetplayvolume
+; jsl NTPstop
  sec
  xce
  sep $30
@@ -3795,14 +3798,14 @@ cps_latch_b   ldal SNES_LATCH        ; bit 7 = P1 Start (raw), bit 6 = P2 Start
  clc
  xce
  rep $30
- ldx #$00
- lda music_bank
- and #$00FF
- tay
- lda #$0000
- jsl NTPprepare
- lda #$0000
- jsl NTPplay
+; ldx #$00
+; lda music_bank
+; and #$00FF
+; tay
+; lda #$0000
+; jsl NTPprepare
+; lda #$0000
+; jsl NTPplay
  lda #$0080
  jsl NTPsetplayvolume
  sec
@@ -17924,10 +17927,10 @@ sfx_punch_struct
  da $0000           ; length hi word
  da $009C           ; Fc — playback rate
  dfb $80            ; doc_ram_page → DOC $8000
- dfb $08            ; first_osc (interrupt timer)
+ dfb $10            ; oscillator number (16, 17 L, 18 R)
  dfb $01            ; playback osc count
- dfb $FF            ; volume
- dfb $00            ; channel (mono out)
+ dfb $FF            ; volume L
+ dfb $00            ; channel panning (0 = mono)
  dfb 2              ; gain shift (×4 — narrow source dynamic range)
 
 sfx_punchlanded_struct
@@ -17937,11 +17940,11 @@ sfx_punchlanded_struct
  da $0000
  da $009C
  dfb $82            ; doc_ram_page → DOC $8200
- dfb $08
- dfb $01
- dfb $FF
- dfb $00
- dfb 2              ; gain shift (×4)
+ dfb $10            ; oscillator number (16, 17 L, 18 R)
+ dfb $01            ; playback osc count
+ dfb $FF            ; volume L
+ dfb $00            ; channel panning (0 = mono)
+ dfb 2              ; gain shift (×4 — narrow source dynamic range)
 
 sfx_finger_struct
  da $2000           ; sample at $11/2000
@@ -17950,11 +17953,11 @@ sfx_finger_struct
  da $0000
  da $009C
  dfb $84            ; doc_ram_page → DOC $8400
- dfb $08
- dfb $01
- dfb $FF
- dfb $00
- dfb 1              ; gain shift (×2 — wider source range, avoid clip)
+ dfb $10            ; oscillator number (16, 17 L, 18 R)
+ dfb $01            ; playback osc count
+ dfb $FF            ; volume L
+ dfb $00            ; channel panning (0 = mono)
+ dfb 1              ; gain shift (×4 — narrow source dynamic range)
 
 * POW lives at $11/4000 (not $11/3000) because FINGER spans
 * $11/2000-$11/3650 — its tail would be clobbered by anything
@@ -17966,11 +17969,11 @@ sfx_pow_struct
  da $0000
  da $009C
  dfb $86            ; doc_ram_page → DOC $8600
- dfb $08
- dfb $01
- dfb $FF
- dfb $00
- dfb 2              ; gain shift (×4)
+ dfb $10            ; oscillator number (16, 17 L, 18 R)
+ dfb $01            ; playback osc count
+ dfb $FF            ; volume L
+ dfb $00            ; channel panning (0 = mono)
+ dfb 2              ; gain shift (×4 — narrow source dynamic range)
 
 * FALLEN lives at $11/6000 because POW spans $11/4000-$11/50A0;
 * skip the $11/5000 slot to avoid clobbering POW's tail.
@@ -17981,11 +17984,11 @@ sfx_fallen_struct
  da $0000
  da $009C
  dfb $88            ; doc_ram_page → DOC $8800
- dfb $08
- dfb $01
- dfb $FF
- dfb $00
- dfb 2              ; gain shift (×4)
+ dfb $10            ; oscillator number (16, 17 L, 18 R)
+ dfb $01            ; playback osc count
+ dfb $FF            ; volume L
+ dfb $00            ; channel panning (0 = mono)
+ dfb 2              ; gain shift (×4 — narrow source dynamic range)
 
 * JUMP fits in one 4 KB slot at $11/7000 (FALLEN's tail ends at
 * $11/6A00, so $7000 is clear).
@@ -17996,11 +17999,11 @@ sfx_jump_struct
  da $0000
  da $009C
  dfb $8A            ; doc_ram_page → DOC $8A00
- dfb $08
- dfb $01
- dfb $FF
- dfb $00
- dfb 2              ; gain shift (×4)
+ dfb $10            ; oscillator number (16, 17 L, 18 R)
+ dfb $01            ; playback osc count
+ dfb $FF            ; volume L
+ dfb $00            ; channel panning (0 = mono)
+ dfb 2              ; gain shift (×4 — narrow source dynamic range)
 
 * DOOR is 5896 bytes — claims two 4 KB slots at $11/8000-$11/9708.
 sfx_door_struct
@@ -18010,11 +18013,11 @@ sfx_door_struct
  da $0000
  da $009C
  dfb $8C            ; doc_ram_page → DOC $8C00
- dfb $08
- dfb $01
- dfb $FF
- dfb $00
- dfb 2              ; gain shift (×4)
+ dfb $10            ; oscillator number (16, 17 L, 18 R)
+ dfb $01            ; playback osc count
+ dfb $FF            ; volume L
+ dfb $00            ; channel panning (0 = mono)
+ dfb 2              ; gain shift (×4 — narrow source dynamic range)
 
 * SPINKICK is 7368 bytes — two 4 KB slots at $11/A000-$11/BCC8.
 * (Skips $11/9000-$11/9708 because DOOR's tail clobbers it.)
@@ -18025,11 +18028,11 @@ sfx_spinkick_struct
  da $0000
  da $009C
  dfb $8E            ; doc_ram_page → DOC $8E00
- dfb $08
- dfb $01
- dfb $FF
- dfb $00
- dfb 2              ; gain shift (×4)
+ dfb $10            ; oscillator number (16, 17 L, 18 R)
+ dfb $01            ; playback osc count
+ dfb $FF            ; volume L
+ dfb $00            ; channel panning (0 = mono)
+ dfb 2              ; gain shift (×4 — narrow source dynamic range)
 
 * Boss SFX live in their own bank ($1A) — together they're ~57 KB
 * and won't fit alongside the other SFX in $11. The install loop
@@ -18042,10 +18045,10 @@ sfx_burngone_struct
  da $0000
  da $009C
  dfb $90            ; doc_ram_page → DOC $9000
- dfb $08
- dfb $01
- dfb $FF
- dfb $00
+ dfb $10            ; oscillator number (16, 17 L, 18 R)
+ dfb $01            ; playback osc count
+ dfb $FF            ; volume L
+ dfb $00            ; channel panning (0 = mono)
  dfb 2              ; gain shift (×4)
 
 * BURNBACK at $1A/8000 (clear of BURNGONE's $1A/0000-$65D0 tail).
@@ -18056,10 +18059,10 @@ sfx_burnback_struct
  da $0000
  da $009C
  dfb $92            ; doc_ram_page → DOC $9200
- dfb $08
- dfb $01
- dfb $FF
- dfb $00
+ dfb $10            ; oscillator number (16, 17 L, 18 R)
+ dfb $01            ; playback osc count
+ dfb $FF            ; volume L
+ dfb $00            ; channel panning (0 = mono)
  dfb 2              ; gain shift (×4)
 
 sfx_punch_path        dfb 21
