@@ -5894,6 +5894,27 @@ fo_somersault
  ldy #10
  sta (info_ptr),y      ; frame_x
 
+* Right-edge clamp. WSOMER frames are wider than the standing pose
+* (WSOMER3 = 21, WSOMER2 = 13 vs WILLIAM1 = 9). fo_approach kept
+* xpos so that xpos + 9 (idle width) <= PLAYFIELD_EDGE, but the
+* somersault frame_x can push xpos + frame_x past PLAYFIELD_EDGE
+* and the draw spills into the right-side HUD/decoration art.
+* Snap xpos so the right edge fits.
+ ldy #2
+ lda (info_ptr),y     ; xpos
+ ldy #10
+ clc
+ adc (info_ptr),y     ; xpos + frame_x = right edge
+ cmp #PLAYFIELD_EDGE+1
+ bcc :ws_right_ok
+ lda #PLAYFIELD_EDGE
+ ldy #10
+ sec
+ sbc (info_ptr),y     ; PLAYFIELD_EDGE - frame_x = new xpos
+ ldy #2
+ sta (info_ptr),y     ; clamped xpos
+:ws_right_ok
+
 * Reload sub-frame timer.
  ldy #9
  lda #SOMER_DURATION
@@ -13216,33 +13237,15 @@ update_anims
  bcc :ftraj_proceed   ; ypos < npc_min_y → trajectory active any frame
  bra :ftraj_player_gate
 :ftraj_proceed
-* On the first VBL of the trajectory (timer still = FALL_ARC_FRAMES),
-* leave prev_xpos/ypos alone — start_anim left them pointing at the
-* standing pose's last drawn position. But CLAMP prev_frame_y to at
-* least 40 (standing height) and prev_frame_x to at least 20 so the
-* union erase rect always covers the standing-pose footprint, even
-* when the enemy was mid-wpunched (38 tall) or some other shorter
-* intermediate pose where the prev sync had a smaller rect than the
-* boot region needs. On subsequent VBLs, snapshot prev_* normally.
- ldy #28
- lda (info_ptr),y
- cmp #FALL_ARC_FRAMES
- bne :ftraj_do_snap
-* First VBL: clamp prev_frame_x/y to standing-pose minimums.
- ldy #36
- lda (info_ptr),y
- cmp #20
- bcs :ftraj_pfx_ok
- lda #20
- sta (info_ptr),y
-:ftraj_pfx_ok
- ldy #38
- lda (info_ptr),y
- cmp #40
- bcs :ftraj_skip_snap
- lda #40
- sta (info_ptr),y
- bra :ftraj_skip_snap
+* Snapshot prev_* from cur EVERY VBL, including the first. The
+* prior "first VBL leaves prev_xpos/ypos alone" branch assumed
+* save_sprite had left prev_x/y at the last drawn position — but
+* save_sprite snapshots prev = OLD cur BEFORE writing the new cur,
+* so it actually leaves prev_x/y at the PRIOR drawn position (one
+* step before the last). Using that as the erase anchor leaves
+* the walk's last-drawn row(s) at the top of the body unerased
+* (visible as a FALL/walk-head sliver above the rescued sprite).
+* Snapshot from cur unconditionally instead.
 :ftraj_do_snap
 * Snapshot prev_* before mutating current. Same standing-pose
 * minimum clamp as :ftraj_pfx_ok — without it, prev_frame_y
@@ -15091,6 +15094,12 @@ update_anims
 * Only clamp UP (cur < target). If the +FALL_Y_OFFSET bump already
 * put the body at or past the target, leave it — could be a fall
 * into a below-floor pit or a hit that was already at floor.
+*
+* DO NOT touch prev_ypos. :ftraj_do_snap already set prev_ypos to
+* the trajectory's last drawn y; overwriting it here loses that
+* anchor and the next frame's erase rect can't reach the FALL pose
+* pixels still on screen (visible as a FALL-shaped sliver above
+* the rescued standing sprite).
  ldy #22
  lda (info_ptr),y
  cmp #$01
@@ -15112,9 +15121,7 @@ update_anims
  bcs :nfb_skip_npc_clamp    ; cur_ypos >= target, leave alone
  lda :nfb_npc_tgt
  ldy #0
- sta (info_ptr),y
- ldy #32
- sta (info_ptr),y           ; prev_ypos = clamped (erase anchor)
+ sta (info_ptr),y           ; cur_ypos = target. prev_ypos preserved.
 :nfb_skip_npc_clamp
 * Body just landed — fire SND_FALLEN.
  ldx #SND_FALLEN
