@@ -29,6 +29,22 @@
 * with the game.s definition.
 DEBUG_PRINT equ 0
 
+* push_band's mid-row SP save slot. Must live OUTSIDE the
+* WrCardRAM redirect range ($0200-$BFFF) — push_band has
+* WrCardRAM ON so any `sta abs` to $0200-$BFFF goes to bank $01
+* instead of bank $00, but `lda abs` still reads from bank $00.
+* That mismatch made the original $1C54 address unusable: the
+* save vanished into SHR display memory and the restore loaded
+* stale data. Address $00E0 is in zero page (untouched by
+* WrCardRAM); $E0-$E1 currently hold `spr_ptr` in game.s but
+* that's only used between game-loop iterations, not during
+* push_band, so we can borrow it as scratch here.
+*
+* Actually safer: use bank-$00 page $01 (the stack area), which
+* is also outside WrCardRAM redirect. Pick $0150 — well clear
+* of any plausible runtime SP encroachment.
+pb_sp_mid equ $000150
+
 * ZP-pointer addresses that game.s declares as `=` equates — those
 * don't appear in the listing as bindings the extractor can read,
 * so we mirror them here. Keep in sync with game.s.
@@ -2380,8 +2396,116 @@ push_band
  adc #$206D            ; S = $2000 + line_offset + 109
  tcs
 
+* Chunk 1 of 5: 11 PHAs (row offsets 108..88).
 ]idx = 108
- LUP 55
+ LUP 11
+ LDAL $012000+]idx,x
+ pha
+]idx = ]idx-2
+ --^
+
+* Mid-row IRQ gap #1. TSC saves SP mid-PHA-chain; PHX/PHY
+* preserve X and Y because NTP's interrupt_handler does
+* PHB/PHD/PHP but NOT PHA/PHX/PHY — clobbering X (row byte
+* offset) or Y (row count) would corrupt the loop state.
+ tsc
+ sta pb_sp_mid
+ lda pb_save_s
+ tcs
+ phx
+ phy
+ php
+ cli
+ nop
+ nop
+ sei
+ plp
+ ply
+ plx
+ lda pb_sp_mid
+ tcs
+
+* Chunk 2 of 5: 11 PHAs (offsets 86..66).
+]idx = 86
+ LUP 11
+ LDAL $012000+]idx,x
+ pha
+]idx = ]idx-2
+ --^
+
+* Mid-row IRQ gap #2.
+ tsc
+ sta pb_sp_mid
+ lda pb_save_s
+ tcs
+ phx
+ phy
+ php
+ cli
+ nop
+ nop
+ sei
+ plp
+ ply
+ plx
+ lda pb_sp_mid
+ tcs
+
+* Chunk 3 of 5: 11 PHAs (offsets 64..44).
+]idx = 64
+ LUP 11
+ LDAL $012000+]idx,x
+ pha
+]idx = ]idx-2
+ --^
+
+* Mid-row IRQ gap #3.
+ tsc
+ sta pb_sp_mid
+ lda pb_save_s
+ tcs
+ phx
+ phy
+ php
+ cli
+ nop
+ nop
+ sei
+ plp
+ ply
+ plx
+ lda pb_sp_mid
+ tcs
+
+* Chunk 4 of 5: 11 PHAs (offsets 42..22).
+]idx = 42
+ LUP 11
+ LDAL $012000+]idx,x
+ pha
+]idx = ]idx-2
+ --^
+
+* Mid-row IRQ gap #4.
+ tsc
+ sta pb_sp_mid
+ lda pb_save_s
+ tcs
+ phx
+ phy
+ php
+ cli
+ nop
+ nop
+ sei
+ plp
+ ply
+ plx
+ lda pb_sp_mid
+ tcs
+
+* Chunk 5 of 5: 11 PHAs (offsets 20..0).
+]idx = 20
+ LUP 11
  LDAL $012000+]idx,x
  pha
 ]idx = ]idx-2
@@ -2394,26 +2518,24 @@ push_band
  dey
  beq :pb_done
 
-* Per-row IRQ gap (PHP/PLP-wrapped): NTPstreamsound's SIRQ is
-* level-asserted by the Sound GLU and gets swallowed across
-* push_band's ~103K-cycle SEI window, slowing music during
-* every scroll. Brief CLI/NOP/SEI window lets pending IRQ
-* fire. PHP/PLP forces caller's P to round-trip cleanly so
-* MX state can't leak past the gap.
-*
-* SP is restored to pb_save_s (caller's stack, outside SHR)
-* before CLI so the HW IRQ frame + handler pushes don't
-* corrupt visible playfield bytes.
+* End-of-row IRQ gap. PHX/PHY around CLI for the same reason
+* the mid-row gaps need it — NTP's handler doesn't preserve X
+* or Y. X here holds the NEXT row's byte offset, Y is the row
+* counter (already decremented by `dey` above, will be used by
+* the next iter's `dey; beq`). SP doesn't need preservation
+* because :pb_line's TCS resets it.
  lda pb_save_s
  tcs
+ phx
+ phy
  php
  cli
  nop
  nop
- nop
- nop
  sei
  plp
+ ply
+ plx
 
  jmp :pb_line
 

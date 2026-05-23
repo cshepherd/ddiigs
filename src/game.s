@@ -9411,14 +9411,14 @@ btn_action_jump
  lda last_key
  cmp #'r'
  bne :not_scroll
-* SEI guard — see :rso_no_other comment for the NTP-IRQ leak.
- php
- sei
+* (Old SEI guard removed — the NTP-IRQ leak it worked around is
+* addressed by ninjatrackerp.s's PHP/PLP at interrupt_handler
+* entry/exit. Letting NTP fire freely here reclaims ~70K cycles
+* of IRQ-blocked time per scroll.)
  jsr save_sprite
  jsl scroll_right
  jsr load_sprite
  jsr sync_current_screen
- plp
 * world_offset += 4 (4 bytes scrolled into the world)
  lda world_offset
  clc
@@ -9719,12 +9719,9 @@ btn_action_jump
 :sn_no_hide
  lda did_climb_this_frame
  bne :sn_skip_scroll
-* SEI guard — see :rso_no_other comment for the NTP-IRQ leak.
- php
- sei
+* (Old SEI guard removed — see comment at first removal site.)
  jsl scroll_up
  jsr load_sprite
- plp
  lda #1
  sta did_climb_this_frame
  rts
@@ -10124,14 +10121,11 @@ btn_action_jump
  jsr dbg_print_nl
  fin
 * Scroll world LEFT by 4 bytes.
-* SEI guard — see :rso_no_other comment for the NTP-IRQ leak.
- php
- sei
+* (Old SEI guard removed — see comment at first removal site.)
  jsr save_sprite
  jsl scroll_left
  jsr load_sprite
  jsr sync_current_screen_left
- plp
 * abs_x retreats by 4 bytes — matches world_offset -= 4 so abs_x
 * represents the player's cumulative byte-displacement through
 * the world (1 per walk press, 4 per scroll, 1 per VBL of jump).
@@ -10340,19 +10334,13 @@ btn_action_jump
  jmp :walk_right         ; other too close to left edge
 :rso_no_other
 * Scroll world right by 4 bytes (8 pixels = 2 words).
-* SEI around the scroll dispatch — NTP's IRQ handler appears to
-* rarely leak 2 stack bytes (~1-in-20 plays), and if the IRQ lands
-* inside scroll_right's nested JSL/RTL chain the outermost RTL
-* pops a corrupted return → BRK in a zero-fill bank like $07/031x.
-* Masking IRQs across the dispatch is the simplest way to confirm
-* the hypothesis; PHP/PLP preserves the caller's I flag.
- php
- sei
+* (Old SEI guard removed — see first removal site for rationale.
+* The NTP IRQ leak that prompted this guard is addressed by the
+* PHP/PLP wrapper added to ninjatrackerp.s's interrupt_handler.)
  jsr save_sprite
  jsl scroll_right
  jsr load_sprite
  jsr sync_current_screen
- plp
 * world_offset += 4 (4 bytes scrolled into the world)
  lda world_offset
  clc
