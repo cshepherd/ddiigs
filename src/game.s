@@ -10123,6 +10123,16 @@ btn_action_jump
  sta $F0
  jsr dbg_print_nl
  fin
+* PRE-SCROLL co-op shift. See the right-scroll site for the
+* rationale (must happen BEFORE jsl scroll_left so the scroll
+* paints OTHER at post-shift xpos, avoiding the 4-byte residue
+* when OTHER later presses a direction).
+ lda jimmy_active
+ beq :lso_no_preshift
+ jsr co_op_other_alive
+ bcc :lso_no_preshift
+ jsr co_op_shift_other_right
+:lso_no_preshift
 * Scroll world LEFT by 4 bytes.
 * (Old SEI guard removed — see comment at first removal site.)
  jsr save_sprite
@@ -10177,13 +10187,14 @@ btn_action_jump
  sta billy_save_abs_x+1
  bra :lso_done
 :lso_other_alive
+* Post-scroll: shift was already done pre-scroll. Just handle the
+* walk_boost queuing here. (Mirror of right-scroll fix.)
  lda info_ptr
  cmp #<billy_sprite
  bne :lso_curr_jimmy
  lda info_ptr+1
  cmp #>billy_sprite
  bne :lso_curr_jimmy
- jsr co_op_shift_other_right
  jsr co_op_other_pressing_left
  bcc :lso_done
  lda #4
@@ -10191,11 +10202,8 @@ btn_action_jump
  bra :lso_done
 :lso_curr_jimmy
  jsr co_op_other_pressing_left
- bcc :lso_curr_jimmy_std
+ bcc :lso_done
  jsr co_op_carry_billy_right
- bra :lso_done
-:lso_curr_jimmy_std
- jsr co_op_shift_other_right
 :lso_done
  bra :finish_left
 :left_walk
@@ -10336,6 +10344,25 @@ btn_action_jump
  bcs :rso_no_other       ; other not too close → continue
  jmp :walk_right         ; other too close to left edge
 :rso_no_other
+* PRE-SCROLL co-op shift. Must happen BEFORE jsl scroll_right
+* (which paints both players at their info+2). Old order shifted
+* AFTER scroll, so scroll painted OTHER at pre-shift xpos, then
+* info+2 was decremented. If OTHER's pi_action_dispatch later
+* fires a walk handler, its save_sprite snaps info+2 (post-shift)
+* → info+34, clobbering the pre-shift value co_op_shift_other_left
+* stored there. erase_all's rect then misses the 4-byte gap where
+* the scroll painted OTHER — 4-byte residue at OTHER's right tail
+* on direction change. Fix: shift first, so scroll paints OTHER
+* at post-shift xpos. info+34 still has pre-shift for erase_all's
+* union; OTHER's later walk save_sprite re-snaps prev = post-shift
+* but the OLD draw was AT post-shift this time, so the rect still
+* covers it.
+ lda jimmy_active
+ beq :rso_no_preshift
+ jsr co_op_other_alive
+ bcc :rso_no_preshift
+ jsr co_op_shift_other_left
+:rso_no_preshift
 * Scroll world right by 4 bytes (8 pixels = 2 words).
 * (Old SEI guard removed — see first removal site for rationale.
 * The NTP IRQ leak that prompted this guard is addressed by the
@@ -10401,15 +10428,18 @@ btn_action_jump
  sta billy_save_abs_x+1
  bra :rso_done
 :rso_other_alive
+* Post-scroll: shift was already done pre-scroll. Just handle the
+* walk_boost queuing here. (Old code had `jsr co_op_shift_other_left`
+* at both branches — removed to prevent double-shift now that it
+* runs pre-scroll.)
  lda info_ptr
  cmp #<billy_sprite
  bne :rso_curr_jimmy
  lda info_ptr+1
  cmp #>billy_sprite
  bne :rso_curr_jimmy
-* Current = Billy → other = Jimmy. Standard shift, then queue
-* walk_boost so Jimmy walks +4 instead of +1 if pressing right.
- jsr co_op_shift_other_left
+* Current = Billy → other = Jimmy. Queue walk_boost so Jimmy
+* walks +4 instead of +1 if pressing right.
  jsr co_op_other_pressing_right
  bcc :rso_done
  lda #4
@@ -10417,13 +10447,11 @@ btn_action_jump
  bra :rso_done
 :rso_curr_jimmy
 * Current = Jimmy → other = Billy. Billy already walked. If he's
-* pressing right, apply retroactive carry. Else standard shift.
+* pressing right, apply retroactive carry (which itself acts as
+* the shift for Billy).
  jsr co_op_other_pressing_right
- bcc :rso_curr_jimmy_std
+ bcc :rso_done
  jsr co_op_carry_billy_left
- bra :rso_done
-:rso_curr_jimmy_std
- jsr co_op_shift_other_left
 :rso_done
  bra :finish_right
 :walk_right
