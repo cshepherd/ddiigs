@@ -94,39 +94,54 @@ _scroll_right
  rep $30               ; 16-bit A, X, Y
  mx %00
 
-* Step 1: Shift each scanline 4 bytes left in bank $18.
-* Copy words from offset+4 to offset, 53 words (106 bytes).
- lda #$2004
- sta $F0               ; src = line_start + 4
- lda #$2000
- sta $F3               ; dst = line_start
- sep $20
- lda #$18
- sta $F2
- sta $F5
- rep $20
-
- ldx #183
+* Step 1 (unrolled long-absolute,X shift): Shift each scanline
+* 4 bytes left in bank $18. Using absolute-long indexed
+* (`ldal $182004,x / stal $182000,x`, 6+6=12 cycles per word,
+* M=16) plus a fully unrolled 53-word body cuts per-row work
+* roughly in half vs the old long-indirect `lda [$F0],y /
+* sta [$F3],y` (8+8 = 16 cycles per word PLUS iny/cpy/bcc =
+* 26 cycles per word).
+*
+* Earlier attempt used direct-page addressing (`lda <$04`,
+* 10 cycles/word) but that required setting DBR=$18 + DP=$2000
+* across the entire shift loop. Any IRQ firing in that window
+* (NTPstreamsound runs every few hundred cycles) inherited the
+* changed DBR/DP and mis-addressed its state — observed as
+* a crash with PC landing in draw_overlay's `lda #$02 / sta
+* sprite_bank` after scroll_right returned.
+*
+* long-absolute,X is IRQ-safe: each instruction carries its
+* full 24-bit base address, no DBR/DP dependence.
+*
+ ldx #0                ; X = row byte offset (row * $A0)
 :shift_line
- ldy #0
-:shift_word
- lda [$F0],y
- sta [$F3],y
- iny
- iny
- cpy #106              ; 110 - 4 = 106 bytes to move
- bcc :shift_word
+]src = $182004
+]dst = $182000
+ LUP 53
+ ldal ]src,x
+ stal ]dst,x
+]src = ]src+2
+]dst = ]dst+2
+ --^
+* After LUP expansion ]src=$18206E, ]dst=$18206A — covered
+* offsets $04..$6C read into $00..$68 write = 53 words = 106
+* bytes shifted left by 4 per row. The LUP assembles ONCE;
+* the 53 hardcoded (ldal,x / stal,x) pairs re-execute for
+* every row in the runtime loop below. X is the per-row byte
+* stride ($A0 per row); each LDAL/STAL pair adds the literal
+* base, so we don't need to update any pointer state per row.
 
- lda $F0
+ txa
  clc
  adc #$00A0
- sta $F0
- lda $F3
- clc
- adc #$00A0
- sta $F3
- dex
- bne :shift_line
+ tax                   ; X += $A0 (next row)
+ cpx #$7260            ; 183 * $A0 = $7260 — stop after processing row 182
+ bcs :shift_done
+ jmp :shift_line       ; inverted — LUP body (~424 bytes for 53
+                       ; unrolled BF/9F instructions of 4 bytes
+                       ; each) pushes :shift_line well outside
+                       ; BCC's +/-128 range.
+:shift_done
 
 * Step 2: Fill rightmost 4 bytes (offsets 106-109) from
 * the scroll source background in scroll_src_bank.
@@ -602,41 +617,40 @@ _scroll_left
  rep $30
  mx %00
 
-* Step 1: Shift each scanline 4 bytes right in bank $18.
-* Copy 53 words from offset 0..104 to offset 4..108.
-* Iterate Y from 104 DOWN to 0 — negative Y would add ~$FFFE to
-* the 24-bit pointer (lda [dp],y doesn't wrap within bank), so
-* we keep Y non-negative and hold F0/F3 at the line's left edge.
- lda #$2000             ; src base = line_start + 0
- sta $F0
- lda #$2004             ; dst base = line_start + 4
- sta $F3
- sep $20
- lda #$18
- sta $F2
- sta $F5
- rep $20
-
- ldx #183
+* Step 1 (unrolled long-absolute,X shift, mirror of scroll_right):
+* Shift each scanline 4 bytes right in bank $18 using LDAL/STAL,X.
+* Same speedup story as _scroll_right's step 1 — ~140K cycles
+* saved per call. See that routine for the rationale (and the
+* DBR/DP-hazard discussion explaining why we don't use DP mode).
+*
+* Direction: bytes at offset 0..105 land at offset 4..109. To
+* avoid the source-overwrite trap, the unrolled body emits its
+* word moves in DECREASING offset order — read offset 104,
+* write offset 108; read offset 102, write 106; ... read 0,
+* write 4. Each write lands at a higher offset than any
+* subsequent read, so the source stays intact.
+ ldx #0                 ; X = row byte offset (row * $A0)
 :lshift_line
- ldy #104               ; read offset 104 first, work down to 0
-:lshift_word
- lda [$F0],y
- sta [$F3],y
- dey
- dey
- bpl :lshift_word       ; Y>=0 keeps looping; exits when Y=-2
+]src = $182068          ; offset 104 in bank $18 row 0
+]dst = $18206C          ; offset 108 in bank $18 row 0
+ LUP 53
+ ldal ]src,x
+ stal ]dst,x
+]src = ]src-2
+]dst = ]dst-2
+ --^
+* After 53 iterations: ]src = $181FFE, ]dst = $182002. Covered
+* offsets $68..$00 read into $6C..$04 write — 53 words = 106
+* bytes shifted right by 4 per row.
 
- lda $F0
+ txa
  clc
  adc #$00A0
- sta $F0
- lda $F3
- clc
- adc #$00A0
- sta $F3
- dex
- bne :lshift_line
+ tax
+ cpx #$7260             ; 183 * $A0 = $7260 — stop after processing row 182
+ bcs :lshift_done
+ jmp :lshift_line       ; inverted — LUP body too large for BCC
+:lshift_done
 
 * Step 2: Fill leftmost 4 bytes (offsets 0-3) from the
 * previous screen's source. Save old lsrc_off so state
@@ -1057,41 +1071,45 @@ _scroll_up
  jmp :ffs_done
 :ffs_done
 
-* Step 1: shift rows down by 4 in $18.
-* Iterate from row 178 down to row 0, copying to row+4.
-* Source addr starts at row 178: $2000 + 178*$A0 = $8F40
-* Dest addr starts at row 182: $2000 + 182*$A0 = $91C0
- lda #$8F40
- sta $F0
- lda #$91C0
- sta $F3
- sep $20
- lda #$18
- sta $F2
- sta $F5
- rep $20
-
- ldx #179               ; row count: 179 rows to shift
+* Step 1 (unrolled long-absolute,X shift, vertical direction):
+* Shift all rows down by 4 in $18, processing from row 178 down
+* to row 0 (179 rows total). Each row gets COPIED to row+4 —
+* destination offset is always source + $0280 ($A0 × 4 rows).
+*
+* X is the source row's byte offset within bank $18 (row*$A0).
+* X starts at 178*$A0 = $B280 (row 178) and counts down by $A0
+* per iteration; the body iterates X exactly down to 0 (row 0).
+* Each LDAL/STAL pair uses X for both — source base $182000,
+* dest base $182280 ($182000 + 4 rows). Going high→low row order
+* avoids the source-overwrite trap (each row's dest is 4 rows
+* below, so a row's source data stays intact while we process
+* rows above it).
+*
+* 55 word moves per row × 179 rows = 9845 moves. At 12 cycles
+* per word, ~118K cycles vs the old ~273K cycles for the
+* long-indirect version. Same DBR/DP-safety properties as the
+* horizontal scrolls — no register state leaks past the loop.
+ ldx #$6F40             ; row 178 source byte offset (178 * $A0)
 :ushift_row
- ldy #0
-:ushift_word
- lda [$F0],y
- sta [$F3],y
- iny
- iny
- cpy #110
- bcc :ushift_word
+]src = $182000
+]dst = $182280          ; src + 4 rows ($A0 × 4)
+ LUP 55
+ ldal ]src,x
+ stal ]dst,x
+]src = ]src+2
+]dst = ]dst+2
+ --^
+* After 55 iterations: ]src = $18206E, ]dst = $1822EE. Covered
+* row offsets 0..108 (55 words = 110 bytes — the full row).
 
- lda $F0
+ txa
+ beq :ushift_done       ; just processed row 0 — exit
  sec
  sbc #$00A0
- sta $F0
- lda $F3
- sec
- sbc #$00A0
- sta $F3
- dex
- bne :ushift_row
+ tax                    ; X = next source row (-$A0)
+ jmp :ushift_row        ; inverted — LUP body (~440 bytes) is
+                        ; far outside any short branch's range.
+:ushift_done
 
 * Step 2: fill rows 0-3 from source (above) screen at off-3..off
  sep $20
@@ -2375,6 +2393,28 @@ push_band
  tax
  dey
  beq :pb_done
+
+* Per-row IRQ gap (PHP/PLP-wrapped): NTPstreamsound's SIRQ is
+* level-asserted by the Sound GLU and gets swallowed across
+* push_band's ~103K-cycle SEI window, slowing music during
+* every scroll. Brief CLI/NOP/SEI window lets pending IRQ
+* fire. PHP/PLP forces caller's P to round-trip cleanly so
+* MX state can't leak past the gap.
+*
+* SP is restored to pb_save_s (caller's stack, outside SHR)
+* before CLI so the HW IRQ frame + handler pushes don't
+* corrupt visible playfield bytes.
+ lda pb_save_s
+ tcs
+ php
+ cli
+ nop
+ nop
+ nop
+ nop
+ sei
+ plp
+
  jmp :pb_line
 
 :pb_done
@@ -6143,13 +6183,15 @@ _init_jimmy
 * Native + MX %00 on entry/exit. Caller wraps with JSL.
 *----------------------------------------------------------
 _init_mission12blit
- phb
+ phb                   ; save caller's DBR
  clc
  xce
  rep $30
  mx %00
- phk
- plb
+* Don't `phk / plb` here — engine.s lives in bank $1F, so that
+* would set DBR=$1F and route every `sta compiled_dispatch_tbl,x`
+* below to bank-$1F engine code instead of bank-$00 dispatch
+* memory. Caller (game.s) has DBR=$00, which is what we want.
 
  lda #$0018
  sta :im12_m12_off
@@ -6284,15 +6326,16 @@ _init_mission12blit
 :im12_file_done
  rts
 
-:im12_bank             dfb 0
-:im12_remain           dw 0
-:im12_tbl_off          dw 0
-:im12_m12_off          dw 0
-:im12_blit_data_addr   dw 0
-:im12_blit_data_bank   dfb 0
-:im12_blit_mir_addr    dw 0
-:im12_blit_mir_bank    dfb 0
-:im12_frame_addr       dw 0
+* Scratch locals moved to bank-$00 RAM hole — see imb_* comment.
+:im12_bank             equ $001C30
+:im12_remain           equ $001C32
+:im12_tbl_off          equ $001C34
+:im12_m12_off          equ $001C36
+:im12_blit_data_addr   equ $001C38
+:im12_blit_data_bank   equ $001C3A
+:im12_blit_mir_addr    equ $001C3C
+:im12_blit_mir_bank    equ $001C3E
+:im12_frame_addr       equ $001C40
 
 *----------------------------------------------------------
 * _init_mission14blit - Same shape as init_mission13blit but
@@ -6311,13 +6354,12 @@ _init_mission12blit
 * Native + MX %00 on entry/exit.
 *----------------------------------------------------------
 _init_mission14blit
- phb
+ phb                   ; save caller's DBR
  clc
  xce
  rep $30
  mx %00
- phk
- plb
+* No phk/plb — see _init_mission12blit comment.
 
  ldx #$0000                   ; first sprite index = 0
  lda #$39
@@ -6425,15 +6467,16 @@ _init_mission14blit
 
  rts
 
-:im14_bank             dw 0
-:im14_remain           dw 0
-:im14_tbl_off          dw 0
-:im14_blit_data_addr   dw 0
-:im14_blit_data_bank   dfb 0
-:im14_blit_mir_addr    dw 0
-:im14_blit_mir_bank    dfb 0
-:im14_frame_data_addr  dw 0
-:im14_frame_mir_addr   dw 0
+* Scratch locals moved to bank-$00 RAM hole — see imb_* comment.
+:im14_bank             equ $001C42
+:im14_remain           equ $001C44
+:im14_tbl_off          equ $001C46
+:im14_blit_data_addr   equ $001C48
+:im14_blit_data_bank   equ $001C4A
+:im14_blit_mir_addr    equ $001C4C
+:im14_blit_mir_bank    equ $001C4E
+:im14_frame_data_addr  equ $001C50
+:im14_frame_mir_addr   equ $001C52
 
 *----------------------------------------------------------
 * _init_mission13blit - Migrated from game.s. Builds the first
@@ -6453,13 +6496,12 @@ _init_mission14blit
 * Native + MX %00 on entry/exit. Caller wraps with JSL.
 *----------------------------------------------------------
 _init_mission13blit
- phb
+ phb                   ; save caller's DBR
  clc
  xce
  rep $30
  mx %00
- phk
- plb
+* No phk/plb — see _init_mission12blit comment.
 
  stz compiled_dispatch_count
 
@@ -6567,15 +6609,21 @@ _init_mission13blit
 
  rts
 
-:imb_bank             dw 0
-:imb_remain           dw 0
-:imb_tbl_off          dw 0
-:imb_blit_data_addr   dw 0
-:imb_blit_data_bank   dfb 0
-:imb_blit_mir_addr    dw 0
-:imb_blit_mir_bank    dfb 0
-:imb_frame_data_addr  dw 0
-:imb_frame_mir_addr   dw 0
+* Scratch locals MOVED from bank $1F (engine.s) to bank-$00 RAM
+* hole at $1C02+. Original engine.s addresses collided with
+* game.s code at the same offsets when DBR=$00 (which we set
+* via "no phk/plb" to keep `sta compiled_dispatch_tbl,x` writing
+* to bank $00). Symptom: $00/37D3-$37DE got 12 bytes overwritten
+* per init_mission1jimmyblit call, clobbering check_x_bounds_world.
+:imb_bank             equ $001C02
+:imb_remain           equ $001C04
+:imb_tbl_off          equ $001C06
+:imb_blit_data_addr   equ $001C08
+:imb_blit_data_bank   equ $001C0A
+:imb_blit_mir_addr    equ $001C0C
+:imb_blit_mir_bank    equ $001C0E
+:imb_frame_data_addr  equ $001C10
+:imb_frame_mir_addr   equ $001C12
 
 *----------------------------------------------------------
 * _init_mission1blit - Migrated from game.s. Walks
@@ -6589,13 +6637,12 @@ _init_mission13blit
 * Native + MX %00 on entry/exit. Caller wraps with JSL.
 *----------------------------------------------------------
 _init_mission1blit
- phb
+ phb                   ; save caller's DBR
  clc
  xce
  rep $30
  mx %00
- phk
- plb
+* No phk/plb — see _init_mission12blit comment.
 
  stz $F0
  sep $20
@@ -6729,13 +6776,14 @@ _init_mission1blit
  dfb $6C,$98      ; BCLIMB2
 :im1b_offsets_end
 
-:im1b_tmp_off          dw 0
-:im1b_blit_data_addr   dw 0
-:im1b_blit_data_bank   dfb 0
-:im1b_blit_mir_addr    dw 0
-:im1b_blit_mir_bank    dfb 0
-:im1b_frame_data_addr  dw 0
-:im1b_frame_mir_addr   dw 0
+* Scratch locals moved to bank-$00 RAM hole — see imb_* comment.
+:im1b_tmp_off          equ $001C14
+:im1b_blit_data_addr   equ $001C16
+:im1b_blit_data_bank   equ $001C18
+:im1b_blit_mir_addr    equ $001C1A
+:im1b_blit_mir_bank    equ $001C1C
+:im1b_frame_data_addr  equ $001C1E
+:im1b_frame_mir_addr   equ $001C20
 
 *----------------------------------------------------------
 * _init_mission1jimmyblit - Migrated from game.s. Walks
@@ -6747,13 +6795,12 @@ _init_mission1blit
 * Native + MX %00 on entry/exit. Caller wraps with JSL.
 *----------------------------------------------------------
 _init_mission1jimmyblit
- phb
+ phb                   ; save caller's DBR
  clc
  xce
  rep $30
  mx %00
- phk
- plb
+* No phk/plb — see _init_mission12blit comment.
 
  stz $F0
  sep $20
@@ -6887,10 +6934,11 @@ _init_mission1jimmyblit
  dfb $82,$86      ; JCLIMB2
 :im1j_offsets_end
 
-:im1j_tmp_off          dw 0
-:im1j_blit_data_addr   dw 0
-:im1j_blit_data_bank   dfb 0
-:im1j_blit_mir_addr    dw 0
-:im1j_blit_mir_bank    dfb 0
-:im1j_frame_data_addr  dw 0
-:im1j_frame_mir_addr   dw 0
+* Scratch locals moved to bank-$00 RAM hole — see imb_* comment.
+:im1j_tmp_off          equ $001C22
+:im1j_blit_data_addr   equ $001C24
+:im1j_blit_data_bank   equ $001C26
+:im1j_blit_mir_addr    equ $001C28
+:im1j_blit_mir_bank    equ $001C2A
+:im1j_frame_data_addr  equ $001C2C
+:im1j_frame_mir_addr   equ $001C2E

@@ -1420,6 +1420,12 @@ streamsound_copy_indiv  = *                             ;copy bytes from stream 
 interrupt_handler       = *
                         phb
                         phd
+                        php                                 ; DDIIGS: explicitly preserve caller P
+                                                            ; (including E flag implication via MX);
+                                                            ; the IIgs ROM IRQ dispatcher saves
+                                                            ; outer state, but a caller running in
+                                                            ; native MX=11 emulation gets MX leaked
+                                                            ; to MX=00 unless we PLP just before RTL.
 
                         phk
                         plb
@@ -1466,6 +1472,14 @@ interrupt_handler_loop  = *
                         bpl   interrupt_handler_loop
 
                         sep   #$30
+                        plp                                 ; DDIIGS: restore caller P
+                                                            ; (matches PHP at entry — see comment
+                                                            ; there). PLP runs before PLD/PLB so
+                                                            ; the stack order matches push order
+                                                            ; (PHB→PHD→PHP). The CLC below forces
+                                                            ; C=0 (= IRQ handled per IIgs
+                                                            ; convention) regardless of what PLP
+                                                            ; just restored.
                         pld
                         plb
                         clc
