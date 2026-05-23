@@ -6813,8 +6813,18 @@ _init_mission1blit
  sta $F2
  rep $20
 
+* LDAL (long absolute) is required here: :im1b_offsets lives in bank $1F
+* (engine.s) but DBR=$00 at init time (per [[engine_dbr_trap]] memory we
+* don't phk;plb in engine.s). `lda :im1b_offsets,x` assembles as `lda abs,X`
+* which reads $00/<offset>+X — that's game.s code bytes, not the offsets
+* table. Symptom: dispatch table gets garbage frame_addr values; sprites
+* miss immediate-mode dispatch and fall back to AND/ORA (which renders
+* correctly via FRAME_X, so the bug was invisible for Billy). Jimmy had
+* a 4-pixel residue on direction-change because one happenstance match
+* routed a 9-wide frame to a wider blit blob. Same fix for :im1j_offsets
+* below.
  sep $20
- lda :im1b_offsets,x
+ ldal :im1b_offsets,x
  sta :im1b_tmp_off
  stz :im1b_tmp_off+1
  rep $20
@@ -6824,7 +6834,7 @@ _init_mission1blit
  sta :im1b_frame_data_addr
 
  sep $20
- lda :im1b_offsets+1,x
+ ldal :im1b_offsets+1,x
  sta :im1b_tmp_off
  stz :im1b_tmp_off+1
  rep $20
@@ -6971,8 +6981,11 @@ _init_mission1jimmyblit
  sta $F2
  rep $20
 
+* LDAL required — same DBR=$00 / engine.s-bank-$1F mismatch as :im1b_offsets
+* above. Reading via `lda abs,X` gave dispatch entries with garbage
+* frame_addrs, causing Jimmy's 4-pixel "non-mirrored residue" trail.
  sep $20
- lda :im1j_offsets,x
+ ldal :im1j_offsets,x
  sta :im1j_tmp_off
  stz :im1j_tmp_off+1
  rep $20
@@ -6982,7 +6995,7 @@ _init_mission1jimmyblit
  sta :im1j_frame_data_addr
 
  sep $20
- lda :im1j_offsets+1,x
+ ldal :im1j_offsets+1,x
  sta :im1j_tmp_off
  stz :im1j_tmp_off+1
  rep $20
