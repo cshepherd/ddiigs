@@ -13526,12 +13526,16 @@ update_anims
  lda :dd_w
  ldy #36
  sta (info_ptr),y     ; prev_frame_x
-* Cap height so erase doesn't bleed into the HUD at y=180+.
-* prev_frame_y = min(:dd_h, 180 - prev_ypos)
- lda #180
+* Cap height to last playfield row. The actual erase in :nd_dead
+* clamps bottom to 183 (`cmp #184 / lda #183`), so we cap prev_frame_y
+* at (184 - prev_ypos) here — letting the rect cover rows up to 183
+* inclusive. The earlier 180 cap dropped the bottom 3 rows of any
+* FALLEN sprite drawn at the playfield floor (e.g. Linda's LFALL2
+* head fragment at rows 180-182).
+ lda #184
  ldy #32
  sec
- sbc (info_ptr),y     ; A = 180 - prev_ypos
+ sbc (info_ptr),y     ; A = 184 - prev_ypos
  cmp :dd_h
  bcc :dd_use_capped
  lda :dd_h
