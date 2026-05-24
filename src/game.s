@@ -7737,6 +7737,19 @@ erase_all
 * Skipping the erase preserves the lower sprite at our transparent
 * bytes (we still overwrite opaque bytes with our paint).
 *
+* Force-erase override (bit 2 of dirty): save_sprite / save_anim_
+* state / start_anim all set bit 2 because they rewrite info+14
+* (frame_addr). The anim_ptr gate below catches active animations
+* but NOT the single transition frame where anim_ptr was just
+* cleared by :normal_end (WPUNCHED → idle on a still NPC): position
+* and frame_x/y all match, optimization skips erase, and WPUNCHED's
+* opaque head pixels survive under WILLIAM1 idle's transparent
+* mask cells (visible as "knocked-back head" residue).
+ ldy #30
+ lda (info_ptr),y
+ and #$04
+ bne :de_movement     ; force_erase → must wipe between frames
+*
 * Anim-active gate (info+24/+25): animations like spinkick keep
 * the same frame_x/frame_y across frames but cycle frame_addr —
 * the prev_*/cur_* size check wouldn't catch the content change,
@@ -7944,10 +7957,11 @@ erase_all
  lda (info_ptr),y
  ldy #38
  sta (info_ptr),y     ; prev_frame_y <- current frame_y
-* Clear bit 1 (needs_erase), set bit 0 (needs_draw) so sprite is redrawn
+* Clear bit 1 (needs_erase) and bit 2 (force_erase), set bit 0
+* (needs_draw) so sprite is redrawn.
  ldy #30
  lda (info_ptr),y
- and #$FD             ; clear bit 1
+ and #$F9             ; clear bits 1 + 2
  ora #$01             ; set bit 0
  sta (info_ptr),y
 :skip_erase
@@ -8454,9 +8468,14 @@ save_sprite
  iny
  lda MASK_ADDR+1
  sta (info_ptr),y
-* Mark sprite as dirty (bit0=needs_draw, bit1=needs_erase)
+* Mark sprite as dirty (bit0=needs_draw, bit1=needs_erase, bit2=
+* force_erase). Bit 2 defeats erase_all's no-movement skip — we
+* just rewrote info+14 (frame_addr) so even if prev/cur positions
+* match, the prior frame's opaque pixels under the new frame's
+* transparent mask cells would otherwise survive (WPUNCHED head
+* knocked-back residue under WILLIAM1 idle was the visible case).
  ldy #30
- lda #$03
+ lda #$07
  sta (info_ptr),y
  rts
 
@@ -8503,9 +8522,13 @@ save_anim_state
  iny
  lda MASK_ADDR+1
  sta (info_ptr),y
-* Mark dirty (bit0=needs_draw, bit1=needs_erase)
+* Mark dirty (bit0=needs_draw, bit1=needs_erase, bit2=force_erase).
+* See save_sprite for why bit 2 is needed — frame_addr just changed
+* via FRAME_ADDR above, so the no-movement erase-skip in erase_all
+* would strand the previous frame's opaque pixels under the new
+* frame's transparent mask cells.
  ldy #30
- lda #$03
+ lda #$07
  sta (info_ptr),y
  rts
 
@@ -12760,8 +12783,11 @@ start_anim
  sta (info_ptr),y      ; xpos = clamped
 :sa_skip_xclamp
  ldy #30
- lda #$03
- sta (info_ptr),y
+ lda #$07               ; bit 2 = force_erase (see save_sprite). New
+ sta (info_ptr),y       ; anim just rewrote info+14, so the no-
+                        ; movement skip in erase_all would otherwise
+                        ; leave the prior anim's pixels visible
+                        ; under the new frame's transparent cells.
 * Set per-anim render-x offset at info+9 (cur_x_off, signed byte).
 * Read by draw_all to populate frame_x_off before each draw call;
 * latched into info+8 (prev_x_off) right after the draw so erase_all
@@ -14264,18 +14290,41 @@ update_anims
  beq :ne_rescue_player
  cmp #$02
  beq :ne_rescue_player
-* NPC path: ypos = max(current_ypos, npc_min_y).
+* NPC path. Two branches:
+*   cur_ypos < npc_min_y: clamp UP to npc_min_y (knocked-off-
+*                          ladder lands on the floor).
+*   cur_ypos >= npc_min_y: walk UP through blocked rows until
+*                          bounds_tbl_hi[ypos] > 0 (handles the
+*                          rooftop case where FALL_Y_OFFSET drops
+*                          the body past the rooftop edge).
+* Both branches converge on :ne_rescue_npc_commit with X = ypos.
  ldy #0
  lda (info_ptr),y
  cmp npc_min_y
  bcs :ne_rescue_npc_keep
- lda npc_min_y
+ ldx npc_min_y
  bra :ne_rescue_npc_commit
 :ne_rescue_npc_keep
-* Already at or below the floor row — leave ypos unchanged.
+* cur_ypos >= npc_min_y. Could be:
+*   (a) within the floor band — leave alone.
+*   (b) BELOW an elevated walkable band on a rooftop / step-down
+*       screen (e.g. scr7: FALL_Y_OFFSET=24 pushes a fallen knifer
+*       from rooftop ypos=50 down to ypos=74, which is past the
+*       rooftop edge into the all-blocked row 72+ zone).
+* Walk ypos UP until bounds_tbl_hi[ypos] is non-zero, stopping at
+* npc_min_y so we don't punch up into staircase rows. Mirrors the
+* player-rescue walk-up; the old "just leave ypos alone" did
+* nothing for case (b) and the body sat outside any walkable cell.
  lda (info_ptr),y
-:ne_rescue_npc_commit
  tax
+:ne_rescue_npc_walkup
+ lda bounds_tbl_hi,x
+ bne :ne_rescue_npc_commit
+ cpx npc_min_y
+ beq :ne_rescue_npc_commit
+ dex
+ bra :ne_rescue_npc_walkup
+:ne_rescue_npc_commit
  bra :ne_rescue_y_done
 :ne_rescue_player
 * Walk ypos up until row is non-blocked. Stop at row 0 if we
@@ -14928,6 +14977,27 @@ update_anims
  sbc #BDISS_HELMET_Y
  sta (info_ptr),y
 :lf_no_helmet_y
+* Special-case anim_wpipeswing: 5-frame sequence (WPIPE1 → WPIPE4
+* → WPIPE2 → WPIPE6 → WPIPE3) puts the forward strike pose at
+* frame 2 (WPIPE2). The standard frame-1 gate below would fire on
+* WPIPE4 (the cocked-back wind-up), where the pipe is on the WRONG
+* side of williams_pipe's body and can't reach Billy. Checked
+* before the cmp #1 gate so this anim alone fires at frame 2 and
+* every other attack still fires at frame 1.
+ lda anim_ptr
+ cmp #<anim_wpipeswing
+ bne :not_wpipeswing
+ lda anim_ptr+1
+ cmp #>anim_wpipeswing
+ bne :not_wpipeswing
+ ldy #26
+ lda (info_ptr),y         ; anim_frame
+ cmp #2
+ beq :do_hit_wpipe
+ jmp :no_punch_hit
+:do_hit_wpipe
+ jmp :do_hit_now
+:not_wpipeswing
 * Check for punch hit (frame 1 of any punch animation)
  ldy #26
  lda (info_ptr),y     ; anim_frame

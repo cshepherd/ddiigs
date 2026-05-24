@@ -307,7 +307,12 @@ level_script
 
     db OP_NPC
     dw williams_knife_sprite
-    db $50,$32,$01,BEHAV_KNIFER
+* xpos=$28 (40) keeps the spawn inside scr7's row-50 walkable cell
+* ([0, 50] — the staircase diagonal wall blocks anything right of
+* xpos 50 here). $50 (80) put him on the wall, where
+* behav_knifer's check_y_bounds_strict refused every backpedal
+* and he froze in mid-air past the rooftop edge.
+    db $28,$32,$01,BEHAV_KNIFER
     db OP_WAITCLR
     db OP_KILLOBJ       ; clean up any dropped knives
 
