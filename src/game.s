@@ -13265,20 +13265,29 @@ update_anims
  sta (info_ptr),y     ; prev_ypos
  ldy #10
  lda (info_ptr),y
- cmp #20
+ ldy #44
+ cmp (info_ptr),y     ; cmp cur_fx vs idle_x
  bcs :ftraj_snap_pfx_ok
- lda #20
+ lda (info_ptr),y     ; cur_fx < idle_x → use idle_x
 :ftraj_snap_pfx_ok
  ldy #36
- sta (info_ptr),y     ; prev_frame_x (clamped to >= 20)
+ sta (info_ptr),y     ; prev_frame_x (clamped to >= idle_x)
  ldy #12
  lda (info_ptr),y
- cmp #40
+ ldy #46
+ cmp (info_ptr),y     ; cmp cur_fy vs idle_y
  bcs :ftraj_snap_pfy_ok
- lda #40
+ lda (info_ptr),y     ; cur_fy < idle_y → use idle_y
 :ftraj_snap_pfy_ok
  ldy #38
- sta (info_ptr),y     ; prev_frame_y (clamped to >= 40)
+ sta (info_ptr),y     ; prev_frame_y (clamped to >= idle_y).
+* Per-sprite idle clamp (not the old hardcoded 20/40). Generic
+* NPCs have idle 9x40 and the old constants worked, but Burnov's
+* idle is 13x48 — anim_bnfall's frame 0 (BNFALL1) is 13x46, so a
+* hardcoded prev_fy=40 floor left 4 rows of standing's body
+* unerased. Visible as 2px of Burnov's feet hanging out the bottom-
+* left of his BNFALLEN sprite after a spin-kick. Using info+44/+46
+* (idle_x/idle_y) makes the clamp self-adjusting per sprite.
 :ftraj_skip_snap
 * dx is read from BILLY's facing, not the enemy's: Billy mirror=0
 * (faces right) → enemy falls right (+1 dx); Billy mirror=1 (faces
