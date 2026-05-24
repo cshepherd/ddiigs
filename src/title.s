@@ -29,6 +29,7 @@ ctl_type_p1 = $302
 ctl_type_p2 = $304
 smax_slot = $306
 cutscene_number = $308
+myID = $30A
 
   lda $1100
   bne :already
@@ -565,7 +566,6 @@ toolbox_init
  xce                   ; back to emulation mode
  rts
 
-myID ds 2
 qdDP ds 2
 
 errorspot2
