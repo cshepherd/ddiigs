@@ -5160,6 +5160,16 @@ FO_RANGE   = 1         ; bytes (= 62 px) — engage punching at this
                         ; is byte-based; pulled in from 4 → 3 so NPCs
                         ; close the last 2 px before swinging.
 FO_CD_TIME = 90        ; cooldown frames after a punch
+FO_Y_TOL   = 12        ; rows of Y slack accepted in :check_range
+                       ; before transitioning to FO_PUNCH. Without
+                       ; this, an NPC pinned to npc_min_y (e.g. a
+                       ; downgraded knifer at the bottom row) could
+                       ; never satisfy the strict-equality Y check
+                       ; when the player floated above the floor,
+                       ; so the NPC would forever pace toward
+                       ; fo_target_x. 40-row sprites have plenty of
+                       ; bounding-box overlap for the punch to hit
+                       ; with a ~12-row Y delta.
 
 behav_faceoff
  ldy #7
@@ -5697,15 +5707,27 @@ fo_approach
 :y_at_target
 
 :check_range
-* If we're close to target X and player Y, transition to PUNCH
+* If we're close to target X and within FO_Y_TOL rows of player
+* Y, transition to PUNCH. Strict equality on Y was the old gate;
+* it left floor-bound NPCs (npc_y == npc_min_y, player_y below
+* that) permanently in APPROACH because they could never match
+* player Y. A tolerance lets the engagement fire while the punch
+* hitbox still has plenty of bounding-box overlap.
  ldy #2
  lda (info_ptr),y
  cmp fo_target_x
  bne :still_moving     ; not in X position yet
  ldy #0
  lda (info_ptr),y
- cmp fo_plr_y
- bne :still_moving     ; not in Y position yet
+ sec
+ sbc fo_plr_y          ; A = npc_y - player_y (signed)
+ bpl :cr_ydiff_pos
+ eor #$FF
+ clc
+ adc #1                ; A = |npc_y - player_y|
+:cr_ydiff_pos
+ cmp #FO_Y_TOL+1
+ bcs :still_moving     ; |Δy| > FO_Y_TOL → not engaged yet
 * Reached target — start punch
  ldy #7
  lda #FO_PUNCH

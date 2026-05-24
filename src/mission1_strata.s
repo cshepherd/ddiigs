@@ -485,7 +485,7 @@ stratum_skywalk
  dw $FFFF,$0000,$FFFF,$0000        ; y= 44  blocked
  dw $FFFF,$0000,$FFFF,$0000        ; y= 45  blocked
  dw $FFFF,$0000,$FFFF,$0000        ; y= 46  blocked
- dw $013E,$01C5,$FFFF,$0000        ; y= 47  [318..453]
+ dw $013F,$01C5,$FFFF,$0000        ; y= 47  [319..453]
  dw $FFFF,$0000,$FFFF,$0000        ; y= 48  blocked
  dw $FFFF,$0000,$FFFF,$0000        ; y= 49  blocked
  dw $FFFF,$0000,$FFFF,$0000        ; y= 50  blocked
