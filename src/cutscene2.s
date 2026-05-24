@@ -70,7 +70,7 @@ SCREEN4
     dw PALETTE01        ; params: palette data
     db OP_GFX           ; render graphics
     dw BPEAK            ; params: graphics data
-    dw #20              ; params: x position (in bytes not nibbles)
+    dw #55              ; params: x position (in bytes not nibbles)
     dw #5               ; params: y position
     db OP_TEXT          ; render text
     dw CUTSCENE14_TEXT  ; params: text display list
@@ -95,7 +95,7 @@ CUTSCENE11_TEXT
     hex 0000
 
 CUTSCENE11_TEXT1
-    dw 50 ; Xpos
+    dw 60 ; Xpos
     dw 10 ; Ypos
     ASC '     YOU WIN... FOR NOW.',00
 CUTSCENE11_TEXT2
@@ -105,7 +105,7 @@ CUTSCENE11_TEXT2
 CUTSCENE11_TEXT3
     dw 50 ; Xpos
     dw 50 ; Ypos
-    ASC '     PREVAILED OVER THE FORCES',00
+    ASC '  PREVAILED OVER THE FORCES',00
 CUTSCENE11_TEXT4
     dw 50 ; Xpos
     dw 70 ; Ypos
@@ -113,7 +113,7 @@ CUTSCENE11_TEXT4
 CUTSCENE11_TEXT5
     dw 50 ; Xpos
     dw 90 ; Ypos
-    ASC '    WARRIORS. BUT MORE BATTLES',00
+    ASC '  WARRIORS. BUT MORE BATTLES',00
 CUTSCENE11_TEXT6
     dw 50 ; Xpos
     dw 110 ; Ypos
@@ -129,7 +129,7 @@ CUTSCENE11_TEXT8
 CUTSCENE11_TEXT9
     dw 50 ; Xpos
     dw 170 ; Ypos
-    ASC ' AMAZING MOVES, DIGITIZED MUSIC,',00
+    ASC 'AMAZING MOVES, DIGITIZED MUSIC,',00
 CUTSCENE11_TEXT10
     dw 50 ; Xpos
     dw 190 ; Ypos
@@ -150,7 +150,7 @@ CUTSCENE12_TEXT1
     dw 40 ; Ypos
     ASC '   THIS WAS MADE POSSIBLE BY',00
 CUTSCENE12_TEXT2
-    dw 50 ; Xpos
+    dw 46 ; Xpos
     dw 60 ; Ypos
     ASC '   SOME AMAZING [CCC] MEMBERS',00
 CUTSCENE12_TEXT3
@@ -158,11 +158,11 @@ CUTSCENE12_TEXT3
     dw 80 ; Ypos
     ASC ' FLUX: FOR GS-MCP AND MUCH MORE',00
 CUTSCENE12_TEXT4
-    dw 50 ; Xpos
+    dw 40 ; Xpos
     dw 100 ; Ypos
-    ASC ' SIRIS: FOR TIPS AND LOOKING SLICK',00
+    ASC 'SIRIS: FOR TIPS AND LOOKING SLICK',00
 CUTSCENE12_TEXT5
-    dw 50 ; Xpos
+    dw 40 ; Xpos
     dw 120 ; Ypos
     ASC 'SPRITERS-RESOURCE.COM FOR SPRITES',00
 CUTSCENE12_TEXT6
@@ -185,9 +185,9 @@ CUTSCENE13_TEXT
     hex 0000
 
 CUTSCENE13_TEXT1
-    dw 50 ; Xpos
+    dw 54 ; Xpos
     dw 40 ; Ypos
-    ASC '   OVER 37,000 LINES OF CODE',00
+    ASC '   OVER 38,000 LINES OF CODE',00
 CUTSCENE13_TEXT2
     dw 50 ; Xpos
     dw 60 ; Ypos
@@ -195,7 +195,7 @@ CUTSCENE13_TEXT2
 CUTSCENE13_TEXT3
     dw 50 ; Xpos
     dw 80 ; Ypos
-    ASC '  A DURABLE BEAT-EM-UP ENGINE',00
+    ASC ' A DURABLE BEAT-EM-UP ENGINE',00
 CUTSCENE13_TEXT4
     dw 50 ; Xpos
     dw 100 ; Ypos
@@ -207,9 +207,9 @@ CUTSCENE13_TEXT5
 CUTSCENE13_TEXT6
     dw 50 ; Xpos
     dw 140 ; Ypos
-    ASC '     SEEING AGAIN SOON.',00
+    ASC '        SEEING AGAIN SOON.',00
 CUTSCENE13_TEXT7
-    dw 50 ; Xpos
+    dw 40 ; Xpos
     dw 160 ; Ypos
     ASC 'AND MORE AWESOME WAREZ FROM [CCC]!',00
 
@@ -225,11 +225,11 @@ CUTSCENE14_TEXT1
     ASC 'YALL KNOW WHAT IT IS',00
 CUTSCENE14_TEXT2
     dw 90 ; Xpos
-    dw 100 ; Ypos
+    dw 110 ; Ypos
     ASC '   PEAK EXCELLENCE',00
 CUTSCENE14_TEXT3
     dw 90 ; Xpos
-    dw 120 ; Ypos
+    dw 130 ; Ypos
     ASC '  2026 AND FOREVER',00
 
 BPEAK_Y hex 4D00         ; 77 rows tall (each row = 32-byte + 29-byte HEX pair)
