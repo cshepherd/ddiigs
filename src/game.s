@@ -8657,29 +8657,45 @@ FL_COOLDOWN = 3       ; waiting after punch
 * multi-key combat without the 2-key alphanumeric ceiling.
 *==========================================================
 
-* SendInfo Set Modes data byte. Per Apple IIgs Firmware
-* Reference Ch. 9, the mode bit that disables keyboard
-* autorepeat is bit 6 ($40). Other bits (mouse, SRQ, etc.)
-* stay default.
-ADB_MODE_NO_AUTOREPEAT = $40
-
 *----------------------------------------------------------
-* kbd_init - Disable keyboard autorepeat via the ADB Tool
-* Set. Called once at boot in emulation mode 8-bit.
+* kbd_init - Crank the keyboard's autorepeat to its fastest
+* setting via _SendInfo setConfig ($06). The strobe-based
+* :kbd_dispatch in process_input drives one walk step per
+* $C000 keystroke, so faster repeat = faster held-key walking,
+* matching the joystick step rate as closely as the keyboard
+* hardware allows.
+*
+* Per Apple IIgs Firmware Ref ch. 9 (Set Configuration Bytes
+* $06), the 3 data bytes are:
+*   Byte 0: high nibble = ADB mouse address, low = keyboard
+*           default = (mouse $03 << 4) | keyboard $02 = $32
+*   Byte 1: high nibble = character set, low = layout/language
+*           default = $00 (US English)
+*   Byte 2: high nibble = delay-to-repeat, low = repeat rate
+*           delay codes: 0=1/4s, 1=1/2s, 2=3/4s, 3=1s, 4=no-rpt
+*           rate  codes: 0=40 ks, 1=30, 2=24, 3=20, 4=15,
+*                        5=11, 6=8, 7=4 keys/sec
+*           $00 = 1/4 sec initial delay + 40 keys/sec repeat
+*                 (40/sec ≈ 1 event per 1.5 VBLs, closest the
+*                  keyboard MCU can get to the joystick's
+*                  60-step/sec path).
 *
 * _SendInfo ($0909) parameter stack (top first):
-*   adbCommand  word  $0004 (Set Modes)
-*   dataPtr     long  pointer to 1-byte data
-*   dataLength  word  $0001
+*   adbCommand  word  $0006 (Set Configuration)
+*   dataPtr     long  pointer to 3-byte data
+*   dataLength  word  $0003
+*
+* Called once at boot in emulation mode 8-bit; switches to
+* native + 16-bit for the toolbox call and switches back.
 *----------------------------------------------------------
 kbd_init
  clc
  xce                   ; native mode
  rep $30               ; 16-bit A/X/Y
- pea #$0001            ; dataLength
- pea ^kbd_mode_byte    ; dataPtr high (bank)
- pea kbd_mode_byte     ; dataPtr low  (offset)
- pea #$0004            ; adbCommand = Set Modes
+ pea #$0003            ; dataLength
+ pea ^kbd_cfg_data     ; dataPtr high (bank)
+ pea kbd_cfg_data      ; dataPtr low  (offset)
+ pea #$0006            ; adbCommand = Set Configuration
  ldx #$0909            ; _SendInfo
  jsl $E10000
  sec
@@ -8687,7 +8703,10 @@ kbd_init
  sep $30
  rts
 
-kbd_mode_byte dfb ADB_MODE_NO_AUTOREPEAT
+kbd_cfg_data
+ dfb $32               ; mouse $03 / keyboard $02 (defaults)
+ dfb $00               ; US English layout, default char set
+ dfb $00               ; delay=1/4s, rate=40 keys/sec (fastest)
 
 *----------------------------------------------------------
 * kbd_modifiers - Returns the current Modifier Key register
