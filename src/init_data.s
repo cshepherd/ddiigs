@@ -386,7 +386,7 @@ grab_target       dw 0    ; sprite info ptr of currently-grabbed enemy
 grab_punch_timer  dfb 0   ; > 0 while showing BGRAB1/xHELD2 sub-anim
 last_key          dfb 0   ; scratch: most recent keypress, used by
 bn_grab_active    dfb 0
-BTN_WINDOW = 4            ; ~67 ms at 60 Hz
+BTN_WINDOW = 8            ; ~133 ms at 60 Hz
 btn_pending_key   dfb 0   ; 0 / 'j' / 'l'
 btn_pending_timer dfb 0
 btn_pending_fire  dfb 0   ; 1 = fire pending action this frame
