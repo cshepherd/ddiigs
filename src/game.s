@@ -3637,6 +3637,23 @@ PAUSE_BY     = 88             ; erase rect top  (rows)
 PAUSE_BW     = 26             ; erase rect width  (bytes = 52 px)
 PAUSE_BH     = 16             ; erase rect height (rows)
 
+* Pause-save buffer. Lives in the 8KB free area at the start of
+* every mission-art bank ($0000-$1FFF is unused — bg art unpacks
+* to $2000). Bank $03 (MISSION11.PAK) is permanently loaded, so
+* its $0000+ region is always available as scratch. We snapshot
+* the SHR rect under PAUSED here before drawing the text, then
+* restore from it on unpause — recovering any sprite pixels that
+* PAUSED painted over (the $18 playfield shadow only has bg, so
+* the old "erase from $18" path was background-over-sprite).
+PAUSE_SAVE_BANK = $03
+PAUSE_SAVE_OFF  = $0000
+* SHR offset of pause rect top-left = $2000 + PAUSE_BY*$A0 + PAUSE_BX
+*                                   = $2000 + 88*160   + 41
+*                                   = $5729
+* (precomputed because Merlin can't parse parenthesised operand
+* expressions — `#$2000+(PAUSE_BY*$A0)+PAUSE_BX` won't assemble.)
+PAUSE_RECT_OFF = $5729
+
 pause_str ASC 'PAUSED',00
 
 *----------------------------------------------------------
@@ -3786,6 +3803,7 @@ cps_latch_b   ldal SNES_LATCH        ; bit 7 = P1 Start (raw), bit 6 = P2 Start
  sep $30
  mx %11
 :cp_paused_text
+ jsr save_pause_rect    ; snapshot pixels under the upcoming overlay
  jsr draw_pause_text
  rts
 :cp_unpaused
@@ -3813,7 +3831,7 @@ cps_latch_b   ldal SNES_LATCH        ; bit 7 = P1 Start (raw), bit 6 = P2 Start
  sep $30
  mx %11
 :cp_unpaused_text
- jsr erase_pause_text   ; just unpaused — restore playfield rect
+ jsr restore_pause_rect ; just unpaused — repaint sprite+bg as it was
 :cp_done rts
 
 *----------------------------------------------------------
@@ -3992,20 +4010,153 @@ draw_loading_string
 :ls_str_addr  ds 2
 
 *----------------------------------------------------------
-* erase_pause_text - Restore the rect under the PAUSED label by
-* copying clean playfield bytes from $18 back to $01 via the
-* standard erase routine.
+* save_pause_rect / restore_pause_rect - Snapshot and recover
+* the SHR rect under the PAUSED overlay. Buffer is the 8KB
+* free area at PAUSE_SAVE_BANK/PAUSE_SAVE_OFF (start of the
+* MISSION11 art bank, before its $2000 unpack point).
+*
+* Source / destination row stride is $A0 (160 bytes) in BOTH
+* the SHR rect and the buffer — the buffer is parallel-packed
+* (row N starts at PAUSE_SAVE_OFF + N*$A0), so we only need
+* different starting offsets, not different advance amounts.
+* Last byte touched is row 15 at +$05F5, well under $1FFF.
+*
+* Structure mirrors `erase` (relocated DP for [dp],Y indirect-
+* long pointers; native + 16-bit for cross-bank pointer math;
+* 8-bit M for the per-byte copy inner loop). Each routine owns
+* its full prologue/epilogue — no shared JSR helper, because a
+* helper's RTS would pop bytes after PHD relocates DP into the
+* same stack scratch its return address would live in.
 *----------------------------------------------------------
-erase_pause_text
- lda #PAUSE_BY
- sta IMAGE01_YPOS
- lda #PAUSE_BX
- sta IMAGE01_XPOS
- lda #PAUSE_BW
- sta FRAME_X
- lda #PAUSE_BH
- sta FRAME_Y
- jmp erase
+save_pause_rect
+ phb
+ php
+ clc
+ xce
+ php
+ phk
+ plb
+ rep $30
+ tsc
+ sec
+ sbc #10
+ tcs
+ phd
+ tsc
+ clc
+ adc #3
+ tcd
+ sep $20
+ mx %10
+ lda #$01
+ sta 2                       ; DP+2 = SHR bank
+ lda #PAUSE_SAVE_BANK
+ sta 6                       ; DP+6 = buffer bank
+ rep $20
+ mx %00
+ lda #PAUSE_RECT_OFF
+ sta 0                       ; DP+0..1 = SHR offset
+ lda #PAUSE_SAVE_OFF
+ sta 4                       ; DP+4..5 = buffer offset
+ sep $30
+ mx %11
+ ldx #PAUSE_BH
+]SPL1 ldy #0
+]SPL  lda [0],y                ; read SHR (live screen)
+ sta [4],y                   ; write buffer
+ iny
+ cpy #PAUSE_BW
+ bcc ]SPL
+ dex
+ beq :spr_done
+ rep $20
+ lda 0
+ clc
+ adc #$A0
+ sta 0
+ lda 4
+ clc
+ adc #$A0
+ sta 4
+ sep $20
+ bra ]SPL1
+:spr_done
+ rep $30
+ pld
+ tsc
+ clc
+ adc #10
+ tcs
+ plp
+ xce
+ plp
+ plb
+ rts
+
+restore_pause_rect
+ phb
+ php
+ clc
+ xce
+ php
+ phk
+ plb
+ rep $30
+ tsc
+ sec
+ sbc #10
+ tcs
+ phd
+ tsc
+ clc
+ adc #3
+ tcd
+ sep $20
+ mx %10
+ lda #$01
+ sta 2                       ; DP+2 = SHR bank
+ lda #PAUSE_SAVE_BANK
+ sta 6                       ; DP+6 = buffer bank
+ rep $20
+ mx %00
+ lda #PAUSE_RECT_OFF
+ sta 0                       ; DP+0..1 = SHR offset
+ lda #PAUSE_SAVE_OFF
+ sta 4                       ; DP+4..5 = buffer offset
+ sep $30
+ mx %11
+ ldx #PAUSE_BH
+]RPL1 ldy #0
+]RPL  lda [4],y                ; read buffer
+ sta [0],y                   ; write SHR (shadows to $E1)
+ iny
+ cpy #PAUSE_BW
+ bcc ]RPL
+ dex
+ beq :rpr_done
+ rep $20
+ lda 0
+ clc
+ adc #$A0
+ sta 0
+ lda 4
+ clc
+ adc #$A0
+ sta 4
+ sep $20
+ bra ]RPL1
+:rpr_done
+ rep $30
+ pld
+ tsc
+ clc
+ adc #10
+ tcs
+ plp
+ xce
+ plp
+ plb
+ rts
 
 *----------------------------------------------------------
 * setup_health_palette - Override SCBs at rows 197/198/199 to
@@ -4027,6 +4178,11 @@ erase_pause_text
 * Writes through bank $01 so SHR shadowing propagates to $E1.
 * Called once after the initial copy_50_to_01.
 *----------------------------------------------------------
+* MX tracker drifts because the routines above end with `rep $30`
+* and an emulation-mode PLP+XCE+PLP that Merlin can't see. Anchor
+* the entry-time mode so the SCB-write `lda #$02` block below
+* assembles as 8-bit immediates.
+ mx %11
 setup_health_palette
 * SCBs (8-bit). Row N SCB = $9D00 + N. Byte $02 = 320 mode,
 * palette 2.
@@ -4288,10 +4444,7 @@ game_over
  xce
  sep $30
  mx %11
-* Run Cutscene #2 before going back to the title screen. This is the "To Be Continued"
- lda #2
- sta cutscene_number
- jmp $1002
+ jmp $1000
 
 * Player 1 score HUD position. Drawn over the "0000000" digits
 * in the static HUD line at startup-MoveTo (3, 195) using the
@@ -15541,6 +15694,12 @@ spawn_dropped_mace
  lda npc_buf_next+1
  adc #0
  sta npc_buf_next+1
+
+* Re-sort sprite_table by ypos. spawn_dropped_mace inserted the
+* mace at the first null slot, so it lands after Billy regardless
+* of y — resort_sprite_table (info_ptr = mace) puts it in the
+* correct draw order.
+ jsr resort_sprite_table
 
 :sm_done
 * Restore caller's info_ptr (linda_flail).
