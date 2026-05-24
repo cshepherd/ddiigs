@@ -20855,6 +20855,24 @@ mark_overlapping
  bne :not_self
  jmp :mo_advance
 :not_self
+* Inactive-Jimmy gate. erase_all/draw_all both skip Jimmy when
+* jimmy_active=0 (he hasn't been Ctrl-J'd in), but mark_overlapping
+* doesn't go through those paths — without this gate, the back-
+* redraw below paints inactive Jimmy at his stale initial position
+* (40, 100, 9, 40) anytime another sprite's erase rect overlaps
+* it. Visible as a 1-row JIMMY01 slice popping up below an
+* NPC's rescued-standing position when their FALL trajectory
+* triggered the overlap.
+ lda info_ptr
+ cmp #<jimmy_sprite
+ bne :mo_active_ok
+ lda info_ptr+1
+ cmp #>jimmy_sprite
+ bne :mo_active_ok
+ lda jimmy_active
+ bne :mo_active_ok
+ jmp :mo_advance
+:mo_active_ok
 * Read other sprite's prev position (what's on screen)
  ldy #32
  lda (info_ptr),y     ; prev_ypos
