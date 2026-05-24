@@ -4995,7 +4995,7 @@ draw_ladder_debug
 * Ensure size covers the maximum total NPCs spawned over the
 * level's lifetime (not just concurrent), since npc_buf_next
 * only advances, never reuses slots of defeated NPCs.
-NPC_BUFFER_SLOTS = 24
+NPC_BUFFER_SLOTS = 32
 * 68 bytes/slot: 0..51 copied from the bank-$02 template; 52/54
 * (walk_anim/atk_anim), 56 (frame_bank), and 58 (idle_bank — bank
 * of the idle frame, restored on anim end) patched by
@@ -8719,138 +8719,6 @@ kbd_modifiers
  rts
 
 *----------------------------------------------------------
-* kbd_poll - Drain the keyboard's ADB register-0 event FIFO
-* via _SyncADBReceive ($0E09) and update kb_held. Each event
-* byte: bit 7 = state (0 down, 1 up), bits 6-0 = ADB scancode.
-* The keyboard's ADB device returns 2 bytes (latest event +
-* prior event) for Talk Reg 0; the completion routine stashes
-* them into kbd_buf, and after the call returns we walk the
-* buffer and update the bitmap.
-*
-* _SyncADBReceive parameter stack (top first):
-*   adbCommand  word  $0048 (Receive Bytes)
-*   compPtr     long  pointer to completion routine
-*   inputWord   word  $002C — Talk Reg 0 keyboard, with the
-*                     upper/lower nibbles SWAPPED per the
-*                     Toolbox Reference Vol 1 spec
-*
-* Called in emulation mode 8-bit; switches to native + 16-bit
-* for the toolbox call and switches back before returning.
-*----------------------------------------------------------
-kbd_poll
- stz kbd_buf_idx
- stz kbd_buf
- stz kbd_buf+1
- clc
- xce                   ; native
- rep $30               ; 16-bit A/X/Y
- pea #$002C            ; inputWord (Talk Reg 0 keyboard, nibbles swapped)
- pea ^kbd_completion   ; compPtr high (bank)
- pea kbd_completion    ; compPtr low (offset)
- pea #$0048            ; adbCommand = Receive Bytes
- ldx #$0E09            ; _SyncADBReceive
- jsl $E10000
- php                   ; capture C/error flag
- sec
- xce                   ; back to emulation
- sep $30
- pla                   ; recover saved P
- and #$01              ; isolate carry
- sta kbd_err_flag      ; non-zero = SyncADBReceive returned error
-* Apply the buffered events to kb_held. kbd_buf_idx is the
-* number of bytes the completion routine stored.
-* NOTE: SyncADBReceive currently returns adbBusy on this system
-* because the ROM ADB IRQ handler owns the bus. The completion
-* never fires and kb_held stays empty. Left wired in case a
-* future refactor (AsyncADBReceive / SRQPoll) gets this working.
- ldx #0
-:apply
- cpx kbd_buf_idx
- bcs :done
- phx
- lda kbd_buf,x
- jsr kbd_apply_event
- plx
- inx
- bra :apply
-:done
- rts
-
-*----------------------------------------------------------
-* kbd_completion - Called by SyncADBReceive once per response
-* byte received from the ADB device. Apple's docs specify the
-* completion enters with 8-bit M and X flags and must return
-* via RTL with C clear; the data byte is delivered in A. We
-* stash A into kbd_buf[kbd_buf_idx], increment the index, and
-* return.
-*----------------------------------------------------------
- mx %11
-kbd_completion
- phb
- phk
- plb                   ; DBR = current PB so abs writes hit kbd_buf
- inc kbd_call_count    ; DEBUG: count every call
- ldx kbd_buf_idx
- cpx #4                ; clamp at 4 just in case (keyboard returns 2)
- bcs :skip
- sta kbd_buf,x
- inx
- stx kbd_buf_idx
-:skip
-* DEBUG: latch the most recent NON-$FF event byte.
- cmp #$FF
- beq :sk2
- sta kbd_last_event
-:sk2
- plb
- clc
- rtl
-
-*----------------------------------------------------------
-* kbd_apply_event - A = event byte. bit 7 = state (0 down, 1
-* up), bits 6-0 = ADB scancode. $FF = no event in this slot.
-*----------------------------------------------------------
- mx %11
-kbd_apply_event
- cmp #$FF
- beq :skip
- sta :ev
- and #$7F
- sta :scan
- lda :ev
- and #$80
- bne :up
-* down: set bit
- lda :scan
- jsr :idx_bit
- lda kbd_bit_table,y
- ora kb_held,x
- sta kb_held,x
-:skip rts
-:up
-* up: clear bit
- lda :scan
- jsr :idx_bit
- lda kbd_bit_table,y
- eor #$FF
- and kb_held,x
- sta kb_held,x
- rts
-:idx_bit
- sta :tmp
- lsr
- lsr
- lsr
- tax
- lda :tmp
- and #$07
- tay
- rts
-:ev   dfb 0
-:scan dfb 0
-:tmp  dfb 0
-
-*----------------------------------------------------------
 * key_held - A = ADB scancode. Returns Z=0 if the key is
 * currently held, Z=1 if not. Preserves no callee state.
 *----------------------------------------------------------
@@ -8870,13 +8738,8 @@ key_held
 :tmp dfb 0
 
 kbd_bit_table dfb $01,$02,$04,$08,$10,$20,$40,$80
-kb_held       ds 16   ; 128 bits (1 bit per ADB scancode), set this frame
-kb_held_prev  ds 16   ; same, set last frame — used for edge detection
-kbd_buf       ds 4    ; SyncADBReceive response buffer
-kbd_buf_idx   dfb 0
-kbd_last_event dfb 0  ; debug: latest non-$FF event byte from MCU
-kbd_call_count dfb 0  ; debug: increments every time completion fires
-kbd_err_flag   dfb 0  ; debug: $FF if SyncADBReceive returned w/ C=1
+kb_held       ds 16   ; 128 bits (1 bit per ADB scancode); not currently populated, key_held still consults it for the co-op helpers
+kb_held_prev  ds 16   ; snapshot at top of process_input for edge detection
 music_muted    dfb 0  ; M-key toggle: 0=playing, 1=stopped
 music_bank     dfb $13 ; current NTP music bank ($13=mission1, $14=boss).
                        ; Tracked so M-resume and pause-resume can NTPprepare
@@ -8923,15 +8786,18 @@ process_input
  stz billy_climb_pressed
  stz jimmy_climb_pressed
 * Snapshot last frame's kb_held → kb_held_prev so the action
-* dispatch below can edge-detect just-pressed buttons.
+* dispatch below can edge-detect just-pressed buttons. kb_held
+* is currently never populated (no working ADB drain path), so
+* the snapshot is effectively all-zeros, but the loop is cheap
+* and the co-op helpers still call key_held; leaving the
+* snapshot in place keeps that contract intact for the day a
+* working kb_held updater lands.
  ldx #15
 :cp_prev
  lda kb_held,x
  sta kb_held_prev,x
  dex
  bpl :cp_prev
-* Drain ADB key events into kb_held.
- jsr kbd_poll
 * Tick down the uppercut input window each frame.
  lda landing_window
  beq :no_lw_dec
@@ -9028,8 +8894,7 @@ pi_action_dispatch
 :pad_no_hide_gate
 * (Ctrl-J / Ctrl-K / Ctrl-N runtime mode-switch hotkeys removed —
 * the selection screen now sets input_mode + jimmy_input_mode +
-* jimmy_active at startup. reset_input_state stays defined but
-* unreferenced in case a future hot-swap path wants it.)
+* jimmy_active at startup.)
 
 * Check if action animation is active (block input)
  ldy #24
@@ -10804,13 +10669,6 @@ btn_action_jump
 :no_key2 rts
 
 *----------------------------------------------------------
-* reset_input_state - zero everything that latches across a
-* mode switch. Called from Ctrl-J / Ctrl-K so a stuck axis,
-* held button, or pending edge from the previous mode can't
-* survive into the new one. Anim state is left alone.
-*----------------------------------------------------------
-
-*----------------------------------------------------------
 * co_op_other_xpos - Return (in A) the OTHER player's xpos.
 * Determines which player is currently processing via info_ptr
 * match against billy_sprite. Caller should only invoke this
@@ -11286,18 +11144,6 @@ co_op_mark_other_dirty
  lda billy_sprite+30
  ora #$03
  sta billy_sprite+30
- rts
-
-*----------------------------------------------------------
-reset_input_state
- stz btn_pending_key
- stz btn_pending_timer
- stz btn_pending_fire
- stz joy_btn_a_prev
- stz joy_btn_b_prev
- stz landing_window
- stz snes_b0_prev
- stz snes_b1_prev
  rts
 
 *----------------------------------------------------------
