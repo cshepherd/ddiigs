@@ -285,9 +285,16 @@ level_script
 
 ; upper level (screen 5)
     db OP_SCRLOCK       ; lock scrolling on upper level
-    db OP_NPC           ; William on upper level
+    db OP_NPC           ; Lindas on upper level
     dw linda_flail_sprite
-    db $58,$32,$01,BEHAV_FACEOFF  ; y=$32 (50) within walkable band
+    db $10,$3C,$01,BEHAV_FACEOFF
+    db OP_NPC
+    dw linda_flail_sprite
+    db $06,$3C,$01,BEHAV_FACEOFF
+    db OP_WAITNPC,$01
+    db OP_NPC
+    dw linda_flail_sprite
+    db $06,$3C,$01,BEHAV_FACEOFF
     db OP_WAITCLR       ; wait for enemies defeated
     db OP_KILLOBJ       ; clean up any dropped maces
 
@@ -307,12 +314,14 @@ level_script
 
     db OP_NPC
     dw williams_knife_sprite
-* xpos=$28 (40) keeps the spawn inside scr7's row-50 walkable cell
-* ([0, 50] — the staircase diagonal wall blocks anything right of
-* xpos 50 here). $50 (80) put him on the wall, where
-* behav_knifer's check_y_bounds_strict refused every backpedal
-* and he froze in mid-air past the rooftop edge.
-    db $28,$32,$01,BEHAV_KNIFER
+    db $28,$46,$01,BEHAV_KNIFER   ; Y=$46=70 = npc_min_y for scr7
+    db OP_NPC
+    dw williams_knife_sprite
+    db $30,$46,$01,BEHAV_KNIFER
+    db OP_WAITNPC,$01
+    db OP_NPC
+    dw williams_knife_sprite
+    db $30,$46,$01,BEHAV_KNIFER
     db OP_WAITCLR
     db OP_KILLOBJ       ; clean up any dropped knives
 
@@ -331,6 +340,16 @@ level_script
 
     db OP_WAITXREV
     dw $0195              ; wait for player to descend back to abs_x <= 788
+
+    db OP_NPC           ; Final Roper near right edge
+    dw roper_sprite
+    db $1,$2f,$01,BEHAV_FACEOFF  ; xpos, ypos, orientation, behavior
+    db OP_WAIT,100       ;wait between ropers
+    db OP_NPC           ; Final Roper near right edge
+    dw roper_sprite
+    db $1,$2f,$01,BEHAV_FACEOFF  ; xpos, ypos, orientation, behavior
+    db OP_WAITCLR
+
     db OP_LEFT,8          ; enable leftward scroll into scr8 (lsrc_off
                           ; preserved from snap_transition's lgap state)
 * When player has scrolled through ~all of scr8, transition to scr9.
@@ -343,6 +362,7 @@ level_script
 * so it lands between scrolls 7 and 8.
     db OP_WAITXREV
     dw $0169              ; abs_x ≤ 361 → just past scroll 7
+
     db OP_LEFT,9          ; transition lsrc to scr9 (lsrc_off resets to 109)
 * Lock wo at 296 — both min and max set so scrolling past this
 * point in either direction is blocked. The visible ladder3 art
@@ -381,7 +401,10 @@ level_script
 
     db OP_NPC           ; williams with pipe at top of ladder
     dw williams_pipe_sprite
-    db $58,$43,$01,BEHAV_FACEOFF
+    db $50,$37,$01,BEHAV_FACEOFF
+    db OP_NPC           ; williams with pipe at top of ladder
+    dw williams_pipe_sprite
+    db $58,$37,$01,BEHAV_FACEOFF
     db OP_WAITCLR
     db OP_KILLOBJ       ; clean up any dropped pipes
 
