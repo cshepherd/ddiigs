@@ -672,7 +672,14 @@ over1
 * keys don't spam $C000 strobes. Modifier register $C025 is
 * always live (auto-polled by the MCU) and is read directly
 * by kbd_modifiers.
- jsr kbd_init
+* DISABLED: kbd_init actually cranks autorepeat to its fastest
+* setting (40 keys/sec) to keep up with the throttled walk-toggle
+* cadence. Now that keyboard players bypass the toggle (see
+* advance_walk), they step every VBL on natural $C000 strobes
+* and don't need the boosted repeat rate. Leaving the keyboard
+* at its default autorepeat avoids surprising the user with
+* turbo-speed text/menu repeats outside the game proper.
+* jsr kbd_init
 
 *==========================================================
 * Main game loop
@@ -10067,14 +10074,14 @@ btn_action_jump
  bra :up_after_anim
 :up_walkframe
 * Regular up-walk (no ladder). Clear is_climbing — player has
-* left the ladder (or never started a climb). Walk gate: step
-* only on walk_toggle phase 0 (1 of every 3 VBLs), in sync with
-* advance_walk's frame advance.
+* left the ladder (or never started a climb). Position steps
+* every VBL; the frame cycle stays throttled inside advance_walk
+* (joystick only). Decoupling fixes the "stall on middle frame"
+* perception that the gated step caused — during scroll the world
+* moves every VBL regardless of the toggle, so the player looks
+* smooth; doing the same here makes non-scroll walking match.
  stz is_climbing
- lda walk_toggle
- bne :up_skip_step
  dec IMAGE01_YPOS
-:up_skip_step
  jsr advance_walk        ; vertical walk — cycle walk frames
 :up_after_anim
  jsr save_sprite
@@ -10137,13 +10144,11 @@ btn_action_jump
  jsr advance_climb
  bra :down_after_anim
 :down_walkframe
-* Regular down-walk (no ladder). Clear is_climbing. Walk gate
-* (1 of every 3 VBLs) matches the up-walk path.
+* Regular down-walk (no ladder). Clear is_climbing. Position
+* steps every VBL; frame throttle lives inside advance_walk
+* (joystick only). See :up_walkframe for the rationale.
  stz is_climbing
- lda walk_toggle
- bne :down_skip_step
  inc IMAGE01_YPOS
-:down_skip_step
  jsr advance_walk       ; vertical walk — cycle walk frames
 :down_after_anim
  jsr save_sprite
@@ -10466,11 +10471,10 @@ btn_action_jump
 * up with the scroll's world advance.
  lda walk_boost_left
  bne :lw_boosted
-* Walk gate: step only on walk_toggle phase 0 (1 of every 3
-* VBLs), in sync with advance_walk's frame advance. Boost path
-* above is uncapped so co-op scroll catch-up stays at -4/VBL.
- lda walk_toggle
- bne :skip_left
+* Position steps every VBL; frame throttle lives inside
+* advance_walk (joystick only). See :up_walkframe for the
+* rationale — keeps walking smooth across the leg-cycle's middle
+* frame instead of stalling on the toggle's "skip" VBL.
 * Normal step: xpos -= 1.
  lda IMAGE01_XPOS
  cmp #2
@@ -10717,11 +10721,8 @@ btn_action_jump
 * and we're pressing right, step by 4 instead of 1.
  lda walk_boost_right
  bne :wr_boosted
-* Walk gate: step only on walk_toggle phase 0 (1 of every 3
-* VBLs), in sync with advance_walk's frame advance. Boost path
-* above is uncapped so co-op scroll catch-up stays at +4/VBL.
- lda walk_toggle
- bne :clamp_right
+* Position steps every VBL; frame throttle lives inside
+* advance_walk (joystick only). See :up_walkframe for rationale.
 * Normal step: xpos += 1.
  lda IMAGE01_XPOS
  cmp #PLAYER_MAX_X
@@ -12020,10 +12021,26 @@ cancel_action_anim
 * Does not use the animation system — just sets the globals.
 *----------------------------------------------------------
 advance_walk
-* Step + frame advance once every 3 VBLs. walk_toggle counts down
-* 2 → 1 → 0 → 2 → ... ; the "trigger" phase is 0. The four walk
+* Joystick-controlled players (controller=$02 = Jimmy) step on
+* walk_toggle phase 0 — every other VBL, 1→0→1→0. The walk
 * handlers gate their position step on the same `walk_toggle == 0`
-* condition so leg cycle and motion stay in sync.
+* condition so leg cadence and motion stay in sync.
+*
+* Keyboard-controlled players (controller=$01 = Billy) bypass the
+* toggle entirely: walk_toggle is left at 0 every call so the
+* position-step gates downstream always fire → keyboard walks at
+* one step per VBL. ADB key repeat can't keep up with the
+* throttled cadence (kbd_init's fast-repeat boost is also off),
+* so keyboard needs every-VBL stepping to feel responsive.
+* walk_toggle is per-player (saved/restored across the co-op
+* swap_in_jimmy stash), so leaving Billy's at 0 doesn't perturb
+* Jimmy's countdown.
+ ldy #22
+ lda (info_ptr),y
+ cmp #$02
+ beq :wa_throttle      ; joystick player → toggle
+ bra :do_advance       ; keyboard / other → every VBL
+:wa_throttle
  lda walk_toggle
  bne :wt_dec
  lda #1
@@ -18428,26 +18445,16 @@ sfx_burnback_struct
  dfb $00            ; channel panning (0 = mono)
  dfb 2              ; gain shift (×4)
 
-sfx_punch_path        dfb 21
-                      asc '/DDIIGS/SFX/PUNCH.RAW'
-sfx_punchlanded_path  dfb 27
-                      asc '/DDIIGS/SFX/PUNCHLANDED.RAW'
-sfx_finger_path       dfb 22
-                      asc '/DDIIGS/SFX/FINGER.RAW'
-sfx_pow_path          dfb 19
-                      asc '/DDIIGS/SFX/POW.RAW'
-sfx_fallen_path       dfb 22
-                      asc '/DDIIGS/SFX/FALLEN.RAW'
-sfx_jump_path         dfb 20
-                      asc '/DDIIGS/SFX/JUMP.RAW'
-sfx_door_path         dfb 20
-                      asc '/DDIIGS/SFX/DOOR.RAW'
-sfx_spinkick_path     dfb 24
-                      asc '/DDIIGS/SFX/SPINKICK.RAW'
-sfx_burngone_path     dfb 24
-                      asc '/DDIIGS/SFX/BURNGONE.RAW'
-sfx_burnback_path     dfb 24
-                      asc '/DDIIGS/SFX/BURNBACK.RAW'
+sfx_punch_path        str 'SFX/PUNCH.RAW'
+sfx_punchlanded_path  str 'SFX/PUNCHLANDED.RAW'
+sfx_finger_path       str 'SFX/FINGER.RAW'
+sfx_pow_path          str 'SFX/POW.RAW'
+sfx_fallen_path       str 'SFX/FALLEN.RAW'
+sfx_jump_path         str 'SFX/JUMP.RAW'
+sfx_door_path         str 'SFX/DOOR.RAW'
+sfx_spinkick_path     str 'SFX/SPINKICK.RAW'
+sfx_burngone_path     str 'SFX/BURNGONE.RAW'
+sfx_burnback_path     str 'SFX/BURNBACK.RAW'
 
 sound_len           ds 2   ; scratch — 16-bit length for sfx_amplify
 sfx_gain_shift      ds 2   ; 16-bit: low byte = shift, high byte = 0
@@ -19017,44 +19024,29 @@ file_rref dfb 0
 file_close dfb 1
 file_cref dfb 0
 
-mission1_path dfb 25
- asc '/DDIIGS/MISSION1/MISSION1'
+mission1_path str 'MISSION1/MISSION1'
 
-mission12_path dfb 26
- asc '/DDIIGS/MISSION1/MISSION12'
+mission12_path str 'MISSION1/MISSION12'
 
-mission13_path dfb 26
- asc '/DDIIGS/MISSION1/MISSION13'
+mission13_path str 'MISSION1/MISSION13'
 
-mission14_path dfb 26
- asc '/DDIIGS/MISSION1/MISSION14'
+mission14_path str 'MISSION1/MISSION14'
 
-m13blit30_path dfb 32
- asc '/DDIIGS/MISSION1/MISSION13BLIT30'
+m13blit30_path str 'MISSION1/MISSION13BLIT30'
 
-m13blit31_path dfb 32
- asc '/DDIIGS/MISSION1/MISSION13BLIT31'
+m13blit31_path str 'MISSION1/MISSION13BLIT31'
 
-m1blit32_path dfb 31
- asc '/DDIIGS/MISSION1/MISSION1BLIT32'
+m1blit32_path str 'MISSION1/MISSION1BLIT32'
 
-m1jblit33_path dfb 30
- asc '/DDIIGS/MISSION1/M1JIMMYBLIT33'
+m1jblit33_path str 'MISSION1/M1JIMMYBLIT33'
 
-m12blit34_path dfb 26
- asc '/DDIIGS/MISSION1/M12BLIT34'
-m12blit35_path dfb 26
- asc '/DDIIGS/MISSION1/M12BLIT35'
-m12blit36_path dfb 26
- asc '/DDIIGS/MISSION1/M12BLIT36'
-m12blit37_path dfb 26
- asc '/DDIIGS/MISSION1/M12BLIT37'
-m12blit38_path dfb 26
- asc '/DDIIGS/MISSION1/M12BLIT38'
-m14blit39_path dfb 26
- asc '/DDIIGS/MISSION1/M14BLIT39'
-m14blit3a_path dfb 26
- asc '/DDIIGS/MISSION1/M14BLIT3A'
+m12blit34_path str 'MISSION1/M12BLIT34'
+m12blit35_path str 'MISSION1/M12BLIT35'
+m12blit36_path str 'MISSION1/M12BLIT36'
+m12blit37_path str 'MISSION1/M12BLIT37'
+m12blit38_path str 'MISSION1/M12BLIT38'
+m14blit39_path str 'MISSION1/M14BLIT39'
+m14blit3a_path str 'MISSION1/M14BLIT3A'
 
 * Per-blit-file load table. Each entry is (path_ptr, dest_bank).
 * The boot's :blit_load_loop walks this and load_files each entry.
@@ -19086,28 +19078,21 @@ blit_load_table
  dfb $3A
 blit_load_table_end
 
-mission1jimmy_path dfb 30
- asc '/DDIIGS/MISSION1/MISSION1JIMMY'
+mission1jimmy_path str 'MISSION1/MISSION1JIMMY'
 
 * MISSION1NTP.PAK rather than MISSION1.NTP.PAK because ProDOS
 * limits each filename component to 15 chars.
-m1ntp_path dfb 32
- asc '/DDIIGS/MISSION1/MISSION1NTP.PAK'
+m1ntp_path str 'MISSION1/MISSION1NTP.PAK'
 
-bossntp_path dfb 20
- asc '/DDIIGS/BOSS.NTP.PAK'
+bossntp_path str 'BOSS.NTP.PAK'
 
-completentp_path dfb 23
- asc '/DDIIGS/COMPLETENTP.PAK'
+completentp_path str 'COMPLETENTP.PAK'
 
-gameoverntp_path dfb 23
- asc '/DDIIGS/GAMEOVERNTP.PAK'
+gameoverntp_path str 'GAMEOVERNTP.PAK'
 
-loading_path dfb 19
- asc '/DDIIGS/LOADING.PAK'
+loading_path str 'LOADING.PAK'
 
-engine_path dfb 14
- asc '/DDIIGS/ENGINE'
+engine_path str 'ENGINE'
 
 *----------------------------------------------------------
 * Bank-$1F engine entry points (scroll/blit pipeline).
@@ -23345,47 +23330,33 @@ eof_size ds 3          ; 3-byte EOF (file size)
 
 file_size ds 3        ; 24-bit file size (for UnPackBytes)
 
-pathname dfb 30
- asc '/DDIIGS/MISSION1/MISSION11.PAK'
+pathname str 'MISSION1/MISSION11.PAK'
 
-path12 dfb 30
- asc '/DDIIGS/MISSION1/MISSION12.PAK'
+path12 str 'MISSION1/MISSION12.PAK'
 
-path13 dfb 30
- asc '/DDIIGS/MISSION1/MISSION13.PAK'
+path13 str 'MISSION1/MISSION13.PAK'
 
-path14 dfb 30
- asc '/DDIIGS/MISSION1/MISSION14.PAK'
+path14 str 'MISSION1/MISSION14.PAK'
 
-path15 dfb 30
- asc '/DDIIGS/MISSION1/MISSION15.PAK'
+path15 str 'MISSION1/MISSION15.PAK'
 
-path16 dfb 30
- asc '/DDIIGS/MISSION1/MISSION16.PAK'
+path16 str 'MISSION1/MISSION16.PAK'
 
-path17 dfb 30
- asc '/DDIIGS/MISSION1/MISSION17.PAK'
+path17 str 'MISSION1/MISSION17.PAK'
 
-path18 dfb 30
- asc '/DDIIGS/MISSION1/MISSION18.PAK'
+path18 str 'MISSION1/MISSION18.PAK'
 
-path19 dfb 30
- asc '/DDIIGS/MISSION1/MISSION19.PAK'
+path19 str 'MISSION1/MISSION19.PAK'
 
-path110 dfb 31
- asc '/DDIIGS/MISSION1/MISSION110.PAK'
+path110 str 'MISSION1/MISSION110.PAK'
 
-path111 dfb 31
- asc '/DDIIGS/MISSION1/MISSION111.PAK'
+path111 str 'MISSION1/MISSION111.PAK'
 
-path112 dfb 31
- asc '/DDIIGS/MISSION1/MISSION112.PAK'
+path112 str 'MISSION1/MISSION112.PAK'
 
-path113 dfb 31
- asc '/DDIIGS/MISSION1/MISSION113.PAK'
+path113 str 'MISSION1/MISSION113.PAK'
 
-path114 dfb 31
- asc '/DDIIGS/MISSION1/MISSION114.PAK'
+path114 str 'MISSION1/MISSION114.PAK'
 
 * master sprite table
 sprite_table

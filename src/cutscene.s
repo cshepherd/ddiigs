@@ -1048,16 +1048,13 @@ cs_rref dfb 0
 cs_close dfb 1
 cs_cref dfb 0
 
-cs_path dfb 17
- asc '/DDIIGS/CUTSCENE1'
+cs_path str 'CUTSCENE1'
 
-cs2_path dfb 17
-  asc '/DDIIGS/CUTSCENE2'
+cs2_path str 'CUTSCENE2'
 
 * CUTSCENENTP.PAK rather than CUTSCENE.NTP.PAK because ProDOS
 * limits each filename component to 15 chars.
-cutscenentp_path dfb 23
- asc '/DDIIGS/CUTSCENENTP.PAK'
+cutscenentp_path str 'CUTSCENENTP.PAK'
 
 *----------------------------------------------------------
 * Extra ProDOS / UnPackBytes scratch for cs_load_and_unpack.

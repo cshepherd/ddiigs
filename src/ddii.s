@@ -129,11 +129,8 @@ close_ref    dfb 0
 *----------------------------------------------------------
 * Pathnames (ProDOS 8 format: length byte, then chars).
 *----------------------------------------------------------
-title_path    dfb 13
-              asc '/DDIIGS/TITLE'
+title_path    str 'TITLE'
 
-cutscene_path dfb 16
-              asc '/DDIIGS/CUTSCENE'
+cutscene_path str 'CUTSCENE'
 
-game_path     dfb 12
-              asc '/DDIIGS/GAME'
+game_path     str 'GAME'

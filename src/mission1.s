@@ -446,26 +446,22 @@ sfx_table
 sfx_punch
   dw 0000            ; position in sfx bank
   dw 100             ; playback speed
-  dfb 17             ; filename length
-  asc '/DDIIGS/PUNCH.RAW'
+  str 'PUNCH.RAW'
 
 sfx_punchlanded
   dw 2800
   dw 100
-  dfb 23
-  asc '/DDIIGS/PUNCHLANDED.RAW'
+  str 'PUNCHLANDED.RAW'
 
 sfx_finger
   dw 4800
   dw 100
-  dfb 18
-  asc '/DDIIGS/FINGER.RAW'
+  str 'FINGER.RAW'
 
 sfx_fall
   dw 7800
   dw 100
-  dfb 16
-  asc '/DDIIGS/FALL.RAW'
+  str 'FALL.RAW'
 
 *==========================================================
 * Screen map - one entry per screen
@@ -482,8 +478,7 @@ screen0
  dw $FFFF            ; left -> none (start of level)
  dw $FFFF            ; up -> none
  dw $FFFF            ; down -> none
- dfb 17              ; bg filename length
- asc '/DDIIGS/MISSION11.PAK'
+ str 'MISSION11.PAK'
 
 * Screen 1 (MISSION12)
 screen1
@@ -493,8 +488,7 @@ screen1
  dw $0000            ; left -> screen 0
  dw $FFFF            ; up -> none
  dw $FFFF            ; down -> none
- dfb 17              ; bg filename length
- asc '/DDIIGS/MISSION12.PAK'
+ str 'MISSION12.PAK'
 
 * Screen 2 (MISSION13)
 screen2
@@ -504,8 +498,7 @@ screen2
  dw $0001            ; left -> screen 1
  dw $FFFF            ; up -> none
  dw $FFFF            ; down -> none
- dfb 17              ; bg filename length
- asc '/DDIIGS/MISSION13.PAK'
+ str 'MISSION13.PAK'
 
 * Screen 3 (MISSION14)
 screen3
@@ -515,8 +508,7 @@ screen3
  dw $0002            ; left -> screen 2
  dw $FFFF            ; up -> none
  dw $FFFF            ; down -> none
- dfb 17              ; bg filename length
- asc '/DDIIGS/MISSION14.PAK'
+ str 'MISSION14.PAK'
 
 * Screen 4 (MISSION15)
 screen4
@@ -526,8 +518,7 @@ screen4
  dw $0003            ; left -> screen 3
  dw $0005            ; up -> screen 5
  dw $FFFF            ; down -> none
- dfb 17              ; bg filename length
- asc '/DDIIGS/MISSION15.PAK'
+ str 'MISSION15.PAK'
 
 * Screen 5 (MISSION16)
 screen5
@@ -537,8 +528,7 @@ screen5
  dw $0006            ; left -> none
  dw $FFFF            ; up -> none
  dw $FFFF            ; down -> none
- dfb 17              ; bg filename length
- asc '/DDIIGS/MISSION16.PAK'
+ str 'MISSION16.PAK'
 
 * Screen 6 (MISSION17)
 screen6
@@ -548,8 +538,7 @@ screen6
  dw $FFFF            ; left -> none
  dw $0009            ; up -> none
  dw $FFFF            ; down -> none
- dfb 17              ; bg filename length
- asc '/DDIIGS/MISSION17.PAK'
+ str 'MISSION17.PAK'
 
 * Screen 7 (MISSION18)
 screen7
@@ -559,8 +548,7 @@ screen7
  dw $0005            ; left -> screen 5
  dw $000A            ; up -> screen 10
  dw $FFFF            ; down -> none
- dfb 17              ; bg filename length
- asc '/DDIIGS/MISSION18.PAK'
+ str 'MISSION18.PAK'
 
 * Screen 8 (MISSION19)
 screen8
@@ -570,8 +558,7 @@ screen8
  dw $FFFF            ; left -> none
  dw $FFFF            ; up -> none
  dw $0005            ; down -> screen 5
- dfb 17              ; bg filename length
- asc '/DDIIGS/MISSION19.PAK'
+ str 'MISSION19.PAK'
 
 * Screen 9 (MISSION110)
 screen9
@@ -581,8 +568,7 @@ screen9
  dw $FFFF            ; left -> none
  dw $0004            ; up -> screen 4
  dw $0006            ; down -> screen 6
- dfb 17              ; bg filename length
- asc '/DDIIGS/MISSION110.PAK'
+ str 'MISSION110.PAK'
 
 * Screen 10 (MISSION111)
 screen10
@@ -592,8 +578,7 @@ screen10
  dw $0009            ; left -> screen 9
  dw $FFFF            ; up -> none
  dw $0007            ; down -> none
- dfb 17              ; bg filename length
- asc '/DDIIGS/MISSION111.PAK'
+ str 'MISSION111.PAK'
 
 *==========================================================
 * Sprite table - null-terminated list of pointers to

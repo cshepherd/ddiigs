@@ -1554,8 +1554,7 @@ copy_select_to_screen
 t_dest ds 2            ; current destination offset
 t_bank dfb 0           ; current destination bank
 
-ntpplayer_path dfb 21
- asc '/DDIIGS/NTPPLAYER.PAK'
+ntpplayer_path str 'NTPPLAYER.PAK'
 
 t2_open dfb 3          ; param count
  da titlentp_path      ; pathname pointer (overwritten per call)
@@ -1571,11 +1570,9 @@ t2_rref dfb 0          ; ref_num
 t2_close dfb 1         ; param count
 t2_cref dfb 0          ; ref_num
 
-titlentp_path dfb 21
- asc '/DDIIGS/TITLE.NTP.PAK'
+titlentp_path str 'TITLE.NTP.PAK'
 
-select_path dfb 18
- asc '/DDIIGS/SELECT.PAK'
+select_path str 'SELECT.PAK'
 
 *----------------------------------------------------------
 * GET_EOF + UnPackBytes scratch for load_titlentp_pak.
@@ -1612,8 +1609,7 @@ ccc_rref dfb 0
 ccc_close dfb 1
 ccc_cref dfb 0
 
-ccc_path dfb 15
- asc '/DDIIGS/CCC.SHR'
+ccc_path str 'CCC.SHR'
 
 drugs_open dfb 3
  da drugs_path
@@ -1629,8 +1625,7 @@ drugs_rref dfb 0
 drugs_close dfb 1
 drugs_cref dfb 0
 
-drugs_path dfb 17
- asc '/DDIIGS/DRUGS.PAK'
+drugs_path str 'DRUGS.PAK'
 
 *----------------------------------------------------------
 * fadeOut - Fade all 16 palettes (256 words at $019E00) to
@@ -2663,8 +2658,7 @@ guide_page dw 1                ; current page (1..5), set on GUIDE click
 *   /DDIIGS/GUIDE/PAGE<digit>.PAK    (23 chars total)
 * guide_path_pagebyte points at the <digit> position; the page
 * loader rewrites it before each load_titlentp_pak call.
-guide_path dfb 23
-  asc '/DDIIGS/GUIDE/PAGE'
+guide_path str 'GUIDE/PAGE'
 guide_path_pagebyte
   asc '1'
   asc '.PAK'
