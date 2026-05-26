@@ -58,9 +58,30 @@ DEBUG_PRINT equ 0
 * call, and at sync_current_screen_right's lsrc-overwriting branch.
 * Also re-enables the assert_scroll_lsrc_off canary. Flip to 0 to
 * strip once the bug is found.
-DEBUG_LSRC  equ 1
+DEBUG_LSRC  equ 0
+* DEBUG_ERASE: gates instrumentation for the erase-rect off-by-one
+* artifact (1 byte left + 1 row bottom unerased after an NPC death).
+* Logs the death-erase prev rect and every normal erase whose rect
+* touches the suspected y=100..140 band. Cheaper to flip than
+* DEBUG_PRINT (which pulls ~1.3 KB of unrelated logging and overflows
+* the SYS loader's read_count cap). The DEBUG_ERASE prints call ROM
+* PRBYTE/COUT directly so they don't depend on dbg_print_*.
+DEBUG_ERASE equ 0
+* DEBUG_HELPERS: 1 if any debug path that uses the dbg_print_*
+* helpers is active. Used to gate the helper bodies themselves so
+* they strip when only DEBUG_ERASE is on (saves ~50 bytes).
+* DEBUG_HELPERS gates the dbg_print_* helper bodies. They call
+* $D0FDDA / $D0FDED (KEGS virtual-stdout entry points) which exist
+* only in the emulator — on real IIgs hardware those addresses are
+* unrelated ROM bytes and the JSLs would crash. With DEBUG_HELPERS=0
+* the helpers AND every dev-only call site that references them must
+* be gated/stripped (see :do DEBUG_HELPERS gates around the V/space/g
+* key handlers, dbg_validate_stratum_bounds, dbg_golden_state etc.).
+DEBUG_HELPERS equ 0
 
 * Clear text screen so diagnostic prints start on a fresh page.
+* (80-col init via $C300 removed — debug output now streams via
+* JSL $D0FDED to KEGS virtual stdout, no text-page constraint.)
  sec
  xce
  sep $20
@@ -2760,7 +2781,9 @@ check_x_bounds_world_outer
 * check_x_bounds_world (new stratum world-coord). Logs any
 * mismatch via dbg_print as 'V! YY XX old=X new=X' for triage.
 * Trashes everything; intended as a one-shot debug call.
+* Gated on DEBUG_HELPERS — uses dbg_print_* (KEGS-only stdout).
 *----------------------------------------------------------
+ do DEBUG_HELPERS
 dbg_validate_stratum_bounds
  lda IMAGE01_YPOS
  sta :dv_save_y
@@ -2829,6 +2852,7 @@ dbg_validate_stratum_bounds
 :dv_old     dfb 0
 :dv_save_y  dfb 0
 :dv_save_xp dfb 0
+ fin
 
 *----------------------------------------------------------
 * check_y_bounds - Test if a sprite at X position chk_xpos
@@ -5159,7 +5183,10 @@ FO_RANGE   = 1         ; bytes (= 62 px) — engage punching at this
                         ; but the math (player_x + player_w + FO_RANGE)
                         ; is byte-based; pulled in from 4 → 3 so NPCs
                         ; close the last 2 px before swinging.
-FO_CD_TIME = 90        ; cooldown frames after a punch
+FO_CD_TIME = 150       ; cooldown frames after a punch (~2.5s @ 60Hz);
+                        ; bumped from 90 to soften NPC crowding pressure
+                        ; per playtester feedback. Keep in step with
+                        ; FL_CD_TIME so faceoff/flanker pacing matches.
 FO_Y_TOL   = 12        ; rows of Y slack accepted in :check_range
                        ; before transitioning to FO_PUNCH. Without
                        ; this, an NPC pinned to npc_min_y (e.g. a
@@ -6997,7 +7024,8 @@ fo_save_info ds 2
 *   +7 state, +8 timer, +9 corner_y (0 = uninitialized)
 *----------------------------------------------------------
 FL_RANGE      = 4         ; pixels behind player to punch
-FL_CD_TIME    = 90
+FL_CD_TIME    = 150       ; bumped in lockstep with FO_CD_TIME (~2.5s
+                           ; @ 60Hz) to soften crowding pressure.
 FL_ARC_OFFSET = 14        ; vertical detour distance
 
 behav_flank
@@ -7667,33 +7695,23 @@ erase_all
  jmp :not_dead
 :nd_dead
 * Death: erase at prev position, then remove from table.
-* DEBUG: log death-erase with prev rect.
- do DEBUG_PRINT
+* DEBUG: log death-erase with prev rect + sprite info_lo.
+* Format: 'RM<info_lo> <prev_y><prev_x>'
+* prev_fx/prev_fy stripped (always 20/40 for non-Burnov dying NPCs).
+* Uses ROM PRBYTE ($FDDA) and COUT ($FDED) directly.
+ do DEBUG_ERASE
  lda #$D2              ; 'R'
  jsr dbg_print_char
  lda #$CD              ; 'M'
  jsr dbg_print_char
- lda #$A0
- jsr dbg_print_char
+ lda info_ptr
+ jsr dbg_print_hex8
  ldy #32
- lda (info_ptr),y
+ lda (info_ptr),y      ; prev_y
  jsr dbg_print_hex8
- lda #$A0
- jsr dbg_print_char
  ldy #34
- lda (info_ptr),y
+ lda (info_ptr),y      ; prev_x
  jsr dbg_print_hex8
- lda #$A0
- jsr dbg_print_char
- ldy #36
- lda (info_ptr),y
- jsr dbg_print_hex8
- lda #$A0
- jsr dbg_print_char
- ldy #38
- lda (info_ptr),y
- jsr dbg_print_hex8
- jsr dbg_print_nl
  fin
 * Death erase: clamp prev rect to playfield bounds. A FALLEN
 * sprite shoved past PLAYFIELD_EDGE during the fall arc (or below
@@ -7731,6 +7749,21 @@ erase_all
  sbc IMAGE01_YPOS
  sta FRAME_Y
  jsr erase
+* DEBUG: pixel tracer. After every death-erase, sample one SHR
+* byte at (col=35, row=115) and append to the RM line. That cell
+* lies inside $DD's death-erase rect [26,46) × [86,126) — for the
+* current bug repro it should equal bg ($dd) after a working
+* erase; if it comes back as a sprite byte (any high-nibble color)
+* the death-erase didn't actually touch that row. For $51 / $97
+* (rects don't include col 35 row 115) the byte just reads back
+* whatever was last left there by a prior frame — useful as a
+* before/after baseline across the multi-death sequence.
+* SHR addr = $2000 + 115*$A0 + 35 = $6803 in bank $01.
+ do DEBUG_ERASE
+ ldal $016803
+ jsr dbg_print_hex8
+ jsr dbg_print_sp      ; stream-style separator (no CR — see ER block)
+ fin
 :de_skip_erase
 * Mark any still-living sprites whose drawn area overlaps the
 * just-erased rect as needs_draw — otherwise if the dying
@@ -7888,6 +7921,17 @@ erase_all
  sec
  sbc IMAGE01_XPOS
  sta FRAME_X
+* DIAGNOSTIC: extend union left by 1 col + width by 2 (= 1-col
+* safety margin each side on X axis, parallel to the Y band-aid).
+* If the 1-byte vertical artifact at the right edge of an erased
+* Williams disappears, the X union math is off-by-something.
+* Bounds check on IMAGE01_XPOS = 0 to avoid the DEC underflow.
+ lda IMAGE01_XPOS
+ beq :no_xshift
+ dec IMAGE01_XPOS
+ inc FRAME_X
+ inc FRAME_X
+:no_xshift
 * top = min(prev_ypos, ypos)
  ldy #32
  lda (info_ptr),y
@@ -7921,35 +7965,65 @@ erase_all
  sec
  sbc IMAGE01_YPOS
  sta FRAME_Y
-* DEBUG: log erase rect ONLY if the erase bottom reaches y=180+
-* (where the HUD lives). This filters out normal gameplay erases.
- do DEBUG_PRINT
+* DIAGNOSTIC: extend union top up by 2 rows + height by 2 to keep
+* the bottom anchored. Confirmed to suppress the Billy-hair
+* artifact in jump arcs. Bounds check: skip the extension if
+* IMAGE01_YPOS < 2 (= sprite already near the top of screen) —
+* an unchecked DEC underflows to $FE, and the screen-address
+* calc then targets ~$01/BEC0, sending the erase loop off the
+* end of bank $01 (caused a BRK $00 at $00/B6F4).
+ lda IMAGE01_YPOS
+ cmp #2
+ bcc :no_yshift
+ dec IMAGE01_YPOS
+ dec IMAGE01_YPOS
+ inc FRAME_Y
+ inc FRAME_Y
+:no_yshift
+* DEBUG: log erase rect when (a) bottom reaches y=180+ (HUD area)
+* OR (b) rect's top falls in the y=100..140 band where the erase
+* artifact lives.
+* Tight format: each entry is "ER<info_lo><prev_y><prev_x><left><w><h>"
+* (= 2 + 12 = 14 chars) followed by a single space (no CR). Entries
+* stream into the 40-col text screen with auto-wrap, fitting ~2.6
+* entries per line — about 60 entries of history vs the prior ~24.
+* "top" field dropped (was identical to prev_y for almost every
+* in-band normal erase; the un-bump case where prev_y > top is rare
+* enough to grep the sprite block separately when it matters).
+ do DEBUG_ERASE
  lda IMAGE01_YPOS
  clc
  adc FRAME_Y
  cmp #180
- bcc :skip_er_debug
+ bcs :do_er_debug      ; bottom in HUD area
+ lda IMAGE01_YPOS
+ cmp #75
+ bcs :er_chk_top_hi
+ jmp :skip_er_debug    ; top < 75 → skip (long branch)
+:er_chk_top_hi
+ cmp #150
+ bcc :do_er_debug      ; in [75,150) → log
+ jmp :skip_er_debug    ; top >= 150 → skip (long branch)
+:do_er_debug
  lda #$C5              ; 'E'
  jsr dbg_print_char
  lda #$D2              ; 'R'
  jsr dbg_print_char
- lda #$A0
- jsr dbg_print_char
- lda IMAGE01_YPOS
+ lda info_ptr
  jsr dbg_print_hex8
- lda #$A0
- jsr dbg_print_char
- lda IMAGE01_XPOS
+ ldy #32
+ lda (info_ptr),y      ; prev_y
  jsr dbg_print_hex8
- lda #$A0
- jsr dbg_print_char
- lda FRAME_X
+ ldy #34
+ lda (info_ptr),y      ; prev_x
  jsr dbg_print_hex8
- lda #$A0
- jsr dbg_print_char
- lda FRAME_Y
+ lda IMAGE01_XPOS      ; left
  jsr dbg_print_hex8
- jsr dbg_print_nl
+ lda FRAME_X           ; w
+ jsr dbg_print_hex8
+ lda FRAME_Y           ; h
+ jsr dbg_print_hex8
+ jsr dbg_print_sp      ; trailing separator (stream-style)
 :skip_er_debug
  fin
  jsr erase
@@ -9596,14 +9670,15 @@ btn_action_jump
 :not_scroll
  cmp #'w'
  beq :do_up
+* Dev-only debug keys ('g', 'V', space) gated on DEBUG_HELPERS — they
+* invoke routines that hit KEGS virtual stdout ($D0FDDA/$D0FDED),
+* which would crash on real IIgs hardware. With DEBUG_HELPERS=0 they
+* assemble to a no-op fallthrough.
+ do DEBUG_HELPERS
  cmp #'g'
  bne :ns_not_g
 * Golden state capture: prints a 3-line snapshot of all state
-* relevant to ladder alignment & drift detection. Press the
-* 'g' key just below a ladder (pre-climb) and again just above
-* it (post-climb) to record before/after state. Comparing
-* across plays surfaces drift; comparing before-vs-after across
-* a single climb characterizes what the climb commits.
+* relevant to ladder alignment & drift detection.
  jsr dbg_golden_state
  rts
 :ns_not_g
@@ -9611,7 +9686,6 @@ btn_action_jump
  bne :ns_not_v_caps
 * Validate stratum bounds against per-screen bounds for the current
 * screen. Iterates all (Y, X) pairs and prints any mismatches.
-* Single-shot diagnostic; trashes lots of state.
  jsr dbg_validate_stratum_bounds
  rts
 :ns_not_v_caps
@@ -9645,16 +9719,23 @@ btn_action_jump
  jsr dbg_print_nl
  rts
 :dbg_wx dfb 0
+ fin
+* :ns_not_space MUST sit immediately after the gated debug-key block,
+* not after the :up_as_propy/:dn_as_propy data bytes — when
+* DEBUG_HELPERS=0 the gated block evaporates and execution falls
+* straight from `beq :do_up` into whatever lives here. Previously
+* the data bytes ($00 $00) were in that path, producing a BRK $00
+* at the first non-'w' key on real hardware.
+:ns_not_space
+ jmp :not_up              ; inverted — :not_up moved out of range
 * :up_as_propy / :dn_as_propy survive the auto-step retirement
 * because :up_walk and :ai_do_down still stash the proposed Y
 * in them for the subsequent check_y_bounds call. The other
-* auto-step locals (:up_cur_bmax / :up_as_bmin / :up_as_bmax /
-* :dn_as_bmin / :dn_as_bmax) and step-rule scratch were dead
-* once the stratum bounds took over the up/down walk gates.
+* auto-step locals were dead once the stratum bounds took over.
+* Placed AFTER the unconditional jmp above so execution never
+* reaches these data bytes.
 :up_as_propy dfb 0
 :dn_as_propy dfb 0
-:ns_not_space
- jmp :not_up              ; inverted — :not_up moved out of range
 :do_up
 * If scroll_up enabled AND on a ladder AND near top, scroll up.
 * Inverted branches + jmp because :up_walk moved out of 8-bit range
@@ -9972,20 +10053,28 @@ btn_action_jump
  jsr dbg_print_nl
  pla
  fin
- dec IMAGE01_YPOS
  lda via_ladder
  beq :up_walkframe
 * Climb step (via_ladder=1). Mark is_climbing so subsequent
-* frames bypass check_ladder's engage-row gate.
+* frames bypass check_ladder's engage-row gate. Two decs per VBL =
+* 2 px/VBL ladder pace (NES feel); not gated by the walk_toggle
+* half-speed throttle below.
  lda #$01
  sta is_climbing
- dec IMAGE01_YPOS        ; ladder: 2 px/VBL (NES-feel pacing)
+ dec IMAGE01_YPOS
+ dec IMAGE01_YPOS
  jsr advance_climb
  bra :up_after_anim
 :up_walkframe
 * Regular up-walk (no ladder). Clear is_climbing — player has
-* left the ladder (or never started a climb).
+* left the ladder (or never started a climb). Walk gate: step
+* only on walk_toggle phase 0 (1 of every 3 VBLs), in sync with
+* advance_walk's frame advance.
  stz is_climbing
+ lda walk_toggle
+ bne :up_skip_step
+ dec IMAGE01_YPOS
+:up_skip_step
  jsr advance_walk        ; vertical walk — cycle walk frames
 :up_after_anim
  jsr save_sprite
@@ -10035,19 +10124,26 @@ btn_action_jump
  lda :dn_as_propy
  jsr check_y_bounds
  bcs :skip_down       ; blocked
- inc IMAGE01_YPOS
  lda via_ladder
  beq :down_walkframe
 * Climb-down step. Mark is_climbing (mirrors :up_do_move) so
-* subsequent frames bypass the engage-row gate.
+* subsequent frames bypass the engage-row gate. Two incs per VBL
+* = 2 px/VBL ladder pace; not gated by the walk_toggle half-speed
+* throttle below.
  lda #$01
  sta is_climbing
- inc IMAGE01_YPOS       ; ladder: 2 px/VBL (NES-feel pacing)
+ inc IMAGE01_YPOS
+ inc IMAGE01_YPOS
  jsr advance_climb
  bra :down_after_anim
 :down_walkframe
-* Regular down-walk (no ladder). Clear is_climbing.
+* Regular down-walk (no ladder). Clear is_climbing. Walk gate
+* (1 of every 3 VBLs) matches the up-walk path.
  stz is_climbing
+ lda walk_toggle
+ bne :down_skip_step
+ inc IMAGE01_YPOS
+:down_skip_step
  jsr advance_walk       ; vertical walk — cycle walk frames
 :down_after_anim
  jsr save_sprite
@@ -10370,6 +10466,11 @@ btn_action_jump
 * up with the scroll's world advance.
  lda walk_boost_left
  bne :lw_boosted
+* Walk gate: step only on walk_toggle phase 0 (1 of every 3
+* VBLs), in sync with advance_walk's frame advance. Boost path
+* above is uncapped so co-op scroll catch-up stays at -4/VBL.
+ lda walk_toggle
+ bne :skip_left
 * Normal step: xpos -= 1.
  lda IMAGE01_XPOS
  cmp #2
@@ -10616,6 +10717,11 @@ btn_action_jump
 * and we're pressing right, step by 4 instead of 1.
  lda walk_boost_right
  bne :wr_boosted
+* Walk gate: step only on walk_toggle phase 0 (1 of every 3
+* VBLs), in sync with advance_walk's frame advance. Boost path
+* above is uncapped so co-op scroll catch-up stays at +4/VBL.
+ lda walk_toggle
+ bne :clamp_right
 * Normal step: xpos += 1.
  lda IMAGE01_XPOS
  cmp #PLAYER_MAX_X
@@ -10662,6 +10768,10 @@ btn_action_jump
 * dispatch at :accept_input — fall through to the rest of the
 * strobe path for debug/special keys.
 :not_jump
+* Dev-only audio-debug keys ('v', 'b') call verify_punch_state which
+* uses dbg_print_* (KEGS stdout). Gated on DEBUG_HELPERS so the call
+* sites strip cleanly for real-hardware builds.
+ do DEBUG_HELPERS
 :not_invuln cmp #'v'
  bne :not_b
  jsr verify_punch_state
@@ -10675,7 +10785,9 @@ btn_action_jump
  jsr verify_wait_3vbls
  jsr verify_punch_state
  rts
-:not_verify cmp #'i'
+:not_verify
+ fin
+ cmp #'i'
  bne :no_key2
 * Toggle invincibility
  lda god_mode
@@ -11908,12 +12020,18 @@ cancel_action_anim
 * Does not use the animation system — just sets the globals.
 *----------------------------------------------------------
 advance_walk
-* Only change animation frame every 2nd call
+* Step + frame advance once every 3 VBLs. walk_toggle counts down
+* 2 → 1 → 0 → 2 → ... ; the "trigger" phase is 0. The four walk
+* handlers gate their position step on the same `walk_toggle == 0`
+* condition so leg cycle and motion stay in sync.
  lda walk_toggle
- eor #$01
+ bne :wt_dec
+ lda #1
  sta walk_toggle
- beq :do_advance       ; toggle hit 0, advance frame
- rts                   ; odd call, skip frame change
+ bra :do_advance
+:wt_dec
+ dec walk_toggle
+ rts
 :do_advance
  inc walk_step
  lda walk_step
@@ -12044,6 +12162,10 @@ advance_walk
  rts
 
 walk_step dfb 0
+* Init walk_toggle=0 (the trigger phase of the 3-state walk gate)
+* so the first walk press after a cold start moves + advances
+* frame on the very first VBL — otherwise the player feels a
+* 1-2 VBL input drop on the first key after start.
 walk_toggle dfb 0
 jump_x_toggle dfb 0    ; flips each VBL during anim_jump's bit-0
                        ; X-advance step. Halves the horizontal jump
@@ -13635,22 +13757,17 @@ update_anims
 * prev_frame_y is also capped at (180 - prev_ypos) so the erase
 * never bleeds into the HUD.
 * DEBUG: log death entry with current ypos/xpos
- do DEBUG_PRINT
+* DEBUG: log :ad_do_death entry — 'D<info_lo><cur_y>' (single-char
+* prefix; trailing space dropped to free a byte). cur_y here is
+* bumped y if she died from FALLEN, or arc-end y otherwise.
+ do DEBUG_ERASE
  lda #$C4              ; 'D'
  jsr dbg_print_char
- lda #$C4              ; 'D'
- jsr dbg_print_char
- lda #$A0              ; ' '
- jsr dbg_print_char
+ lda info_ptr
+ jsr dbg_print_hex8
  ldy #0
- lda (info_ptr),y
+ lda (info_ptr),y      ; cur_y
  jsr dbg_print_hex8
- lda #$A0
- jsr dbg_print_char
- ldy #2
- lda (info_ptr),y
- jsr dbg_print_hex8
- jsr dbg_print_nl
  fin
  ldy #0
  lda (info_ptr),y
@@ -14059,19 +14176,9 @@ update_anims
  lda (anim_ptr),y     ; num_frames
  cmp #2
  bcc :ne_no_unbump
-* DEBUG: log unbump with pre-unbump ypos
- do DEBUG_PRINT
- lda #$D5              ; 'U'
- jsr dbg_print_char
- lda #$C2              ; 'B'
- jsr dbg_print_char
- lda #$A0              ; ' '
- jsr dbg_print_char
- ldy #0
- lda (info_ptr),y
- jsr dbg_print_hex8
- jsr dbg_print_nl
- fin
+* Unbump tracer removed (was 'U<info_lo><cur_y>'). Confirmed the
+* unbump erase rect cleared FALLEN paint cleanly, so we no longer
+* need the print — bytes reclaimed for the X-axis band-aid.
  ldy #0
  lda (info_ptr),y     ; current ypos (bumped)
  ldy #32
@@ -18603,8 +18710,10 @@ sound_trigger
 *   osc 8 (interrupt):  W=00 S=00 V=00 C=08|0A
 *   osc 9 (playback):   W=80 S=09 V=FF C=00|03
 *   BUF $8000+: real sample bytes (e.g. $80 / $7F / etc.)
+* Gated on DEBUG_HELPERS — uses dbg_print_* (KEGS-only stdout).
 *----------------------------------------------------------
  mx %11
+ do DEBUG_HELPERS
 verify_punch_state
  php
  sei
@@ -18720,6 +18829,7 @@ verify_punch_state
 
  plp
  rts
+ fin
 
 * dbg_read_doc_reg - read DOC reg whose addr is in A. Forces
 * high byte of addr ptr to $00. CTL must be in DOC reg mode.
@@ -19083,61 +19193,41 @@ shadow_on
  mx %11                ; following routines run in emulation mode (8-bit)
 
 *----------------------------------------------------------
-* Text-screen diagnostic helpers (use Apple //e ROM routines
-* via JSR $FDED/$FC58). Text screen persists behind SHR so
-* KEGS "Copy Text Screen" can capture these messages.
-* All helpers preserve A/X/Y. Caller must be in emulation
-* mode with 8-bit A/X/Y.
+* Diagnostic helpers — thin shims over the KEGS virtual stdout
+* entry points at $D0/FDED (char) and $D0/FDDA (byte → hex).
+* The virtual entries handle byte→hex conversion and stdout output
+* directly, so dbg_print_hex8 just JSLs $D0FDDA without nibble
+* splitting. dbg_print_nib retired (was only an internal helper
+* for the old ROM-based hex8).
+*
+* Register preservation: callers that need A preserved should
+* push/pop themselves. The validate-stratum-bounds caller and the
+* DEBUG_LSRC blocks both reload A right before each call, so the
+* helpers don't preserve it any more (saves ~15 bytes).
+*
+* Gated by DEBUG_HELPERS (= DEBUG_PRINT | DEBUG_LSRC). DEBUG_ERASE
+* and other narrow-scope debug paths call $D0FDDA / $D0FDED via
+* JSL directly without going through these helpers.
 *----------------------------------------------------------
+ do DEBUG_HELPERS
 dbg_print_char
- pha
- phx
- phy
- jsr $FDED
- ply
- plx
- pla
+ jsl $D0FDED
+ rts
+
+dbg_print_sp
+ lda #$A0
+ jsl $D0FDED
  rts
 
 dbg_print_nl
- pha
  lda #$8D
- jsr $FDED
- pla
+ jsl $D0FDED
  rts
 
-* Print nibble in low 4 bits of A as hex char with hi bit set.
-dbg_print_nib
- and #$0F
- cmp #$0A
- bcc :dpn_digit
- clc
- adc #$B7            ; 10→'A' ($C1), 15→'F' ($C6)
- bra :dpn_out
-:dpn_digit
- clc
- adc #$B0            ; 0→'0' ($B0), 9→'9' ($B9)
-:dpn_out
- jsr $FDED
- rts
-
-* Print byte in A as two hex digits. Preserves A/X/Y.
 dbg_print_hex8
- pha
- phx
- phy
- pha
- lsr
- lsr
- lsr
- lsr
- jsr dbg_print_nib
- pla
- jsr dbg_print_nib
- ply
- plx
- pla
+ jsl $D0FDDA
  rts
+ fin
 
 *----------------------------------------------------------
 * dbg_golden_state - Print 3-line state snapshot for ladder
@@ -19164,7 +19254,9 @@ dbg_print_hex8
 *     mx = scroll_max_wo (16-bit)
 *
 * Emulation mode, 8-bit A/X/Y. Preserves no state (just dumps).
+* Gated on DEBUG_HELPERS — uses dbg_print_* (KEGS-only stdout).
 *----------------------------------------------------------
+ do DEBUG_HELPERS
 dbg_golden_state
 * --- Line 1: GS1 wo=WWWW ax=AAAA xp=XX cs=CC ---
  lda #$C7              ; 'G'
@@ -19249,6 +19341,7 @@ dbg_golden_state
  jsr dbg_print_hex8
  jsr dbg_print_nl
  rts
+ fin
 
 *----------------------------------------------------------
 * assert_abs_x - Verify abs_x == world_offset + billy_sprite.xpos.
@@ -19387,7 +19480,10 @@ assert_scroll_src_off
 * Compare to scroll_src_off (1-byte)
  cmp scroll_src_off
  beq :as_skip
-* Mismatch — 'SS! aa=ee B=bb WO=wwww CS=cs'
+* Mismatch — 'SS! aa=ee B=bb WO=wwww CS=cs'. Diagnostic print
+* gated on DEBUG_HELPERS (KEGS-stdout). On real hardware the assert
+* just returns silently when the canary is stripped.
+ do DEBUG_HELPERS
  lda #$D3              ; 'S'
  jsr dbg_print_char
  lda #$D3              ; 'S'
@@ -19435,6 +19531,8 @@ assert_scroll_src_off
  jsr dbg_print_nl
 :as_halt
  bra :as_halt
+ fin
+ rts
 :as_orig ds 2
 :as_exp  ds 2
 
@@ -19507,7 +19605,9 @@ assert_scroll_lsrc_off
  bcs :al_skip
  cmp scroll_lsrc_off
  beq :al_skip
-* Mismatch — 'LS! aa=ee B=bb WO=wwww CS=cs'
+* Mismatch — 'LS! aa=ee B=bb WO=wwww CS=cs'. Print gated on
+* DEBUG_HELPERS (KEGS-stdout only); stripped for real-hardware ship.
+ do DEBUG_HELPERS
  lda #$CC              ; 'L'
  jsr dbg_print_char
  lda #$D3              ; 'S'
@@ -19555,6 +19655,8 @@ assert_scroll_lsrc_off
  jsr dbg_print_nl
 :al_halt
  bra :al_halt
+ fin
+ rts
 :al_orig ds 2
 :al_exp  ds 2
 

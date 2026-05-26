@@ -463,6 +463,9 @@ billy_save_scroll_up_en       ds 1
 * Jimmy's stashed state — what gets loaded into the live globals
 * on swap-in. Zero-initialised so Jimmy boots in a clean state.
 jimmy_stash_walk_step         ds 1
+* Jimmy's walk_toggle initial value = 0 (the trigger phase of the
+* 3-state walk gate) so his first walk press after spawn moves +
+* animates on the first VBL.
 jimmy_stash_walk_toggle       ds 1
 jimmy_stash_climb_toggle      ds 1
 jimmy_stash_punch_toggle      ds 1
