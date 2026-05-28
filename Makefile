@@ -29,6 +29,14 @@ out/engine: src/engine.s src/engine_externs.s
 	cd src && merlin32 engine.s
 	mv src/engine out/engine
 
+# mission1boss.s (Burnov boss behavior) lives in bank $1E. Like
+# engine.s it references bank-$00 symbols via absolute mode, so it
+# depends on the shared engine_externs.s (regenerated from game.s).
+out/mission1boss: src/mission1boss.s src/engine_externs.s
+	mkdir -p out
+	cd src && merlin32 mission1boss.s
+	mv src/mission1boss out/mission1boss
+
 out/title: src/title.s
 	mkdir -p out
 	cd src && merlin32 title.s
@@ -173,11 +181,12 @@ out/ddii: src/ddii.s
 	cd src && merlin32 ddii.s
 	mv src/ddii out/ddii
 
-$(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.shr assets/mission13.shr assets/mission14.shr assets/mission15.shr assets/mission16.shr assets/mission17.shr assets/mission18.shr assets/mission19.shr assets/mission110.shr assets/mission111.shr assets/mission112.shr assets/mission113.shr assets/mission114.shr assets/CONCEPT3\#C10000 assets/INTRO\#C10000 assets/keycontrols\#C10000 assets/joycontrols\#C10000 assets/snescontrols\#C10000 assets/moves\#C10000 out/game out/title out/mission1 out/mission12 out/mission13 out/cutscene out/cutscene1 out/cutscene2 out/ddii out/mission14 out/engine out/mission1jimmy out/mission13blit_30 out/mission13blit_31 out/mission1blit_32 out/mission1jimmyblit_33 out/mission12blit_34 out/mission12blit_35 out/mission12blit_36 out/mission12blit_37 out/mission12blit_38 out/mission14blit_39 out/mission14blit_3a
+$(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.shr assets/mission13.shr assets/mission14.shr assets/mission15.shr assets/mission16.shr assets/mission17.shr assets/mission18.shr assets/mission19.shr assets/mission110.shr assets/mission111.shr assets/mission112.shr assets/mission113.shr assets/mission114.shr assets/mission21.shr assets/mission22.shr assets/mission23.shr assets/mission24.shr assets/mission25.shr assets/mission26.shr assets/mission27.shr assets/mission28.shr assets/mission29.shr assets/mission210.shr assets/CONCEPT3\#C10000 assets/INTRO\#C10000 assets/keycontrols\#C10000 assets/joycontrols\#C10000 assets/snescontrols\#C10000 assets/moves\#C10000 out/game out/title out/mission1 out/mission12 out/mission13 out/cutscene out/cutscene1 out/cutscene2 out/ddii out/mission14 out/engine out/mission1boss out/mission1jimmy out/mission13blit_30 out/mission13blit_31 out/mission1blit_32 out/mission1jimmyblit_33 out/mission12blit_34 out/mission12blit_35 out/mission12blit_36 out/mission12blit_37 out/mission12blit_38 out/mission14blit_39 out/mission14blit_3a
 	mkdir -p out
 	rm -f $(IMGFILE)
-	$(CADIUS) CREATEVOLUME $(IMGFILE) $(VOLNAME) 1440KB --quiet
+	$(CADIUS) CREATEVOLUME $(IMGFILE) $(VOLNAME) 2880KB --quiet
 	$(CADIUS) CREATEFOLDER $(IMGFILE) /$(VOLNAME)/MISSION1 --quiet
+	$(CADIUS) CREATEFOLDER $(IMGFILE) /$(VOLNAME)/MISSION2 --quiet
 	$(CADIUS) CREATEFOLDER $(IMGFILE) /$(VOLNAME)/SFX --quiet
 	$(CADIUS) CREATEFOLDER $(IMGFILE) /$(VOLNAME)/GUIDE --quiet
 	cp res/PRODOS out/PRODOS\#FF0000
@@ -226,6 +235,40 @@ $(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.sh
 	python3 tools/packbytes.py pack --length 32000 assets/mission114.shr out/MISSION114.PAK\#C00000
 	$(CADIUS) ADDFILE $(IMGFILE) /$(VOLNAME)/MISSION1/ out/MISSION114.PAK\#C00000 --quiet
 	rm out/MISSION114.PAK\#C00000
+
+	# Mission 2 backgrounds. MISSION21 carries the palette/SCB (full
+	# file); MISSION22..MISSION210 are pixel-data-only (32000 B), same
+	# convention as MISSION12..MISSION114.
+	python3 tools/packbytes.py pack assets/mission21.shr out/MISSION21\#C00000
+	$(CADIUS) ADDFILE $(IMGFILE) /$(VOLNAME)/MISSION2/ out/MISSION21\#C00000 --quiet
+	rm out/MISSION21\#C00000
+	python3 tools/packbytes.py pack --length 32000 assets/mission22.shr out/MISSION22\#C00000
+	$(CADIUS) ADDFILE $(IMGFILE) /$(VOLNAME)/MISSION2/ out/MISSION22\#C00000 --quiet
+	rm out/MISSION22\#C00000
+	python3 tools/packbytes.py pack --length 32000 assets/mission23.shr out/MISSION23\#C00000
+	$(CADIUS) ADDFILE $(IMGFILE) /$(VOLNAME)/MISSION2/ out/MISSION23\#C00000 --quiet
+	rm out/MISSION23\#C00000
+	python3 tools/packbytes.py pack --length 32000 assets/mission24.shr out/MISSION24\#C00000
+	$(CADIUS) ADDFILE $(IMGFILE) /$(VOLNAME)/MISSION2/ out/MISSION24\#C00000 --quiet
+	rm out/MISSION24\#C00000
+	python3 tools/packbytes.py pack --length 32000 assets/mission25.shr out/MISSION25\#C00000
+	$(CADIUS) ADDFILE $(IMGFILE) /$(VOLNAME)/MISSION2/ out/MISSION25\#C00000 --quiet
+	rm out/MISSION25\#C00000
+	python3 tools/packbytes.py pack --length 32000 assets/mission26.shr out/MISSION26\#C00000
+	$(CADIUS) ADDFILE $(IMGFILE) /$(VOLNAME)/MISSION2/ out/MISSION26\#C00000 --quiet
+	rm out/MISSION26\#C00000
+	python3 tools/packbytes.py pack --length 32000 assets/mission27.shr out/MISSION27\#C00000
+	$(CADIUS) ADDFILE $(IMGFILE) /$(VOLNAME)/MISSION2/ out/MISSION27\#C00000 --quiet
+	rm out/MISSION27\#C00000
+	python3 tools/packbytes.py pack --length 32000 assets/mission28.shr out/MISSION28\#C00000
+	$(CADIUS) ADDFILE $(IMGFILE) /$(VOLNAME)/MISSION2/ out/MISSION28\#C00000 --quiet
+	rm out/MISSION28\#C00000
+	python3 tools/packbytes.py pack --length 32000 assets/mission29.shr out/MISSION29\#C00000
+	$(CADIUS) ADDFILE $(IMGFILE) /$(VOLNAME)/MISSION2/ out/MISSION29\#C00000 --quiet
+	rm out/MISSION29\#C00000
+	python3 tools/packbytes.py pack --length 32000 assets/mission210.shr out/MISSION210\#C00000
+	$(CADIUS) ADDFILE $(IMGFILE) /$(VOLNAME)/MISSION2/ out/MISSION210\#C00000 --quiet
+	rm out/MISSION210\#C00000
 	cp out/mission1 out/MISSION1\#060000
 	$(CADIUS) ADDFILE $(IMGFILE) /$(VOLNAME)/MISSION1/ out/MISSION1\#060000 --quiet
 	rm out/MISSION1\#060000
@@ -310,6 +353,12 @@ $(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.sh
 	cp out/engine out/ENGINE\#060000
 	$(CADIUS) ADDFILE $(IMGFILE) /$(VOLNAME)/ out/ENGINE\#060000 --quiet
 	rm out/ENGINE\#060000
+	# Bank-$1E mission1 boss (Burnov) behavior. Loaded by game.s at
+	# startup to $1E:$0000. Under /MISSION1/ because it's level-
+	# specific (the engine in /ENGINE stays level-independent).
+	cp out/mission1boss out/BOSS\#060000
+	$(CADIUS) ADDFILE $(IMGFILE) /$(VOLNAME)/MISSION1/ out/BOSS\#060000 --quiet
+	rm out/BOSS\#060000
 	cp out/cutscene out/CUTSCENE\#FF2000
 	$(CADIUS) ADDFILE $(IMGFILE) /$(VOLNAME)/ out/CUTSCENE\#FF2000 --quiet
 	rm out/CUTSCENE\#FF2000

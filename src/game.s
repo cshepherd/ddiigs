@@ -255,14 +255,26 @@ DEBUG_HELPERS equ 0
  stz file_dest+1
  jsr load_file
 
+* Load /DDIIGS/MISSION1BOSS (Burnov boss behavior code) to bank
+* $1E. Mission1-specific code split out of game.s, same pattern as
+* ENGINE: runs with K=$1E, B=$00, called via JSL at fixed jump-
+* table addresses ($1E/0000+). Stored at the disk root.
+ lda #<mission1boss_path
+ sta file_open+1
+ lda #>mission1boss_path
+ sta file_open+2
+ lda #$1E
+ sta file_bank
+ stz file_dest
+ stz file_dest+1
+ jsr load_file
+
 * Load /DDIIGS/MISSION1/MISSION1JIMMY (Jimmy color-shifted sprite
 * data) to bank $1D. init_jimmy walks the sprite-address table at
 * the head of this bank and patches the spr_jimmy0X cache vars in
 * bank $00.
- lda #<mission1jimmy_path
- sta file_open+1
- lda #>mission1jimmy_path
- sta file_open+2
+ ldx #0                ; manifest asset 0 = MISSION1/MISSION1JIMMY
+ jsr level_copy_asset
  lda #$1D
  sta file_bank
  stz file_dest
@@ -285,19 +297,15 @@ DEBUG_HELPERS equ 0
  stz unpack_offset+1
 
 * Load MISSION1NTP.PAK -> $17, unpack to $13/0000
- lda #<m1ntp_path
- sta p_open+1
- lda #>m1ntp_path
- sta p_open+2
+ ldx #1                ; manifest asset 1 = MISSION1/MISSION1NTP.PAK
+ jsr level_copy_asset
  lda #$13
  sta unpack_bank
  jsr load_and_unpack
 
 * Load BOSS.NTP.PAK -> $17, unpack to $14/0000
- lda #<bossntp_path
- sta p_open+1
- lda #>bossntp_path
- sta p_open+2
+ ldx #2                ; manifest asset 2 = BOSS.NTP.PAK
+ jsr level_copy_asset
  lda #$14
  sta unpack_bank
  jsr load_and_unpack
@@ -330,149 +338,66 @@ DEBUG_HELPERS equ 0
  lda #$20
  sta unpack_offset+1
 
-* Load MISSION11.PAK -> $17, unpack to $03 (screen 0).
-* The NTP loads above clobbered p_open's pathname pointer, so
-* point it back at MISSION11.PAK explicitly.
- lda #<pathname
- sta p_open+1
- lda #>pathname
- sta p_open+2
- lda #$03
- sta unpack_bank
+* Load every background PAK from the bank-$02 level manifest.
+* Background i (0..bg_count-1) is composed as DIR/NAME by
+* level_compose_bg and unpacked to bank $03+i at $2000, which
+* matches the runtime mapping (bank = current_screen + $03).
+* Replaces the old hardcoded pathname/path12..path114 list.
+* unpack_offset is already $2000 (restored just above).
+ jsr level_get_bgcount
+ sta bg_count_cache
+ ldx #0
+:bg_load_loop
+ cpx bg_count_cache
+ bcs :bg_load_done
+ phx
+ jsr level_compose_bg     ; X=bg index -> level_path_buf, p_open set
+ plx
+ txa
+ clc
+ adc #$03
+ sta unpack_bank          ; unpack bank = $03 + i
+ phx
  jsr load_and_unpack
-* Copy $03/2000 -> $18/2000 (playfield shadow). The $18 -> $01
-* paint is deferred to after init_mission12 below so the LOADING
-* splash stays on screen through the heavy file/init phase.
-* Bank $18 still holds scr0 from this point on, which is what
-* the erase routines read — no functional dependency on $01
-* having scr0 yet.
+ plx
+* Screen 0: copy $03/2000 -> $18/2000 (playfield shadow). The
+* $18 -> $01 paint is deferred to after init below so the LOADING
+* splash stays up; bank $18 holds scr0 from here, which is what
+* the erase routines read.
+ cpx #0
+ bne :bg_ticks
  jsr copy_03_to_50
-
+* Loading-progress ticks at the original cadence: status 2 after
+* screen 0, status 3 after screen 5, status 4 after screen 11.
+:bg_ticks
+ cpx #0
+ beq :bg_tick2
+ cpx #5
+ beq :bg_tick3
+ cpx #11
+ beq :bg_tick4
+ bra :bg_next
+:bg_tick2
+ phx
  ldx #2
  jsr draw_loading_string
-
-* Load MISSION12.PAK -> $04 (screen 1)
- lda #<path12
- sta p_open+1
- lda #>path12
- sta p_open+2
- lda #$04
- sta unpack_bank
- jsr load_and_unpack
-
-* Load MISSION13.PAK -> $05 (screen 2)
- lda #<path13
- sta p_open+1
- lda #>path13
- sta p_open+2
- lda #$05
- sta unpack_bank
- jsr load_and_unpack
-
-* Load MISSION14.PAK -> $06 (screen 3)
- lda #<path14
- sta p_open+1
- lda #>path14
- sta p_open+2
- lda #$06
- sta unpack_bank
- jsr load_and_unpack
-
-* Load MISSION15.PAK -> $07 (screen 4)
- lda #<path15
- sta p_open+1
- lda #>path15
- sta p_open+2
- lda #$07
- sta unpack_bank
- jsr load_and_unpack
-
-* Load MISSION16.PAK -> $08 (screen 5)
- lda #<path16
- sta p_open+1
- lda #>path16
- sta p_open+2
- lda #$08
- sta unpack_bank
- jsr load_and_unpack
-
+ plx
+ bra :bg_next
+:bg_tick3
+ phx
  ldx #3
  jsr draw_loading_string
-
-* Load MISSION17.PAK -> $09 (screen 6)
- lda #<path17
- sta p_open+1
- lda #>path17
- sta p_open+2
- lda #$09
- sta unpack_bank
- jsr load_and_unpack
-
-* Load MISSION18.PAK -> $0A (screen 7)
- lda #<path18
- sta p_open+1
- lda #>path18
- sta p_open+2
- lda #$0A
- sta unpack_bank
- jsr load_and_unpack
-
-* Load MISSION19.PAK -> $0B (screen 8)
- lda #<path19
- sta p_open+1
- lda #>path19
- sta p_open+2
- lda #$0B
- sta unpack_bank
- jsr load_and_unpack
-
-* Load MISSION110.PAK -> $0C (screen 9)
- lda #<path110
- sta p_open+1
- lda #>path110
- sta p_open+2
- lda #$0C
- sta unpack_bank
- jsr load_and_unpack
-
-* Load MISSION111.PAK -> $0D (screen 10)
- lda #<path111
- sta p_open+1
- lda #>path111
- sta p_open+2
- lda #$0D
- sta unpack_bank
- jsr load_and_unpack
-
-* Load MISSION112.PAK -> $0E (screen 11)
- lda #<path112
- sta p_open+1
- lda #>path112
- sta p_open+2
- lda #$0E
- sta unpack_bank
- jsr load_and_unpack
-
+ plx
+ bra :bg_next
+:bg_tick4
+ phx
  ldx #4
  jsr draw_loading_string
-
-* Load MISSION113.PAK -> $0F (screen 12)
- lda #<path113
- sta p_open+1
- lda #>path113
- sta p_open+2
- lda #$0F
- sta unpack_bank
- jsr load_and_unpack
-
-* Load MISSION114.PAK -> $10 (screen 13)
- lda #<path114
- sta p_open+1
- lda #>path114
- sta p_open+2
- lda #$10
- sta unpack_bank
- jsr load_and_unpack
+ plx
+:bg_next
+ inx
+ bra :bg_load_loop
+:bg_load_done
 
 * Initialize level data now that MISSION1/MISSION12 binaries
 * and the SHR backgrounds are all loaded. Moved here from the
@@ -13664,54 +13589,32 @@ update_anims
 *   anim_bn_diss ended →  teleport + start anim_bn_recon (BURNBACK)
 *   anim_bn_recon ended →  reset punch_count, increment death_count,
 *                          fall through to :normal_end (idle restore).
+* Burnov boss-death state machine lives in mission1boss.s (bank
+* $1E). Gate by frame_bank first ($19 = legacy / $1C = compiled
+* Burnov) to skip the cross-bank call for unrelated sprites, then
+* delegate. bn_anim_ended returns A = disposition:
+*   0 → :ad_normal_flow   (not a Burnov death-cycle anim)
+*   1 → :next             (dissolve or recon installed)
+*   2 → :normal_end       (finish_recon ran)
+*   3 → :ad_do_death      (3rd-kill diss done; route to death)
  ldy #56
  lda (info_ptr),y      ; frame_bank
  cmp #$19
- beq :ad_bn_check_fall ; bank-$19 → check Burnov/linda_flail anims
+ beq :ad_call_bn
  cmp #$1C
- beq :ad_bn_check_fall ; bank-$1C → compiled-Burnov combat anim ended
- jmp :ad_normal_flow   ; other banks: take normal-death path
-:ad_bn_check_fall
-* Was the just-ended anim specifically anim_bnfall? Compare
-* against the descriptor address directly rather than against
-* the sprite's +50 field — linda_flail also lives in bank $19
-* and has her own fall_anim (anim_lffall) which we DON'T want
-* to trigger the boss dissolve cycle.
- lda anim_ptr
- cmp #<anim_bnfall
- bne :ad_bn_check_diss
- lda anim_ptr+1
- cmp #>anim_bnfall
- bne :ad_bn_check_diss
-* anim_bnfall ended. ALWAYS play the dissolve animation — on
-* kills 1 and 2 it precedes the teleport+recon, on kill 3 it
-* runs as the final visual (the post-diss handler below detects
-* count==2 and routes to :ad_do_death instead of recon).
- jsr start_burnov_dissolve
- jmp :next
-:ad_bn_check_diss
- lda anim_ptr
- cmp #<anim_bn_diss
- bne :ad_bn_check_recon
- lda anim_ptr+1
- cmp #>anim_bn_diss
- bne :ad_bn_check_recon
-* Dissolve done. On the 3rd kill (count==2) skip recon and let
-* the death sentinel mark Burnov for removal so the level script
-* (OP_WAITCLR + OP_END) can roll the COMPLETE.NTP end-music.
- lda boss_death_count
+ beq :ad_call_bn
+ jmp :ad_normal_flow
+:ad_call_bn
+ jsl bn_anim_ended
+ beq :ad_normal_flow   ; A=0
+ cmp #1
+ beq :ad_bn_to_next
  cmp #2
- bcs :ad_do_death
- jsr start_burnov_recon
+ beq :ad_bn_to_norm
+ jmp :ad_do_death      ; A=3
+:ad_bn_to_next
  jmp :next
-:ad_bn_check_recon
- lda anim_ptr
- cmp #<anim_bn_recon
- bne :ad_normal_flow
- lda anim_ptr+1
- cmp #>anim_bn_recon
- bne :ad_normal_flow
- jsr finish_burnov_recon
+:ad_bn_to_norm
  jmp :normal_end       ; restore idle frame & resume FACEOFF
 
 :ad_normal_flow
@@ -13999,187 +13902,11 @@ update_anims
  iny
  sta (info_ptr),y
 :ne_not_bpickup
-* Burnov-grab end hook: anim_bngrab (Billy variant) or anim_bnjgrab
-* (Jimmy variant) just finished (last frame is BNBILLY3/BNJIMMY3,
-* the release pose). Clear the active flag, re-mark the grabbed
-* player as needing draw, and start their fall_anim from their
-* pre-grab position (billy_sprite / jimmy_sprite still hold those
-* coords — input was gated off during the grab so nothing modified
-* them).
- lda anim_ptr
- cmp #<anim_bngrab
- bne :ne_chk_bnjgrab
- lda anim_ptr+1
- cmp #>anim_bngrab
- beq :ne_grab_do
-:ne_chk_bnjgrab
- lda anim_ptr
- cmp #<anim_bnjgrab
- bne :ne_not_bngrab_jmp
- lda anim_ptr+1
- cmp #>anim_bnjgrab
- beq :ne_grab_do
-:ne_not_bngrab_jmp
- jmp :ne_not_bngrab
-:ne_grab_do
-* Snapshot which player is being released; bn_grab_active holds
-* their controller value ($01 Billy / $02 Jimmy) — set by
-* check_punch_hit's grab trigger. Use a local scratch so the
-* clear can fire immediately without losing the dispatch info.
- lda bn_grab_active
- sta :ne_grab_who
- stz bn_grab_active
-* Save Burnov's info_ptr; switch to the released player's block
-* for start_anim. Pick by :ne_grab_who.
- lda info_ptr
- pha
- lda info_ptr+1
- pha
- lda :ne_grab_who
- cmp #$02
- beq :ne_grab_load_jimmy
- lda #<billy_sprite
- sta info_ptr
- lda #>billy_sprite
- sta info_ptr+1
- bra :ne_grab_loaded
-:ne_grab_load_jimmy
- lda #<jimmy_sprite
- sta info_ptr
- lda #>jimmy_sprite
- sta info_ptr+1
-:ne_grab_loaded
-* Mirror the player so they face Burnov (so the trajectory dx and
-* fall pose orient correctly). Burnov's mirror was already loaded
-* above (final frame of the grab anim).
- lda IMAGE01_MIRROR
- eor #$01
- ldy #4
- sta (info_ptr),y
-* Load the player's globals for start_anim.
- ldy #0
- lda (info_ptr),y
- sta IMAGE01_YPOS
- ldy #2
- lda (info_ptr),y
- sta IMAGE01_XPOS
- ldy #4
- lda (info_ptr),y
- sta IMAGE01_MIRROR
- ldy #10
- lda (info_ptr),y
- sta FRAME_X
- ldy #12
- lda (info_ptr),y
- sta FRAME_Y
- ldy #14
- lda (info_ptr),y
- sta FRAME_ADDR
- iny
- lda (info_ptr),y
- sta FRAME_ADDR+1
- ldy #50
- lda (info_ptr),y
- pha
- ldy #51
- lda (info_ptr),y
- tax
- pla
- jsr start_anim
-* Count this as one of the released player's falls and deplete a
-* palette segment. Mirror of the cascade in check_punch_hit's
-* :use_fall path; check_punch_hit's grab branch jumped to :done
-* before hitting :use_fall, so this is the only place the grab's
-* fall is accounted for. Dispatch by :ne_grab_who.
- lda #0
- ldy #48
- sta (info_ptr),y     ; reset punch_count on the player block
- lda :ne_grab_who
- cmp #$02
- beq :ne_grab_dep_jimmy
-* Billy: increment billy_fall_count and deplete P1 slots.
- inc billy_fall_count
- lda billy_fall_count
- cmp #1
- bne :ne_grab_dep_2
- lda #0
- stal $019E48
- stal $019E49
- jmp :ne_grab_dep_done
-:ne_grab_dep_2
- cmp #2
- bne :ne_grab_dep_3
- lda #0
- stal $019E46
- stal $019E47
- jmp :ne_grab_dep_done
-:ne_grab_dep_3
- cmp #3
- bne :ne_grab_dep_4
- lda #0
- stal $019E44
- stal $019E45
- jmp :ne_grab_dep_done
-:ne_grab_dep_4
- cmp #4
- bne :ne_grab_dep_5
- lda #0
- stal $019E42
- stal $019E43
- jmp :ne_grab_dep_done
-:ne_grab_dep_5
- cmp #5
- bne :ne_grab_dep_done
- lda #0
- stal $019E54
- stal $019E55
- jmp :ne_grab_dep_done
-:ne_grab_dep_jimmy
-* Jimmy: mirrors :uf_target_jimmy. P2 palette slots 5..9 deplete
-* in the same fall1→5 order as P1. fall_count for Jimmy lives in
-* jimmy_stash_fall_count.
- inc jimmy_stash_fall_count
- lda jimmy_stash_fall_count
- cmp #1
- bne :ne_grab_jdep_2
- lda #0
- stal $019E52
- stal $019E53
- jmp :ne_grab_dep_done
-:ne_grab_jdep_2
- cmp #2
- bne :ne_grab_jdep_3
- lda #0
- stal $019E50
- stal $019E51
- jmp :ne_grab_dep_done
-:ne_grab_jdep_3
- cmp #3
- bne :ne_grab_jdep_4
- lda #0
- stal $019E4E
- stal $019E4F
- jmp :ne_grab_dep_done
-:ne_grab_jdep_4
- cmp #4
- bne :ne_grab_jdep_5
- lda #0
- stal $019E4C
- stal $019E4D
- jmp :ne_grab_dep_done
-:ne_grab_jdep_5
- cmp #5
- bne :ne_grab_dep_done
- lda #0
- stal $019E4A
- stal $019E4B
-:ne_grab_dep_done
-* Restore Burnov's info_ptr so :normal_end's idle restore below
-* operates on him.
- pla
- sta info_ptr+1
- pla
- sta info_ptr
+* Burnov-grab end hook moved to mission1boss.s (bn_grab_end).
+* Detects anim_bngrab/anim_bnjgrab, releases the held player,
+* runs the fall + score/palette cascade, and restores info_ptr.
+* No-op if the just-ended anim isn't a Burnov grab variant.
+ jsl bn_grab_end
 :ne_not_bngrab
  ldy #50
  lda (info_ptr),y
@@ -15383,7 +15110,6 @@ update_anims
 
 :frm dfb 0
 :ne_tmp dfb 0
-:ne_grab_who dfb 0          ; bn_grab_active snapshot for :ne_grab_do
 :lf_tmp dfb 0
 :lf_lastfrm dfb 0
 :kick_saved_xpos dfb 0
@@ -15400,140 +15126,11 @@ update_anims
 :dd_h            dfb 0
 
 *----------------------------------------------------------
-* Burnov boss-death state-machine helpers. Called from
-* update_anims:ad_not_jump when the just-ended anim matches
-* one of the boss-death stages. info_ptr = Burnov on entry,
-* MX = %11.
+* Burnov boss-death state-machine helpers moved to mission1boss.s
+* (bank $1E): start_burnov_dissolve / start_burnov_recon /
+* finish_burnov_recon. update_anims now calls them via
+* jsl bn_dissolve / bn_recon / bn_finish_recon.
 *----------------------------------------------------------
-
-* start_burnov_dissolve - fall_anim ended on Burnov (kill 1 or 2).
-* Trigger BURNGONE and install anim_bn_diss. The fall already
-* left ypos at the bumped FALLEN position; we un-bump it here so
-* the bigger BDISS frames render around Burnov's standing height
-* instead of being shoved down by FALL_Y_OFFSET.
-start_burnov_dissolve
- ldx #SND_BURNGONE
- jsr sound_trigger
-* Release the held player if Burnov was mid-grab when he died. The
-* natural grab-end hook (:ne_grab_do) only fires when anim_bngrab /
-* anim_bnjgrab ends cleanly; a death-mid-grab swaps Burnov's
-* anim_ptr away before that hook can run, leaving bn_grab_active
-* stuck and the held player invisible (their draw is gated off).
-* bn_grab_active tells us which player: $01=Billy, $02=Jimmy.
-* Mark them dirty so the next draw_all repaints at the pre-grab
-* position. Skip the fall / punch_count bookkeeping :ne_grab_do
-* does — Burnov is the one dying; the released player just gets
-* dropped back into the fight standing.
- lda bn_grab_active
- beq :sbd_no_release
- cmp #$02
- beq :sbd_release_jimmy
- lda billy_sprite+30
- ora #$03
- sta billy_sprite+30
- bra :sbd_release_done
-:sbd_release_jimmy
- lda jimmy_sprite+30
- ora #$03
- sta jimmy_sprite+30
-:sbd_release_done
- stz bn_grab_active
-:sbd_no_release
-* Snapshot prev_* so the fallen sprite gets erased cleanly when
-* the new (taller) dissolve frame paints. Use a generous prev_w/h
-* (24×24) to cover BNFALLEN's 23×23 footprint.
- ldy #0
- lda (info_ptr),y      ; current ypos (bumped)
- ldy #32
- sta (info_ptr),y      ; prev_ypos
- ldy #2
- lda (info_ptr),y
- ldy #34
- sta (info_ptr),y      ; prev_xpos
- lda #24
- ldy #36
- sta (info_ptr),y      ; prev_frame_x
- ldy #38
- sta (info_ptr),y      ; prev_frame_y
-* Un-bump ypos so the BDISS frames draw at standing height.
- ldy #0
- lda (info_ptr),y
- sec
- sbc #FALL_Y_OFFSET
- sta (info_ptr),y
-* Install anim_bn_diss
- lda #<anim_bn_diss
- ldx #>anim_bn_diss
- jsr start_anim
- rts
-
-* start_burnov_recon - anim_bn_diss ended. Move Burnov to the
-* alternate boss spawn position, trigger BURNBACK, install
-* anim_bn_recon. Position alternates by boss_death_count parity:
-*   count=0 (1st kill, hasn't incremented yet) → teleport to x=$10
-*   count=1 (2nd kill, hasn't incremented yet) → teleport to x=$58
-* y is reset to the boss spawn y ($43) regardless.
-start_burnov_recon
-* Snapshot prev_* for clean erase of the small BDISS8 helmet.
- ldy #0
- lda (info_ptr),y
- ldy #32
- sta (info_ptr),y      ; prev_ypos
- ldy #2
- lda (info_ptr),y
- ldy #34
- sta (info_ptr),y      ; prev_xpos
- ldy #10
- lda (info_ptr),y
- ldy #36
- sta (info_ptr),y      ; prev_frame_x
- ldy #12
- lda (info_ptr),y
- ldy #38
- sta (info_ptr),y      ; prev_frame_y
-* Pick teleport target X.
- lda boss_death_count
- and #$01
- beq :br_far_x
- lda #$58              ; 2nd teleport target — back to original
- bra :br_set_x
-:br_far_x
- lda #$10              ; 1st teleport target — left side
-:br_set_x
- ldy #2
- sta (info_ptr),y      ; new xpos
-* Spawn y is $43 for the body, but recon's first frame is BDISS8
-* (helmet) which renders BDISS_HELMET_Y px down from the body's
-* top. Teleport directly to the bumped y so :load_frame doesn't
-* need to adjust on frame 0 — the un-bump at frame 2 (BDISS6)
-* drops us back to standing height for the body frames.
- lda #$43+BDISS_HELMET_Y
- ldy #0
- sta (info_ptr),y
- ldx #SND_BURNBACK
- jsr sound_trigger
- lda #<anim_bn_recon
- ldx #>anim_bn_recon
- jsr start_anim
- rts
-
-* finish_burnov_recon - anim_bn_recon ended. Reset punch_count to
-* 0 so the next 3 hits trigger the next dissolve cycle, reset
-* behavior_state to FO_APPROACH so the boss starts walking
-* toward Billy again, increment boss_death_count, and let
-* :normal_end's idle-restore put Burnov back to BNWALK1.
-finish_burnov_recon
- lda #0
- ldy #48
- sta (info_ptr),y      ; punch_count
- ldy #7
- sta (info_ptr),y      ; behavior_state = FO_APPROACH (0)
- ldy #8
- sta (info_ptr),y      ; behavior_timer low
- ldy #9
- sta (info_ptr),y      ; behavior_timer high
- inc boss_death_count
- rts
 
 *----------------------------------------------------------
 * linda_flail_drop_and_transform - called when linda_flail's
@@ -17971,6 +17568,186 @@ copy_to_bank
  rts
 
 *----------------------------------------------------------
+* Level-manifest path helpers. Read mission-specific ProDOS
+* paths from the bank-$02 level manifest (header manifest_off
+* at $02/0004) into level_path_buf and point p_open/file_open
+* at it. Emulation mode, 8-bit A/X/Y; use $F0-$F2 as a bank-$02
+* long pointer. See mission1.s level_manifest for the layout.
+*----------------------------------------------------------
+ mx %11
+* get_man_base - man_base = 16-bit manifest offset from header.
+get_man_base
+ lda #$04
+ sta $F0
+ stz $F1
+ lda #$02
+ sta $F2              ; $F0 -> $02/0004
+ ldy #0
+ lda [$F0],y
+ sta man_base
+ iny
+ lda [$F0],y
+ sta man_base+1
+ rts
+
+* append_str - append a manifest str's CHARS (skipping its
+* length byte) to level_path_buf. In: $F0-$F2 = bank-$02 str
+* addr, X = dest index. Out: X = dest index past the chars.
+append_str
+ ldy #0
+ lda [$F0],y          ; str length
+ sta lp_limit
+ inc lp_limit         ; loop copies source indices 1..len
+ ldy #1
+:as_loop
+ cpy lp_limit
+ bcs :as_done
+ lda [$F0],y
+ sta level_path_buf,x
+ inx
+ iny
+ bra :as_loop
+:as_done
+ rts
+
+* set_open_ptrs - point p_open and file_open pathname pointers
+* at level_path_buf.
+set_open_ptrs
+ lda #<level_path_buf
+ sta p_open+1
+ sta file_open+1
+ lda #>level_path_buf
+ sta p_open+2
+ sta file_open+2
+ rts
+
+* level_get_bgcount - A = manifest bg_count (manifest +2).
+level_get_bgcount
+ jsr get_man_base
+ lda man_base
+ sta $F0
+ lda man_base+1
+ sta $F1
+ lda #$02
+ sta $F2
+ ldy #2
+ lda [$F0],y
+ rts
+
+* level_compose_bg - compose "DIR/NAME" for background X into
+* level_path_buf and set the pathname pointers. In: X = bg index.
+level_compose_bg
+ jsr get_man_base
+* bg_ptr[X] = manifest +4 + X*2; deref -> name str addr.
+ txa
+ asl
+ clc
+ adc #4
+ clc
+ adc man_base
+ sta $F0
+ lda man_base+1
+ adc #0
+ sta $F1
+ lda #$02
+ sta $F2
+ ldy #0
+ lda [$F0],y          ; name str addr lo
+ sta lp_name_lo
+ iny
+ lda [$F0],y          ; name str addr hi
+ sta lp_name_hi
+* dir_ptr at manifest +0; deref -> dir str addr into $F0/$F1.
+ lda man_base
+ sta $F0
+ lda man_base+1
+ sta $F1
+ lda #$02
+ sta $F2
+ ldy #0
+ lda [$F0],y          ; dir addr lo
+ pha
+ iny
+ lda [$F0],y          ; dir addr hi
+ sta $F1
+ pla
+ sta $F0              ; $F0/$F1/$F2 -> dir str (bank $02)
+* Append dir chars at dest index 1 (leaving room for len byte).
+ ldx #1
+ jsr append_str
+* Append the '/' separator.
+ lda #'/'
+ sta level_path_buf,x
+ inx
+* Append the bare name chars.
+ lda lp_name_lo
+ sta $F0
+ lda lp_name_hi
+ sta $F1
+ lda #$02
+ sta $F2
+ jsr append_str
+* Write the ProDOS length byte (total chars = dest index - 1).
+ dex
+ txa
+ sta level_path_buf
+ jmp set_open_ptrs
+
+* level_copy_asset - copy a full asset path (verbatim) into
+* level_path_buf and set the pathname pointers. In: X = asset
+* index (0=jimmy, 1=level NTP, 2=boss NTP).
+level_copy_asset
+ jsr get_man_base
+* asset_ptr[X] = manifest +4 + bg_count*2 + X*2.
+ lda man_base
+ sta $F0
+ lda man_base+1
+ sta $F1
+ lda #$02
+ sta $F2
+ ldy #2
+ lda [$F0],y          ; bg_count
+ asl                  ; bg_count*2
+ sta lp_limit         ; scratch
+ txa
+ asl                  ; X*2
+ clc
+ adc lp_limit
+ clc
+ adc #4
+ clc
+ adc man_base
+ sta $F0
+ lda man_base+1
+ adc #0
+ sta $F1
+ lda #$02
+ sta $F2              ; $F0 -> asset_ptr[X]
+ ldy #0
+ lda [$F0],y          ; asset str addr lo
+ pha
+ iny
+ lda [$F0],y          ; asset str addr hi
+ sta $F1
+ pla
+ sta $F0              ; $F0/$F1/$F2 -> asset str (bank $02)
+* Copy verbatim: length byte + chars (indices 0..len).
+ ldy #0
+ lda [$F0],y
+ sta lp_limit
+ inc lp_limit
+ ldy #0
+:ca_loop
+ cpy lp_limit
+ bcs :ca_done
+ lda [$F0],y
+ sta level_path_buf,y
+ iny
+ bra :ca_loop
+:ca_done
+ jmp set_open_ptrs
+
+*----------------------------------------------------------
 * load_and_unpack - Load a .PAK file to bank $4F via ProDOS,
 * then use UnPackBytes to decompress to unpack_bank/$2000.
 * p_open pathname pointer must be set before calling.
@@ -19078,13 +18855,8 @@ blit_load_table
  dfb $3A
 blit_load_table_end
 
-mission1jimmy_path str 'MISSION1/MISSION1JIMMY'
-
-* MISSION1NTP.PAK rather than MISSION1.NTP.PAK because ProDOS
-* limits each filename component to 15 chars.
-m1ntp_path str 'MISSION1/MISSION1NTP.PAK'
-
-bossntp_path str 'BOSS.NTP.PAK'
+* MISSION1JIMMY, MISSION1NTP.PAK and BOSS.NTP.PAK moved to the
+* bank-$02 level manifest; loaded via level_copy_asset.
 
 completentp_path str 'COMPLETENTP.PAK'
 
@@ -19093,6 +18865,8 @@ gameoverntp_path str 'GAMEOVERNTP.PAK'
 loading_path str 'LOADING.PAK'
 
 engine_path str 'ENGINE'
+
+mission1boss_path str 'MISSION1/BOSS'
 
 *----------------------------------------------------------
 * Bank-$1F engine entry points (scroll/blit pipeline).
@@ -19108,6 +18882,21 @@ init_mission12 equ $1F0010
 init_mission13 equ $1F0014
 init_mission14 equ $1F0018
 init_jimmy     equ $1F001C
+
+*----------------------------------------------------------
+* Bank-$1E mission1 boss (Burnov) behavior entry points. Code
+* lives in mission1boss.s, loaded from /DDIIGS/MISSION1BOSS to
+* $1E:$0000 at startup. JML jump table at the head of the bank,
+* same convention as engine.s. Runs with K=$1E, B=$00.
+*----------------------------------------------------------
+bn_dissolve     equ $1E0000   ; start_burnov_dissolve
+bn_recon        equ $1E0004   ; start_burnov_recon
+bn_finish_recon equ $1E0008   ; finish_burnov_recon
+bn_anim_ended   equ $1E000C   ; boss death-cycle anim-ended dispatch
+bn_grab_end     equ $1E0010   ; grab anim-end (release + damage)
+bn_try_grab     equ $1E0014   ; grab trigger from check_punch_hit
+bn_spawn_setup  equ $1E0018   ; Burnov spawn detector/setup
+bn_approach_pad equ $1E001C   ; fo_approach edge padding
 
 *----------------------------------------------------------
 * JSL trampolines used by engine.s to call back into bank-$00
@@ -19132,6 +18921,21 @@ load_screen_bounds_l  jsr load_screen_bounds
                       rtl
 load_ladders_l        jsr load_ladders
                       rtl
+* Wrappers for mission1boss.s (bank $1E) callbacks into bank-$00
+* routines. Same JSR+RTL shim convention as the engine.s wrappers.
+sound_trigger_l       jsr sound_trigger
+                      rtl
+start_anim_l          jsr start_anim
+                      rtl
+
+* Bank-$00 scratch cells for staging check_punch_hit locals into
+* a place mission1boss.s (bank $1E) can read. The puncher anim
+* and Burnov-self ptr are check_punch_hit local dfbs (:puncher_*
+* / :self_*); we copy them here just before jsl bn_try_grab.
+bn_puncher_anim_lo dfb 0
+bn_puncher_anim_hi dfb 0
+bn_self_lo         dfb 0
+bn_self_hi         dfb 0
 
 * Bank-$00 storage for engine.s's private scratch cells. engine.s
 * runs with DBR=$00, so any data it uses via 16-bit absolute mode
@@ -21682,95 +21486,21 @@ check_punch_hit
 :ht_dbg_skip
  fin
 
-* Burnov-grabs-Player special case. When anim_bnpunch lands on
-* Billy (controller=$01) or Jimmy (controller=$02), divert from
-* the standard hit/fall logic to the BNBILLY/BNJIMMY grab sequence:
-* hide the held player, run the matching grab anim on Burnov,
-* ignore the held player's input until the anim ends. The grab
-* anim's :normal_end handler will reposition the player and start
-* fall_anim on them.
+* Burnov-grabs-Player special case moved to mission1boss.s
+* (bn_try_grab). Stage the check-local puncher anim and Burnov
+* self-ptr into bank-$00 scratch globals, JSL into bank $1E, and
+* branch on the disposition code.
  lda :puncher_anim_lo
- cmp #<anim_bnpunch
- beq :bn_chk_anim_hi
- jmp :hit_normal
-:bn_chk_anim_hi
+ sta bn_puncher_anim_lo
  lda :puncher_anim_hi
- cmp #>anim_bnpunch
- beq :bn_chk_target
- jmp :hit_normal
-:bn_chk_target
- ldy #22
- lda (info_ptr),y     ; target controller
- cmp #$01
- beq :bn_do_grab
- cmp #$02
- beq :bn_chk_jimmy_ptr
- jmp :hit_normal
-:bn_chk_jimmy_ptr
-* Target=$02 is the controller value Jimmy and dropped items share;
-* re-check it's actually jimmy_sprite to avoid grabbing a pipe/knife.
- lda info_ptr
- cmp #<jimmy_sprite
- beq :bn_chk_jimmy_hi
- jmp :hit_normal
-:bn_chk_jimmy_hi
- lda info_ptr+1
- cmp #>jimmy_sprite
- beq :bn_do_grab
- jmp :hit_normal
-:bn_do_grab
-* Remember which player got grabbed. Stash the target's controller
-* into bn_grab_active so it doubles as the "which player" tag for
-* later release logic and the draw-skip gates above.
- ldy #22
- lda (info_ptr),y
- sta bn_grab_active
- ldy #30
- lda (info_ptr),y
- ora #$02             ; force erase bit; clear draw bit
- and #$FE
- sta (info_ptr),y
-* Switch info_ptr back to the puncher (Burnov) and run start_anim
-* with anim_bngrab (Billy target) or anim_bnjgrab (Jimmy target).
-* start_anim handles frame_bank, info+10/+12/+14, dirty, etc.
+ sta bn_puncher_anim_hi
  lda :self_lo
- sta info_ptr
+ sta bn_self_lo
  lda :self_hi
- sta info_ptr+1
- ldy #0
- lda (info_ptr),y
- sta IMAGE01_YPOS
- ldy #2
- lda (info_ptr),y
- sta IMAGE01_XPOS
- ldy #4
- lda (info_ptr),y
- sta IMAGE01_MIRROR
- ldy #10
- lda (info_ptr),y
- sta FRAME_X
- ldy #12
- lda (info_ptr),y
- sta FRAME_Y
- ldy #14
- lda (info_ptr),y
- sta FRAME_ADDR
- iny
- lda (info_ptr),y
- sta FRAME_ADDR+1
-* Pick the grab anim variant by bn_grab_active (set just above).
- lda bn_grab_active
- cmp #$02
- beq :bn_grab_jimmy
- lda #<anim_bngrab
- ldx #>anim_bngrab
- bra :bn_grab_start
-:bn_grab_jimmy
- lda #<anim_bnjgrab
- ldx #>anim_bnjgrab
-:bn_grab_start
- jsr start_anim
- jmp :done
+ sta bn_self_hi
+ jsl bn_try_grab
+ beq :hit_normal       ; A=0 → not a grab, take damage path
+ jmp :done             ; A=1 → grab handled, exit check_punch_hit
 :hit_normal
 
 * Hit! Damage = 3 for forced-fall attacks (uppercut, pipeswing,
@@ -23311,7 +23041,7 @@ p2_score_dirty dw 0
 dest ds 2              ; current destination offset (advances per chunk)
 
 p_open dfb 3           ; param count
- da pathname          ; pathname pointer
+ da level_path_buf    ; pathname pointer (filled per-load from manifest)
  da ]IOBUF            ; I/O buffer (1024 bytes, page-aligned)
 o_refnum dfb 0        ; ref_num (returned by OPEN)
 
@@ -23330,33 +23060,15 @@ eof_size ds 3          ; 3-byte EOF (file size)
 
 file_size ds 3        ; 24-bit file size (for UnPackBytes)
 
-pathname str 'MISSION1/MISSION11.PAK'
-
-path12 str 'MISSION1/MISSION12.PAK'
-
-path13 str 'MISSION1/MISSION13.PAK'
-
-path14 str 'MISSION1/MISSION14.PAK'
-
-path15 str 'MISSION1/MISSION15.PAK'
-
-path16 str 'MISSION1/MISSION16.PAK'
-
-path17 str 'MISSION1/MISSION17.PAK'
-
-path18 str 'MISSION1/MISSION18.PAK'
-
-path19 str 'MISSION1/MISSION19.PAK'
-
-path110 str 'MISSION1/MISSION110.PAK'
-
-path111 str 'MISSION1/MISSION111.PAK'
-
-path112 str 'MISSION1/MISSION112.PAK'
-
-path113 str 'MISSION1/MISSION113.PAK'
-
-path114 str 'MISSION1/MISSION114.PAK'
+* Background PAK paths (pathname/path12..path114) moved to the
+* bank-$02 level manifest; loaded via level_compose_bg into
+* level_path_buf at boot.
+level_path_buf ds 40   ; composed ProDOS path (len byte + chars)
+bg_count_cache dfb 0   ; manifest bg_count, cached for the load loop
+lp_limit       dfb 0   ; append_str copy limit (str len + 1)
+lp_name_lo     dfb 0   ; scratch: bank-$02 addr of a manifest str
+lp_name_hi     dfb 0
+man_base       dw 0    ; bank-$02 offset of level_manifest (from header)
 
 * master sprite table
 sprite_table

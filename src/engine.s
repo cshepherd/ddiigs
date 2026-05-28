@@ -3375,8 +3375,15 @@ _init_level
  sec
  xce                   ; back to emulation mode
 
-* Load initial screen's bounds table
- lda #0                ; initial_screen = 0
+* Load initial screen's bounds table. Read initial_screen from
+* the bank-$02 level header ($02/0001) rather than hardcoding 0.
+ lda #$01
+ sta $F0
+ stz $F1
+ lda #$02
+ sta $F2              ; $F0 -> $02/0001
+ ldy #0
+ lda [$F0],y          ; A = initial_screen
  jsl load_screen_bounds_l
 * Load global ladder list (once)
  jsl load_ladders_l

@@ -50,11 +50,13 @@ BEHAV_FLANK2   EQU 7 ; same as BEHAV_FLANK but Jimmy-first targeting
 * Level header
 *==========================================================
 level_header
-num_screens    dfb 5           ; number of screens in this level
+num_screens    dfb 14          ; number of screens in this level
 initial_screen dfb 0           ; starting screen index
 player_spawn_x dfb $20         ; player starting X position
 player_spawn_y dfb $64         ; player starting Y position
-screen_map_off dw screen_map   ; offset to screen map
+manifest_off   dw level_manifest ; offset to level manifest (paths). Was
+                                  ; screen_map_off ($02/0004); the old
+                                  ; screen_map was dead and is removed.
 sprite_tbl_off dw sprite_table ; offset to sprite table
 sprite_dat_off dw $0000        ; offset to sprite pixel data (TBD)
 mask_dat_off   dw $0000        ; offset to mask data (TBD)
@@ -437,148 +439,65 @@ level_script
 
     db OP_END           ; end of level
 
-sfx_table
-  dw sfx_punch
-  dw sfx_punchlanded
-  dw sfx_finger
-  dw sfx_fall
-
-sfx_punch
-  dw 0000            ; position in sfx bank
-  dw 100             ; playback speed
-  str 'PUNCH.RAW'
-
-sfx_punchlanded
-  dw 2800
-  dw 100
-  str 'PUNCHLANDED.RAW'
-
-sfx_finger
-  dw 4800
-  dw 100
-  str 'FINGER.RAW'
-
-sfx_fall
-  dw 7800
-  dw 100
-  str 'FALL.RAW'
-
 *==========================================================
-* Screen map - one entry per screen
-* Each entry: bg_bank, bg_half, right, left, up, down
-* $FFFF = no exit in that direction
+* Level manifest - mission-specific ProDOS paths the engine
+* loads at boot. Pointed to by header manifest_off ($02/0004).
+* Layout (little-endian; *_ptr are bank-$02 addresses):
+*   +0  dw  dir_ptr      -> level directory str
+*   +2  db  bg_count
+*   +3  db  pad
+*   +4  dw  bg_ptr[0..bg_count-1]      -> bare PAK name strs
+*   +4+bg_count*2  dw  asset_ptr[0..2] -> full path strs
+*                       (0=jimmy data, 1=level NTP, 2=boss NTP)
+* The engine composes "DIR/NAME" for backgrounds and uses the
+* asset paths verbatim. Each str is length-prefixed (Merlin str).
+* The old screen_map / bg_bank / bg_half / nav-link table was
+* dead at runtime (bank = screen_index + $03; transitions come
+* from the level script) and has been removed.
 *==========================================================
-screen_map
+level_manifest
+ dw lm_dir            ; +0  level directory
+ dfb 14               ; +2  bg_count (screens 0..13 -> banks $03..$10)
+ dfb 0                ; +3  pad
+ dw lm_bg0            ; +4  background name pointers
+ dw lm_bg1
+ dw lm_bg2
+ dw lm_bg3
+ dw lm_bg4
+ dw lm_bg5
+ dw lm_bg6
+ dw lm_bg7
+ dw lm_bg8
+ dw lm_bg9
+ dw lm_bg10
+ dw lm_bg11
+ dw lm_bg12
+ dw lm_bg13
+ dw lm_jimmy          ; asset 0: Jimmy sprite data
+ dw lm_lntp           ; asset 1: level NTP music
+ dw lm_bntp           ; asset 2: boss NTP music
 
-* Screen 0 (MISSION11) - starting screen
-screen0
- dfb $03             ; bg_bank
- dfb $00             ; bg_half ($00 = low $0000, $80 = high $8000)
- dw $0001            ; right -> screen 1
- dw $FFFF            ; left -> none (start of level)
- dw $FFFF            ; up -> none
- dw $FFFF            ; down -> none
- str 'MISSION11.PAK'
-
-* Screen 1 (MISSION12)
-screen1
- dfb $03             ; bg_bank
- dfb $80             ; bg_half (high half of bank $03)
- dw $0002            ; right -> screen 2
- dw $0000            ; left -> screen 0
- dw $FFFF            ; up -> none
- dw $FFFF            ; down -> none
- str 'MISSION12.PAK'
-
-* Screen 2 (MISSION13)
-screen2
- dfb $04             ; bg_bank
- dfb $00             ; bg_half (low half of bank $04)
- dw $0003            ; right -> screen 3
- dw $0001            ; left -> screen 1
- dw $FFFF            ; up -> none
- dw $FFFF            ; down -> none
- str 'MISSION13.PAK'
-
-* Screen 3 (MISSION14)
-screen3
- dfb $04             ; bg_bank
- dfb $80             ; bg_half (high half of bank $04)
- dw $0004            ; right -> screen 4
- dw $0002            ; left -> screen 2
- dw $FFFF            ; up -> none
- dw $FFFF            ; down -> none
- str 'MISSION14.PAK'
-
-* Screen 4 (MISSION15)
-screen4
- dfb $05             ; bg_bank
- dfb $00             ; bg_half (low half of bank $05)
- dw $FFFF            ; right -> none (end of level)
- dw $0003            ; left -> screen 3
- dw $0005            ; up -> screen 5
- dw $FFFF            ; down -> none
- str 'MISSION15.PAK'
-
-* Screen 5 (MISSION16)
-screen5
- dfb $05             ; bg_bank
- dfb $80             ; bg_half (high half of bank $05)
- dw $0007            ; right -> none
- dw $0006            ; left -> none
- dw $FFFF            ; up -> none
- dw $FFFF            ; down -> none
- str 'MISSION16.PAK'
-
-* Screen 6 (MISSION17)
-screen6
- dfb $06             ; bg_bank
- dfb $00             ; bg_half (low half of bank $06)
- dw $0005            ; right -> screen 5
- dw $FFFF            ; left -> none
- dw $0009            ; up -> none
- dw $FFFF            ; down -> none
- str 'MISSION17.PAK'
-
-* Screen 7 (MISSION18)
-screen7
- dfb $06             ; bg_bank
- dfb $80             ; bg_half (high half of bank $06)
- dw $FFFF            ; right -> none
- dw $0005            ; left -> screen 5
- dw $000A            ; up -> screen 10
- dw $FFFF            ; down -> none
- str 'MISSION18.PAK'
-
-* Screen 8 (MISSION19)
-screen8
- dfb $07             ; bg_bank
- dfb $00             ; bg_half (low half of bank $07)
- dw $FFFF            ; right -> none
- dw $FFFF            ; left -> none
- dw $FFFF            ; up -> none
- dw $0005            ; down -> screen 5
- str 'MISSION19.PAK'
-
-* Screen 9 (MISSION110)
-screen9
- dfb $07             ; bg_bank
- dfb $80             ; bg_half (high half of bank $07)
- dw $0008            ; right -> screen 8
- dw $FFFF            ; left -> none
- dw $0004            ; up -> screen 4
- dw $0006            ; down -> screen 6
- str 'MISSION110.PAK'
-
-* Screen 10 (MISSION111)
-screen10
- dfb $08             ; bg_bank
- dfb $00             ; bg_half (low half of bank $08)
- dw $FFFF            ; right -> none
- dw $0009            ; left -> screen 9
- dw $FFFF            ; up -> none
- dw $0007            ; down -> none
- str 'MISSION111.PAK'
+lm_dir   str 'MISSION1'
+lm_bg0   str 'MISSION11.PAK'
+lm_bg1   str 'MISSION12.PAK'
+lm_bg2   str 'MISSION13.PAK'
+lm_bg3   str 'MISSION14.PAK'
+lm_bg4   str 'MISSION15.PAK'
+lm_bg5   str 'MISSION16.PAK'
+lm_bg6   str 'MISSION17.PAK'
+lm_bg7   str 'MISSION18.PAK'
+lm_bg8   str 'MISSION19.PAK'
+lm_bg9   str 'MISSION110.PAK'
+lm_bg10  str 'MISSION111.PAK'
+lm_bg11  str 'MISSION112.PAK'
+lm_bg12  str 'MISSION113.PAK'
+lm_bg13  str 'MISSION114.PAK'
+* Full paths (used verbatim, not dir-composed). MISSION1NTP.PAK
+* rather than MISSION1.NTP.PAK: ProDOS caps each filename
+* component at 15 chars. BOSS.NTP.PAK lives at the volume root.
+lm_jimmy str 'MISSION1/MISSION1JIMMY'
+lm_lntp  str 'MISSION1/MISSION1NTP.PAK'
+lm_bntp  str 'BOSS.NTP.PAK'
 
 *==========================================================
 * Sprite table - null-terminated list of pointers to
