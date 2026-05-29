@@ -187,6 +187,7 @@ $(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.sh
 	$(CADIUS) CREATEVOLUME $(IMGFILE) $(VOLNAME) 2880KB --quiet
 	$(CADIUS) CREATEFOLDER $(IMGFILE) /$(VOLNAME)/MISSION1 --quiet
 	$(CADIUS) CREATEFOLDER $(IMGFILE) /$(VOLNAME)/MISSION2 --quiet
+	$(CADIUS) CREATEFOLDER $(IMGFILE) /$(VOLNAME)/MISSION3 --quiet
 	$(CADIUS) CREATEFOLDER $(IMGFILE) /$(VOLNAME)/SFX --quiet
 	$(CADIUS) CREATEFOLDER $(IMGFILE) /$(VOLNAME)/GUIDE --quiet
 	cp res/PRODOS out/PRODOS\#FF0000
@@ -434,6 +435,12 @@ $(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.sh
 	python3 tools/packbytes.py pack assets/audio/MISSION1.NTP\#000000 out/MISSION1NTP.PAK\#C00000
 	$(CADIUS) ADDFILE $(IMGFILE) /$(VOLNAME)/MISSION1/ out/MISSION1NTP.PAK\#C00000 --quiet
 	rm out/MISSION1NTP.PAK\#C00000
+	python3 tools/packbytes.py pack assets/mission2.ntp out/MISSION2NTP.PAK\#C00000
+	$(CADIUS) ADDFILE $(IMGFILE) /$(VOLNAME)/MISSION2/ out/MISSION2NTP.PAK\#C00000 --quiet
+	rm out/MISSION2NTP.PAK\#C00000
+	python3 tools/packbytes.py pack assets/mission3.ntp out/MISSION3NTP.PAK\#C00000
+	$(CADIUS) ADDFILE $(IMGFILE) /$(VOLNAME)/MISSION3/ out/MISSION3NTP.PAK\#C00000 --quiet
+	rm out/MISSION3NTP.PAK\#C00000
 	python3 tools/packbytes.py pack assets/audio/BOSS.NTP\#000000 out/BOSS.NTP.PAK\#C00000
 	$(CADIUS) ADDFILE $(IMGFILE) /$(VOLNAME)/ out/BOSS.NTP.PAK\#C00000 --quiet
 	rm out/BOSS.NTP.PAK\#C00000
