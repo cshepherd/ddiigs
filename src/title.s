@@ -23,6 +23,8 @@ CTL_KEYBOARD = 0
 CTL_JOYSTICK = 1
 CTL_SNES     = 2
 
+TOTAL_MISSIONS = 2
+
 ; global variables for game engine
 game_type = $300
 ctl_type_p1 = $302
@@ -30,6 +32,8 @@ ctl_type_p2 = $304
 smax_slot = $306
 cutscene_number = $308
 myID = $30A
+starting_mission = $30C
+current_missiont = $30E
 
   lda $1100
   bne :already

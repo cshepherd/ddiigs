@@ -1,6 +1,8 @@
 ; DD II cutscene render engine
 
 cutscene_number = $308
+starting_mission = $30C
+current_missiont = $30E
 
   ORG $2000
 

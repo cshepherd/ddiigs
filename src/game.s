@@ -25,12 +25,16 @@ CTL_KEYBOARD = 0
 CTL_JOYSTICK = 1
 CTL_SNES     = 2
 
+TOTAL_MISSIONS = 2
+
 ; global variables from selection screen
 game_type = $300
 ctl_type_p1 = $302
 ctl_type_p2 = $304
 smax_slot = $306
 cutscene_number = $308
+starting_mission = $30C
+current_missiont = $30E
 
 ]IOBUF = $0C00        ; 1024-byte ProDOS I/O buffer (page-aligned),
                        ; $0C00-$0FFF. Moved from $BB00 to $0C00 to free
