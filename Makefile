@@ -176,12 +176,17 @@ out/cutscene2: src/cutscene2.s
 	cd src && merlin32 cutscene2.s
 	mv src/cutscene2 out/cutscene2
 
+out/cutscene3: src/cutscene3.s
+	mkdir -p out
+	cd src && merlin32 cutscene3.s
+	mv src/cutscene3 out/cutscene3
+
 out/ddii: src/ddii.s
 	mkdir -p out
 	cd src && merlin32 ddii.s
 	mv src/ddii out/ddii
 
-$(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.shr assets/mission13.shr assets/mission14.shr assets/mission15.shr assets/mission16.shr assets/mission17.shr assets/mission18.shr assets/mission19.shr assets/mission110.shr assets/mission111.shr assets/mission112.shr assets/mission113.shr assets/mission114.shr assets/mission21.shr assets/mission22.shr assets/mission23.shr assets/mission24.shr assets/mission25.shr assets/mission26.shr assets/mission27.shr assets/mission28.shr assets/mission29.shr assets/mission210.shr assets/mission31.shr assets/CONCEPT3\#C10000 assets/INTRO\#C10000 assets/keycontrols\#C10000 assets/joycontrols\#C10000 assets/snescontrols\#C10000 assets/moves\#C10000 out/game out/title out/mission1 out/mission12 out/mission13 out/cutscene out/cutscene1 out/cutscene2 out/ddii out/mission14 out/engine out/mission1boss out/mission1jimmy out/mission13blit_30 out/mission13blit_31 out/mission1blit_32 out/mission1jimmyblit_33 out/mission12blit_34 out/mission12blit_35 out/mission12blit_36 out/mission12blit_37 out/mission12blit_38 out/mission14blit_39 out/mission14blit_3a
+$(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.shr assets/mission13.shr assets/mission14.shr assets/mission15.shr assets/mission16.shr assets/mission17.shr assets/mission18.shr assets/mission19.shr assets/mission110.shr assets/mission111.shr assets/mission112.shr assets/mission113.shr assets/mission114.shr assets/mission21.shr assets/mission22.shr assets/mission23.shr assets/mission24.shr assets/mission25.shr assets/mission26.shr assets/mission27.shr assets/mission28.shr assets/mission29.shr assets/mission210.shr assets/mission31.shr assets/CONCEPT3\#C10000 assets/INTRO\#C10000 assets/keycontrols\#C10000 assets/joycontrols\#C10000 assets/snescontrols\#C10000 assets/moves\#C10000 out/game out/title out/mission1 out/mission12 out/mission13 out/cutscene out/cutscene1 out/cutscene2 out/cutscene3 out/ddii out/mission14 out/engine out/mission1boss out/mission1jimmy out/mission13blit_30 out/mission13blit_31 out/mission1blit_32 out/mission1jimmyblit_33 out/mission12blit_34 out/mission12blit_35 out/mission12blit_36 out/mission12blit_37 out/mission12blit_38 out/mission14blit_39 out/mission14blit_3a
 	mkdir -p out
 	rm -f $(IMGFILE)
 	$(CADIUS) CREATEVOLUME $(IMGFILE) $(VOLNAME) 2880KB --quiet
@@ -375,6 +380,9 @@ $(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.sh
 	cp out/cutscene2 out/CUTSCENE2\#040000
 	$(CADIUS) ADDFILE $(IMGFILE) /$(VOLNAME)/ out/CUTSCENE2\#040000 --quiet
 	rm out/CUTSCENE2\#040000
+	cp out/cutscene3 out/CUTSCENE3\#040000
+	$(CADIUS) ADDFILE $(IMGFILE) /$(VOLNAME)/ out/CUTSCENE3\#040000 --quiet
+	rm out/CUTSCENE3\#040000
 	cp out/title out/TITLE\#FF0000
 	$(CADIUS) ADDFILE $(IMGFILE) /$(VOLNAME)/ out/TITLE\#FF0000 --quiet
 	rm out/TITLE\#FF0000
