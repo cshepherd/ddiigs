@@ -14,7 +14,8 @@
     org $020000
 
 ; Just enough opcodes for the trivial script.
-OP_END EQU 9
+OP_WAITX EQU 2
+OP_END   EQU 9
 
 *==========================================================
 * Level header — same field layout as mission1.s.
@@ -22,8 +23,8 @@ OP_END EQU 9
 level_header
 num_screens    dfb 10          ; 10 backgrounds packed in /MISSION2/
 initial_screen dfb 0
-player_spawn_x dfb $20
-player_spawn_y dfb $64
+player_spawn_x dfb $20         ; on the platform, near its left edge
+player_spawn_y dfb $4D         ; 77 — the platform row (see bounds_scr0)
 manifest_off   dw level_manifest
 sprite_tbl_off dw sprite_table
 sprite_dat_off dw $0000
@@ -38,15 +39,125 @@ strata_idx_off dw strata_index
 s2s_off        dw screen_to_stratum
 
 *-------------------------------
-* Sprite-address table — init_level reads many entries from here
-* (IMAGE01-03, JUMP1-3, KICK1-2, PUNCH11-22, BPUNCHED, WILLIAM*,
-* ROPER*, LINDA*, BCLIMB*, …). Provide a generous zero-filled
-* block so reads succeed; the cached spr_* values are never
-* dereferenced because no NPCs spawn (empty sprite_table + the
-* level_script ends immediately).
+* Sprite-address table — Billy slots point at the PUT'd shared
+* player_sprites.s labels; NPC slots are zeroed because mission 2
+* doesn't ship NPC pixel data in bank $02. Layout mirrors
+* mission1.s's spr_addr_tbl so init_level reads the same indices.
 *-------------------------------
 spr_addr_tbl
- ds 200, 0
+spr_image01    dw IMAGE01
+spr_image02    dw IMAGE02
+spr_image03    dw IMAGE03
+spr_jump1      dw JUMP1
+spr_jump2      dw JUMP2
+spr_jump3      dw JUMP3
+spr_kick1      dw KICK1
+spr_kick2      dw KICK2
+spr_punch11    dw PUNCH11
+spr_punch12    dw PUNCH12
+spr_punch21    dw PUNCH21
+spr_punch22    dw PUNCH22
+spr_bpunched   dw BPUNCHED
+spr_william1   dw 0
+spr_wpunched   dw 0
+spr_wfall      dw 0
+spr_wfallen    dw 0
+spr_william2   dw 0
+spr_william3   dw 0
+spr_wpunch1    dw 0
+spr_wpunch2    dw 0
+spr_roper1     dw 0
+spr_roper2     dw 0
+spr_roper3     dw 0
+spr_rpunch1    dw 0
+spr_rpunch2    dw 0
+spr_rpunched   dw 0
+spr_rfall1     dw 0
+spr_rfall2     dw 0
+spr_linda1     dw 0
+spr_linda2     dw 0
+spr_linda3     dw 0
+spr_lpunch1    dw 0
+spr_lpunch2    dw 0
+spr_lpunched   dw 0
+spr_lfall1     dw 0
+spr_lfall2     dw 0
+spr_pointright dw 0       ; HUD overlay still in mission1.s — TBD share
+spr_pointup    dw 0
+spr_bclimb1    dw BCLIMB1
+spr_bclimb2    dw BCLIMB2
+spr_lclimb1    dw 0
+spr_lclimb2    dw 0
+* Compiled-sprite extras (compiled AND/ORA pipeline).
+spr_pointright_mask         dw 0
+spr_pointright_data_mirror  dw 0
+spr_pointright_mask_mirror  dw 0
+spr_pointup_mask            dw 0
+spr_pointup_data_mirror     dw 0
+spr_pointup_mask_mirror     dw 0
+spr_image01_mask            dw IMAGE01_MASK
+spr_image01_data_mirror     dw IMAGE01_DATA_MIRROR
+spr_image01_mask_mirror     dw IMAGE01_MASK_MIRROR
+spr_image02_mask            dw IMAGE02_MASK
+spr_image02_data_mirror     dw IMAGE02_DATA_MIRROR
+spr_image02_mask_mirror     dw IMAGE02_MASK_MIRROR
+spr_image03_mask            dw IMAGE03_MASK
+spr_image03_data_mirror     dw IMAGE03_DATA_MIRROR
+spr_image03_mask_mirror     dw IMAGE03_MASK_MIRROR
+spr_bclimb1_mask            dw BCLIMB1_MASK
+spr_bclimb1_data_mirror     dw BCLIMB1_DATA_MIRROR
+spr_bclimb1_mask_mirror     dw BCLIMB1_MASK_MIRROR
+spr_bclimb2_mask            dw BCLIMB2_MASK
+spr_bclimb2_data_mirror     dw BCLIMB2_DATA_MIRROR
+spr_bclimb2_mask_mirror     dw BCLIMB2_MASK_MIRROR
+spr_punch11_mask            dw PUNCH11_MASK
+spr_punch11_data_mirror     dw PUNCH11_DATA_MIRROR
+spr_punch11_mask_mirror     dw PUNCH11_MASK_MIRROR
+spr_punch12_mask            dw PUNCH12_MASK
+spr_punch12_data_mirror     dw PUNCH12_DATA_MIRROR
+spr_punch12_mask_mirror     dw PUNCH12_MASK_MIRROR
+spr_punch21_mask            dw PUNCH21_MASK
+spr_punch21_data_mirror     dw PUNCH21_DATA_MIRROR
+spr_punch21_mask_mirror     dw PUNCH21_MASK_MIRROR
+spr_punch22_mask            dw PUNCH22_MASK
+spr_punch22_data_mirror     dw PUNCH22_DATA_MIRROR
+spr_punch22_mask_mirror     dw PUNCH22_MASK_MIRROR
+spr_kick1_mask              dw KICK1_MASK
+spr_kick1_data_mirror       dw KICK1_DATA_MIRROR
+spr_kick1_mask_mirror       dw KICK1_MASK_MIRROR
+spr_kick2_mask              dw KICK2_MASK
+spr_kick2_data_mirror       dw KICK2_DATA_MIRROR
+spr_kick2_mask_mirror       dw KICK2_MASK_MIRROR
+spr_jump1_mask              dw JUMP1_MASK
+spr_jump1_data_mirror       dw JUMP1_DATA_MIRROR
+spr_jump1_mask_mirror       dw JUMP1_MASK_MIRROR
+spr_jump2_mask              dw JUMP2_MASK
+spr_jump2_data_mirror       dw JUMP2_DATA_MIRROR
+spr_jump2_mask_mirror       dw JUMP2_MASK_MIRROR
+spr_jump3_mask              dw JUMP3_MASK
+spr_jump3_data_mirror       dw JUMP3_DATA_MIRROR
+spr_jump3_mask_mirror       dw JUMP3_MASK_MIRROR
+spr_bpunched_mask           dw BPUNCHED_MASK
+spr_bpunched_data_mirror    dw BPUNCHED_DATA_MIRROR
+spr_bpunched_mask_mirror    dw BPUNCHED_MASK_MIRROR
+* William somersault / NPC-grab / held targets — no NPCs in mission 2.
+spr_wsomer1   dw 0
+spr_wsomer2   dw 0
+spr_wsomer3   dw 0
+spr_bupper1   dw BUPPER1
+spr_bupper2   dw BUPPER2
+spr_bupper3   dw BUPPER3
+spr_bgrab1    dw BGRAB1
+spr_bgrab2    dw BGRAB2
+spr_wheld1    dw 0
+spr_wheld2    dw 0
+spr_rheld1    dw 0
+spr_rheld2    dw 0
+spr_lheld1    dw 0
+spr_lheld2    dw 0
+spr_bspin1    dw BSPIN1
+spr_bspin2    dw BSPIN2
+spr_bspin3    dw BSPIN3
 
 *-------------------------------
 * Sprite table — empty (just the null terminator the engine
@@ -62,49 +173,56 @@ anim_descs
  dw 0
 
 *-------------------------------
-* Level script — just end immediately. No screens advance, no
-* NPCs spawn, no scrolling locks.
+* Level script — gate OP_END behind an impossible OP_WAITX so the
+* player can hear the music and walk back and forth on the
+* platform indefinitely. Platform extends to x=149; threshold of
+* 400 (abs_x) is unreachable until level/screen scrolling exists.
 *-------------------------------
 level_script
+ db OP_WAITX
+ dw 400
  db OP_END
 
 *-------------------------------
-* Per-screen bounds pointers — every screen maps to the same
-* permissive bounds table. Engine's load_screen_bounds_l indexes
-* this by screen number on screen transitions.
+* Per-screen bounds pointers. Only screen 0 is reachable today;
+* slots 1..9 alias to bounds_scr0 so any stray screen-change read
+* still returns a defined table. Engine's load_screen_bounds_l
+* indexes this by screen number.
 *-------------------------------
 bounds_ptrs
- dw bounds_open
- dw bounds_open
- dw bounds_open
- dw bounds_open
- dw bounds_open
- dw bounds_open
- dw bounds_open
- dw bounds_open
- dw bounds_open
- dw bounds_open
+ dw bounds_scr0
+ dw bounds_scr0
+ dw bounds_scr0
+ dw bounds_scr0
+ dw bounds_scr0
+ dw bounds_scr0
+ dw bounds_scr0
+ dw bounds_scr0
+ dw bounds_scr0
+ dw bounds_scr0
 
-bounds_open
- ds 64, 0       ; zero-filled bounds entry (no walls)
+*-------------------------------
+* Screen 0: a single navigable platform at y=77 spanning x=0..149.
+* (Billy's sprite is 19 rows tall; row 77 places his feet at y=96
+* which is where the platform art sits.) All other rows are blocked
+* (bmax=0 = no walkable x for that row). Tools/gen_strata.py reads
+* this to build stratum_ground's world-coord table; mission2_strata.s
+* is PUT at the bottom.
+*-------------------------------
+bounds_scr0
+ LUP 77
+ dfb 0,0
+ --^
+ dfb 0,149       ; row 77 — the platform
+ LUP 122
+ dfb 0,0
+ --^
 
 *-------------------------------
 * Global ladder list — none.
 *-------------------------------
 ladders
  dw $FFFF
-
-*-------------------------------
-* Strata: one wide-open stratum, all screens map to it.
-*-------------------------------
-strata_index
- dw stratum0
-
-stratum0
- ds 64, 0
-
-screen_to_stratum
- dfb 0,0,0,0,0,0,0,0,0,0
 
 *==========================================================
 * Level manifest — minimum viable: 10 backgrounds + mission2 NTP.
@@ -117,7 +235,7 @@ level_manifest
  dfb 16               ; +3  load_count (NTP + jimmy + 3 compiled-sprite
                       ;     files + 11 immediate-mode blit files,
                       ;     shared with mission 1 by path)
- dw 0                 ; +4  loading_str_ptr = 0 (no loading strings yet)
+ dw lm_loading_strs   ; +4  loading_str_ptr → table below
 * +6 bg_ptr[0..9]
  dw lm_bg0
  dw lm_bg1
@@ -194,3 +312,34 @@ lm_m12blit37 str 'MISSION1/M12BLIT37'
 lm_m12blit38 str 'MISSION1/M12BLIT38'
 lm_m14blit39 str 'MISSION1/M14BLIT39'
 lm_m14blit3a str 'MISSION1/M14BLIT3A'
+
+*----------------------------------------------------------
+* Loading-status strings (same content as mission1 for now;
+* customise per mission later). draw_loading_string reads them
+* from bank $02 — that's why they need to live here, not in
+* shared engine data.
+*----------------------------------------------------------
+lm_loading_strs
+    dw lstr1
+    dw lstr2
+    dw lstr3
+    dw lstr4
+    dw lstr5
+    dw lstr6
+lstr1   asc '    Fueling Helicopter  ',00
+lstr2   asc '     Polishing Ladders  ',00
+lstr3   asc 'Activating Street Lights ',00
+lstr4   asc '     Waking up Linda     ',00
+lstr5   asc ' Giga Smooth Scrolling   ',00
+lstr6   asc ' Now we become ZZTop Ah? ',00
+
+* Billy pixel data (IMAGE01-03, JUMP1-3, KICK1-2, PUNCH11-22,
+* BPUNCHED, BCLIMB1-2, BSPIN/UPPER/GRAB/etc. + compiled AND/ORA
+* mask & mirror variants). Shared with mission1.s via PUT — see
+* src/player_sprites.s. Labels referenced by spr_addr_tbl above.
+ PUT player_sprites
+
+* Auto-generated strata tables (strata_index, screen_to_stratum,
+* stratum_ground). Built from tools/mission2_strata.txt +
+* this file's bounds_scrN by tools/gen_strata.py.
+ PUT mission2_strata

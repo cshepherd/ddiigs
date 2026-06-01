@@ -2280,13 +2280,21 @@ do_start
   sec
   xce
   sep $20
+* Dev shortcut: if Open-Apple ($C061 bit 7) is held when "start"
+* fires, skip mission 1 and drop straight into mission 2 (cutscene
+* #2 plays as the lead-in, then game boots with current_mission=2).
+* Otherwise normal start: mission 1 from cutscene #1.
+  ldal $C061
+  bmi :start_at_m2
   lda #1
   sta cutscene_number
-* Start a fresh playthrough at mission 1. game.s's level-complete
-* path does `inc current_mission; jmp $1002` to advance, so we need
-* the counter seeded here (also covers "quit-to-title-then-replay").
-  lda #1
   sta current_mission
+  bra :start_chain
+:start_at_m2
+  lda #2
+  sta cutscene_number
+  sta current_mission
+:start_chain
   jmp $1002 ; jump to cutscene
 
 p1_keyboard_clicked

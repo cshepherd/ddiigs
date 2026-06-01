@@ -45,14 +45,17 @@ out/title: src/title.s
 src/mission1_strata.s: tools/mission1_strata.txt tools/gen_strata.py src/mission1.s
 	python3 tools/gen_strata.py --strata tools/mission1_strata.txt --mission src/mission1.s --out src/mission1_strata.s
 
-out/mission1: src/mission1.s src/mission1_strata.s
+out/mission1: src/mission1.s src/mission1_strata.s src/player_sprites.s
 	mkdir -p out
 	cd src && merlin32 mission1.s
 	mv src/mission1 out/mission1
 
 # Mission 2 level-data stub. Loaded into bank $02 at boot when
 # current_mission = 2. See src/mission2.s.
-out/mission2: src/mission2.s
+src/mission2_strata.s: tools/mission2_strata.txt tools/gen_strata.py src/mission2.s
+	python3 tools/gen_strata.py --strata tools/mission2_strata.txt --mission src/mission2.s --out src/mission2_strata.s
+
+out/mission2: src/mission2.s src/mission2_strata.s src/player_sprites.s
 	mkdir -p out
 	cd src && merlin32 mission2.s
 	mv src/mission2 out/mission2
