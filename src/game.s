@@ -34,7 +34,7 @@ ctl_type_p2 = $304
 smax_slot = $306
 cutscene_number = $308
 starting_mission = $30C
-current_missiont = $30E
+current_mission = $30E
 
 ]IOBUF = $0C00        ; 1024-byte ProDOS I/O buffer (page-aligned),
                        ; $0C00-$0FFF. Moved from $BB00 to $0C00 to free
@@ -133,122 +133,10 @@ DEBUG_HELPERS equ 0
  pla
  sta $c022
 
-* Load MISSION12 first so loading_str_tbl_addr can be set up
-* before draw_loading_string fires below. (The full
-* init_mission12 still runs later — only the +$14 header read
-* is needed early.)
- lda #<mission12_path
- sta file_open+1
- lda #>mission12_path
- sta file_open+2
- lda #$19
- sta file_bank
- stz file_dest
- stz file_dest+1
- jsr load_file
-
-* Read header.loading_str_off (+$14) → loading_str_tbl_addr.
- clc
- xce
- rep $30
- mx %00
- lda #$0014
- sta $F0
- sep $20
- lda #$19
- sta $F2
- rep $20
- ldy #0
- lda [$F0],y
- sta loading_str_tbl_addr
- sec
- xce
- sep $30
- mx %11
-
-* Show first loading status.
- ldx #0
- jsr draw_loading_string
-
-* Load MISSION1 level data to bank $02
- lda #<mission1_path
- sta file_open+1
- lda #>mission1_path
- sta file_open+2
- lda #$02
- sta file_bank
- stz file_dest
- stz file_dest+1
- jsr load_file
-
-* Load MISSION13 (compiled mission1 sprites) to bank $1B. NPCs
-* whose anim has been migrated to compiled form pull DATA/MASK
-* /DATA_MIRROR/MASK_MIRROR pointers from this bank via the
-* spr_addr_tbl in mission13's header. init_mission13 runs after
-* MISSION1's init below to populate the spr_w*_data / _mask /
-* _mirror cache vars. Bank $1A is reserved for boss SFX
-* samples (BURNGONE + BURNBACK), so compiled sprites moved
-* one bank up.
- lda #<mission13_path
- sta file_open+1
- lda #>mission13_path
- sta file_open+2
- lda #$1B
- sta file_bank
- stz file_dest
- stz file_dest+1
- jsr load_file
-
-* Load MISSION14 (compiled armed-NPC sprites: armed Linda + armed
-* Williams) to bank $1C. mission13 ($1B) overflowed when the armed
-* sprite set was added to the regular set, so the armed cohort
-* lives in its own bank. Anim flag bit 3 routes to $1C in
-* start_anim / load_frame.
- lda #<mission14_path
- sta file_open+1
- lda #>mission14_path
- sta file_open+2
- lda #$1C
- sta file_bank
- stz file_dest
- stz file_dest+1
- jsr load_file
-
-* Load every immediate-mode blit file driven by a (path, bank) table
-* (blit_load_table below). Each entry is 3 bytes: 2-byte pointer to
-* the ProDOS path string + 1-byte target bank. The loader iterates
-* the table and runs each file through load_file. Adding a new blit
-* file = add one entry, no new inline load block here. Counts: 2x
-* mission13blit ($30/$31), 1x mission1blit ($32), 1x mission1jimmyblit
-* ($33), 5x mission12blit ($34-$38). Pushes the disk past 1600 blocks
-* so the .po image must be HDD-mounted in the emulator.
- ldx #0
-:blit_load_loop
- cpx #blit_load_table_end-blit_load_table
- bcs :blit_load_done
- lda blit_load_table,x
- sta file_open+1
- lda blit_load_table+1,x
- sta file_open+2
- lda blit_load_table+2,x
- sta file_bank
- stz file_dest
- stz file_dest+1
- phx
- jsr load_file
- plx
- txa
- clc
- adc #3
- tax
- bra :blit_load_loop
-:blit_load_done
-
 * Load /DDIIGS/ENGINE (scroll/blit pipeline) to bank $1F. Game
-* code calls into it via JSL at fixed addresses ($1F/0000,
-* $1F/0004, $1F/0008). Engine.s is a separate Merlin32 source
-* that runs with K=$1F but B=$00, so it reads/writes bank-$00
-* globals via absolute mode just like in-bank code would.
+* code calls into it via JSL at fixed addresses ($1F/0000+).
+* Loaded early (was previously deeper in the boot) so subsequent
+* steps can rely on the engine's jump table.
  lda #<engine_path
  sta file_open+1
  lda #>engine_path
@@ -259,65 +147,56 @@ DEBUG_HELPERS equ 0
  stz file_dest+1
  jsr load_file
 
-* Load /DDIIGS/MISSION1BOSS (Burnov boss behavior code) to bank
-* $1E. Mission1-specific code split out of game.s, same pattern as
-* ENGINE: runs with K=$1E, B=$00, called via JSL at fixed jump-
-* table addresses ($1E/0000+). Stored at the disk root.
- lda #<mission1boss_path
- sta file_open+1
- lda #>mission1boss_path
- sta file_open+2
- lda #$1E
+* Load this mission's level-data file MISSION{N}/MISSION{N} to
+* bank $02, where N = current_mission. The bank-$02 manifest
+* drives every subsequent mission-specific load (jimmy, music,
+* compiled sprites, blits, boss code) via level_iter_loads.
+ jsr compose_level_data_path  ; level_path_buf <- 'MISSION{N}/MISSION{N}',
+                              ; p_open + file_open pointed at it
+ lda #$02
  sta file_bank
  stz file_dest
  stz file_dest+1
  jsr load_file
 
-* Load /DDIIGS/MISSION1/MISSION1JIMMY (Jimmy color-shifted sprite
-* data) to bank $1D. init_jimmy walks the sprite-address table at
-* the head of this bank and patches the spr_jimmy0X cache vars in
-* bank $00.
- ldx #0                ; manifest asset 0 = MISSION1/MISSION1JIMMY
- jsr level_copy_asset
- lda #$1D
- sta file_bank
- stz file_dest
- stz file_dest+1
- jsr load_file
+* Read manifest's loading_str_ptr (manifest +4) into
+* loading_str_tbl_addr. Zero means the mission's manifest didn't
+* supply a loading-strings table — draw_loading_string self-
+* guards and turns into a no-op.
+ jsr get_man_base
+ lda man_base
+ sta $F0
+ lda man_base+1
+ sta $F1
+ lda #$02
+ sta $F2
+ ldy #4
+ lda [$F0],y
+ sta loading_str_tbl_addr
+ iny
+ lda [$F0],y
+ sta loading_str_tbl_addr+1
 
-* MISSION12 was already loaded above (before the LOADING screen
-* status text), so loading_str_tbl_addr is set up. Skip a
-* second load here.
+* Show first loading status.
+ ldx #0
+ jsr draw_loading_string
 
-* ntpplayer code is already in bank $12 — title.s loaded it once
-* at boot and bank $12 persists across SYS file loads (each SYS
-* file lands at bank $00/$2000, leaving the music banks alone).
-
-* NTP music data is pre-packed with PackBytes. Switch
-* unpack_offset to $0000 so each .PAK lands at bank/$0000
-* (matching the layout NTPprepare expects), then restore to
-* $2000 below for the SHR background loads.
- stz unpack_offset
- stz unpack_offset+1
-
-* Load MISSION1NTP.PAK -> $17, unpack to $13/0000
- ldx #1                ; manifest asset 1 = MISSION1/MISSION1NTP.PAK
- jsr level_copy_asset
- lda #$13
- sta unpack_bank
- jsr load_and_unpack
-
-* Load BOSS.NTP.PAK -> $17, unpack to $14/0000
- ldx #2                ; manifest asset 2 = BOSS.NTP.PAK
- jsr level_copy_asset
- lda #$14
- sta unpack_bank
- jsr load_and_unpack
+* Iterate the manifest's load_entries: jimmy, NTPs, compiled-
+* sprite files, boss code, blit files — whatever this mission's
+* manifest lists. Each entry carries its own dest_bank + loader-
+* kind, so the engine doesn't need to know what files exist for
+* each mission. ntpplayer code is already in bank $12 from
+* title.s and persists across SYS swaps.
+ jsr level_iter_loads
 
  ldx #1
  jsr draw_loading_string
 
-* Load COMPLETENTP.PAK -> $17, unpack to $15/0000
+* Cutscene NTPs are mission-independent so stay hardcoded.
+ stz unpack_offset
+ stz unpack_offset+1
+
+* Load COMPLETENTP.PAK -> unpack to $15/0000
 * (level-completion fanfare; will get wired up to OP_END later).
  lda #<completentp_path
  sta p_open+1
@@ -327,7 +206,7 @@ DEBUG_HELPERS equ 0
  sta unpack_bank
  jsr load_and_unpack
 
-* Load GAMEOVERNTP.PAK -> $17, unpack to $16/0000
+* Load GAMEOVERNTP.PAK -> unpack to $16/0000
 * (game-over jingle; played by game_over before quit-to-TITLE).
  lda #<gameoverntp_path
  sta p_open+1
@@ -410,6 +289,15 @@ DEBUG_HELPERS equ 0
 * already enabled (inherited from DDII.SYSTEM), so no $C029
 * twiddle is needed here either.
  jsl init_level
+* These inits patch dispatch tables / animation pointers from
+* the compiled-sprite + blit banks loaded above. They're safe
+* for any mission whose manifest loads those files at the same
+* bank addresses (mission 1 and mission 2 currently share them
+* by path). Gate skips them for missions that DON'T load them,
+* to avoid corrupting state against empty banks.
+ lda current_mission
+ cmp #3
+ bcs :skip_m1_inits
  jsl init_mission12
  jsl init_mission13
  jsl init_mission14
@@ -419,6 +307,7 @@ DEBUG_HELPERS equ 0
  jsl init_mission1jimmyblit
  jsl init_mission12blit
  jsl init_mission14blit
+:skip_m1_inits
 
 * Apply the selection-screen game type ($300):
 *   0 (GT_1P)     → leave jimmy_active at 0 (single player)
@@ -731,9 +620,12 @@ run_script
  lda #SCRIPT_DONE
  sta script_state
 :rs_rts 
-* Run Cutscene #2 before going back to the title screen. This is the "To Be Continued"
- lda #2
- sta cutscene_number
+* Level complete. Advance current_mission so the next leg of the
+* DDII.SYSTEM chain ($1002 = load_cutscene, then $1004 = load_game)
+* picks up the mission that follows. The cutscene loader will read
+* cutscene_number to choose which CUTSCENE to play.
+ inc current_mission
+ inc cutscene_number
  jmp $1002
 
 :not_end
@@ -3913,6 +3805,14 @@ draw_pause_text
 * A, X, Y.
 *----------------------------------------------------------
 draw_loading_string
+* No-op when the level data didn't supply a loading-strings table
+* (sparse manifest, e.g. a stub mission with loading_str_ptr = 0).
+* Saves every caller from having to gate the call.
+ lda loading_str_tbl_addr
+ ora loading_str_tbl_addr+1
+ bne :ls_have_table
+ rts
+:ls_have_table
 * Compute byte offset (index * 2) in 8-bit before mode switch
 * so we don't have to mask X's high byte after rep #$30.
  txa
@@ -3922,9 +3822,11 @@ draw_loading_string
  xce                    ; native mode
  rep $30
  mx %00
-* Form bank-$19 pointer to the table entry at offset:
+* Form bank-$02 pointer to the table entry at offset:
 *   $F0/F1 = loading_str_tbl_addr + offset
-*   $F2    = $19
+*   $F2    = $02   (loading-strings table moved into the level-data
+*                   bank; loading_str_tbl_addr is filled from the
+*                   bank-$02 manifest's loading_str_ptr at boot)
  lda :ls_offset
  and #$00FF
  clc
@@ -3932,7 +3834,7 @@ draw_loading_string
  sta $F0
  sep $20
  mx %10
- lda #$19
+ lda #$02
  sta $F2
  rep $20
  mx %00
@@ -3954,8 +3856,8 @@ draw_loading_string
  ldx #$A204
  jsl $E10000
 * DrawCString — push 24-bit pointer (bank in high word, offset
-* in low word). Bank is $19, offset is :ls_str_addr.
- pea #$0019
+* in low word). Bank is $02 (level-data bank), offset is :ls_str_addr.
+ pea #$0002
  lda :ls_str_addr
  pha
  ldx #$A604
@@ -17642,11 +17544,13 @@ level_get_bgcount
 * level_path_buf and set the pathname pointers. In: X = bg index.
 level_compose_bg
  jsr get_man_base
-* bg_ptr[X] = manifest +4 + X*2; deref -> name str addr.
+* bg_ptr[X] = manifest +6 + X*2; deref -> name str addr.
+* (Layout: +0 dir_ptr, +2 bg_count, +3 load_count, +4 loading_str_ptr,
+*  +6 bg_ptrs, +6+bg_count*2 load_entries.)
  txa
  asl
  clc
- adc #4
+ adc #6
  clc
  adc man_base
  sta $F0
@@ -17697,12 +17601,39 @@ level_compose_bg
  sta level_path_buf
  jmp set_open_ptrs
 
-* level_copy_asset - copy a full asset path (verbatim) into
-* level_path_buf and set the pathname pointers. In: X = asset
-* index (0=jimmy, 1=level NTP, 2=boss NTP).
-level_copy_asset
+* compose_level_data_path - build 'MISSION{N}/MISSION{N}' into
+* level_path_buf from current_mission. Single-digit missions only
+* (mtemplate has placeholder '0' chars at the two digit positions;
+* we copy the template then patch both with ASCII current_mission).
+* Sets p_open + file_open pathname pointers.
+compose_level_data_path
+ lda #17
+ sta level_path_buf     ; ProDOS length byte
+ ldx #0
+:cldp_loop
+ lda mtemplate,x
+ sta level_path_buf+1,x
+ inx
+ cpx #17
+ bne :cldp_loop
+ lda current_mission
+ clc
+ adc #'0'               ; ASCII digit
+ sta level_path_buf+8   ; index 7 in chars = first digit position
+ sta level_path_buf+17  ; index 16 in chars = second digit position
+ jmp set_open_ptrs
+mtemplate asc 'MISSION0/MISSION0'
+
+* level_iter_loads - iterate the manifest's load_entries[] list
+* and load each file via load_file or load_and_unpack per its
+* kind. Entry layout: +0 dw path_ptr, +2 db dest_bank, +3 db kind
+* (0 = load_file; 1 = unpack@$2000; 2 = unpack@$0000). Iterates
+* load_count times (count read from manifest +3). Trashes A,X,Y
+* and $F0-$F5; preserves caller's mode (emulation, mx %11).
+level_iter_loads
  jsr get_man_base
-* asset_ptr[X] = manifest +4 + bg_count*2 + X*2.
+* Compute offset of load_entries[0] from manifest base:
+*   off = 6 + bg_count*2  (load_entries follow the bg_ptr array)
  lda man_base
  sta $F0
  lda man_base+1
@@ -17711,14 +17642,26 @@ level_copy_asset
  sta $F2
  ldy #2
  lda [$F0],y          ; bg_count
- asl                  ; bg_count*2
- sta lp_limit         ; scratch
- txa
- asl                  ; X*2
+ asl
  clc
- adc lp_limit
+ adc #6
+ sta lp_iter_off
+ ldy #3
+ lda [$F0],y          ; load_count
+ sta lp_iter_count
+ stz lp_iter_idx
+:il_loop
+ lda lp_iter_idx
+ cmp lp_iter_count
+ bcc :il_body
+ rts
+:il_body
+* Entry addr = man_base + lp_iter_off + idx*4
+ lda lp_iter_idx
+ asl
+ asl                  ; idx*4
  clc
- adc #4
+ adc lp_iter_off
  clc
  adc man_base
  sta $F0
@@ -17726,30 +17669,71 @@ level_copy_asset
  adc #0
  sta $F1
  lda #$02
- sta $F2              ; $F0 -> asset_ptr[X]
+ sta $F2              ; $F0 -> load_entry[idx]
  ldy #0
- lda [$F0],y          ; asset str addr lo
- pha
+ lda [$F0],y          ; path_ptr lo
+ sta lp_name_lo
  iny
- lda [$F0],y          ; asset str addr hi
+ lda [$F0],y          ; path_ptr hi
+ sta lp_name_hi
+ iny
+ lda [$F0],y          ; dest_bank
+ sta lp_dest_bank
+ iny
+ lda [$F0],y          ; kind
+ sta lp_kind
+* Copy path verbatim into level_path_buf (len + chars).
+ lda lp_name_lo
+ sta $F0
+ lda lp_name_hi
  sta $F1
- pla
- sta $F0              ; $F0/$F1/$F2 -> asset str (bank $02)
-* Copy verbatim: length byte + chars (indices 0..len).
+ lda #$02
+ sta $F2
  ldy #0
- lda [$F0],y
+ lda [$F0],y          ; str length
  sta lp_limit
- inc lp_limit
+ inc lp_limit         ; copy indices 0..len (len+1 bytes)
  ldy #0
-:ca_loop
+:il_cpy
  cpy lp_limit
- bcs :ca_done
+ bcs :il_cpydone
  lda [$F0],y
  sta level_path_buf,y
  iny
- bra :ca_loop
-:ca_done
- jmp set_open_ptrs
+ bra :il_cpy
+:il_cpydone
+ jsr set_open_ptrs
+* Dispatch by kind.
+ lda lp_kind
+ beq :il_kind0
+ cmp #1
+ beq :il_kind1
+* kind 2: load_and_unpack to dest_bank / $0000
+ lda lp_dest_bank
+ sta unpack_bank
+ stz unpack_offset
+ stz unpack_offset+1
+ jsr load_and_unpack
+ bra :il_next
+:il_kind1
+* kind 1: load_and_unpack to dest_bank / $2000
+ lda lp_dest_bank
+ sta unpack_bank
+ stz unpack_offset
+ lda #$20
+ sta unpack_offset+1
+ jsr load_and_unpack
+ bra :il_next
+:il_kind0
+* kind 0: load_file (raw) to dest_bank / $0000
+ lda lp_dest_bank
+ sta file_bank
+ stz file_dest
+ stz file_dest+1
+ jsr load_file
+:il_next
+ inc lp_iter_idx
+ jmp :il_loop          ; loop body too long for bra (±128)
 
 *----------------------------------------------------------
 * load_and_unpack - Load a .PAK file to bank $4F via ProDOS,
@@ -18792,7 +18776,7 @@ file_dest ds 2
 file_bank dfb $02
 
 file_open dfb 3
- da mission1_path
+ da level_path_buf    ; pathname pointer (filled per-load by helpers)
  da ]IOBUF
 file_oref dfb 0
 
@@ -18805,62 +18789,12 @@ file_rref dfb 0
 file_close dfb 1
 file_cref dfb 0
 
-mission1_path str 'MISSION1/MISSION1'
-
-mission12_path str 'MISSION1/MISSION12'
-
-mission13_path str 'MISSION1/MISSION13'
-
-mission14_path str 'MISSION1/MISSION14'
-
-m13blit30_path str 'MISSION1/MISSION13BLIT30'
-
-m13blit31_path str 'MISSION1/MISSION13BLIT31'
-
-m1blit32_path str 'MISSION1/MISSION1BLIT32'
-
-m1jblit33_path str 'MISSION1/M1JIMMYBLIT33'
-
-m12blit34_path str 'MISSION1/M12BLIT34'
-m12blit35_path str 'MISSION1/M12BLIT35'
-m12blit36_path str 'MISSION1/M12BLIT36'
-m12blit37_path str 'MISSION1/M12BLIT37'
-m12blit38_path str 'MISSION1/M12BLIT38'
-m14blit39_path str 'MISSION1/M14BLIT39'
-m14blit3a_path str 'MISSION1/M14BLIT3A'
-
-* Per-blit-file load table. Each entry is (path_ptr, dest_bank).
-* The boot's :blit_load_loop walks this and load_files each entry.
-* Order matters: the per-cohort init routines (init_mission13blit,
-* init_mission1blit, init_mission1jimmyblit, init_mission12blit)
-* expect their respective banks to be populated before they run.
-blit_load_table
- da m13blit30_path
- dfb $30
- da m13blit31_path
- dfb $31
- da m1blit32_path
- dfb $32
- da m1jblit33_path
- dfb $33
- da m12blit34_path
- dfb $34
- da m12blit35_path
- dfb $35
- da m12blit36_path
- dfb $36
- da m12blit37_path
- dfb $37
- da m12blit38_path
- dfb $38
- da m14blit39_path
- dfb $39
- da m14blit3a_path
- dfb $3A
-blit_load_table_end
-
-* MISSION1JIMMY, MISSION1NTP.PAK and BOSS.NTP.PAK moved to the
-* bank-$02 level manifest; loaded via level_copy_asset.
+* mission1 hardcoded paths (mission1_path, mission12_path,
+* mission13_path, mission14_path, blit_load_table + per-blit
+* labels, mission1boss_path) moved into the bank-$02 manifest's
+* load_entries list. Boot now drives every mission-specific
+* load from there via level_iter_loads. MISSION1JIMMY /
+* MISSION1NTP.PAK / BOSS.NTP.PAK joined the same list.
 
 completentp_path str 'COMPLETENTP.PAK'
 
@@ -18869,8 +18803,6 @@ gameoverntp_path str 'GAMEOVERNTP.PAK'
 loading_path str 'LOADING.PAK'
 
 engine_path str 'ENGINE'
-
-mission1boss_path str 'MISSION1/BOSS'
 
 *----------------------------------------------------------
 * Bank-$1F engine entry points (scroll/blit pipeline).
@@ -23073,6 +23005,12 @@ lp_limit       dfb 0   ; append_str copy limit (str len + 1)
 lp_name_lo     dfb 0   ; scratch: bank-$02 addr of a manifest str
 lp_name_hi     dfb 0
 man_base       dw 0    ; bank-$02 offset of level_manifest (from header)
+* level_iter_loads scratch
+lp_iter_off    dfb 0   ; offset of load_entries[0] from manifest base
+lp_iter_count  dfb 0   ; load_count from manifest +3
+lp_iter_idx    dfb 0   ; current iteration index
+lp_dest_bank   dfb 0   ; current entry's dest_bank
+lp_kind        dfb 0   ; current entry's kind (0/1/2)
 
 * master sprite table
 sprite_table

@@ -456,10 +456,12 @@ level_script
 * from the level script) and has been removed.
 *==========================================================
 level_manifest
- dw lm_dir            ; +0  level directory
+ dw lm_dir            ; +0  level directory pointer (for bg composition)
  dfb 14               ; +2  bg_count (screens 0..13 -> banks $03..$10)
- dfb 0                ; +3  pad
- dw lm_bg0            ; +4  background name pointers
+ dfb 18               ; +3  load_count (jimmy, 2 NTPs, m12/13/14, boss, 11 blits)
+ dw lm_loading_strs   ; +4  loading_str_ptr (bank-$02 addr; 0 = none)
+* +6  bg_ptr[0..bg_count-1] (composed as DIR/NAME, unpack to bank $03+i / $2000)
+ dw lm_bg0
  dw lm_bg1
  dw lm_bg2
  dw lm_bg3
@@ -473,9 +475,45 @@ level_manifest
  dw lm_bg11
  dw lm_bg12
  dw lm_bg13
- dw lm_jimmy          ; asset 0: Jimmy sprite data
- dw lm_lntp           ; asset 1: level NTP music
- dw lm_bntp           ; asset 2: boss NTP music
+* +6+bg_count*2 = +34: load_entries[0..load_count-1], 4 bytes each
+*   +0 dw path_ptr  +2 db dest_bank  +3 db kind
+*   kind 0 = load_file, 1 = load_and_unpack@$2000, 2 = load_and_unpack@$0000
+ dw lm_jimmy
+ dfb $1D,0            ; bank $1D, kind 0 (load_file)
+ dw lm_lntp
+ dfb $13,2            ; bank $13, kind 2 (unpack @ $0000)
+ dw lm_bntp
+ dfb $14,2            ; bank $14, kind 2
+ dw lm_m12
+ dfb $19,0            ; bank $19, kind 0
+ dw lm_m13
+ dfb $1B,0            ; bank $1B, kind 0
+ dw lm_m14
+ dfb $1C,0            ; bank $1C, kind 0
+ dw lm_boss
+ dfb $1E,0            ; bank $1E, kind 0
+ dw lm_m13blit30
+ dfb $30,0
+ dw lm_m13blit31
+ dfb $31,0
+ dw lm_m1blit32
+ dfb $32,0
+ dw lm_m1jblit33
+ dfb $33,0
+ dw lm_m12blit34
+ dfb $34,0
+ dw lm_m12blit35
+ dfb $35,0
+ dw lm_m12blit36
+ dfb $36,0
+ dw lm_m12blit37
+ dfb $37,0
+ dw lm_m12blit38
+ dfb $38,0
+ dw lm_m14blit39
+ dfb $39,0
+ dw lm_m14blit3a
+ dfb $3A,0
 
 lm_dir   str 'MISSION1'
 lm_bg0   str 'MISSION11.PAK'
@@ -495,9 +533,44 @@ lm_bg13  str 'MISSION114.PAK'
 * Full paths (used verbatim, not dir-composed). MISSION1NTP.PAK
 * rather than MISSION1.NTP.PAK: ProDOS caps each filename
 * component at 15 chars. BOSS.NTP.PAK lives at the volume root.
-lm_jimmy str 'MISSION1/MISSION1JIMMY'
-lm_lntp  str 'MISSION1/MISSION1NTP.PAK'
-lm_bntp  str 'BOSS.NTP.PAK'
+lm_jimmy    str 'MISSION1/MISSION1JIMMY'
+lm_lntp     str 'MISSION1/MISSION1NTP.PAK'
+lm_bntp     str 'BOSS.NTP.PAK'
+lm_m12      str 'MISSION1/MISSION12'
+lm_m13      str 'MISSION1/MISSION13'
+lm_m14      str 'MISSION1/MISSION14'
+lm_boss     str 'MISSION1/BOSS'
+lm_m13blit30 str 'MISSION1/MISSION13BLIT30'
+lm_m13blit31 str 'MISSION1/MISSION13BLIT31'
+lm_m1blit32  str 'MISSION1/MISSION1BLIT32'
+lm_m1jblit33 str 'MISSION1/M1JIMMYBLIT33'
+lm_m12blit34 str 'MISSION1/M12BLIT34'
+lm_m12blit35 str 'MISSION1/M12BLIT35'
+lm_m12blit36 str 'MISSION1/M12BLIT36'
+lm_m12blit37 str 'MISSION1/M12BLIT37'
+lm_m12blit38 str 'MISSION1/M12BLIT38'
+lm_m14blit39 str 'MISSION1/M14BLIT39'
+lm_m14blit3a str 'MISSION1/M14BLIT3A'
+
+*----------------------------------------------------------
+* Loading-status strings (moved from mission12.s). draw_loading_string
+* in game.s reads loading_str_tbl_addr (16-bit) with bank $02 (this
+* bank). For each X passed to draw_loading_string, it dereferences
+* lm_loading_strs+X*2 → C-string at lstrN.
+*----------------------------------------------------------
+lm_loading_strs
+    dw lstr1
+    dw lstr2
+    dw lstr3
+    dw lstr4
+    dw lstr5
+    dw lstr6
+lstr1   asc '  Polishing Burnov suit ',00
+lstr2   asc '   Reticulating Splines ',00
+lstr3   asc '  Cleaning Mean Streets ',00
+lstr4   asc '    Installing ladders   ',00
+lstr5   asc '   Saluting Les Jeunes   ',00
+lstr6   asc '    Preparing to Play    ',00
 
 *==========================================================
 * Sprite table - null-terminated list of pointers to

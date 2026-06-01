@@ -22,15 +22,15 @@ PALETTE01
 ;    HEX 0000020e7704860e0b03ff0f7e080a08
 ;    HEX 0109060e860eff0f8701020e060e0907
 ; go for broak
+  HEX 0000000000000000000000007e080000
   HEX 00000000880887013e045e0c09070907
-  HEX 00000000000000000000000000000000
 
 ; first (only) screen
 SCREEN1
     db OP_CLS           ; clear screen
     db OP_PALETTE       ; set palette
     dw PALETTE01        ; params: palette data
-    dw OP_GFX           ; render graphics
+    db OP_GFX           ; render graphics
     dw BROAK            ; params: graphics data
     dw #20              ; params: x position (in bytes not nibbles)
     dw #1               ; params: y position
@@ -58,7 +58,7 @@ CUTSCENE11_TEXT1
 CUTSCENE11_TEXT2
     dw 60 ; Xpos
     dw 40 ; Ypos
-    ASC ' IN THAT CHOPPER.',00
+    ASC '  IN THAT CHOPPER.',00
 CUTSCENE11_TEXT3
     dw 60 ; Xpos
     dw 60 ; Ypos
@@ -66,14 +66,14 @@ CUTSCENE11_TEXT3
 CUTSCENE11_TEXT4
     dw 50 ; Xpos
     dw 70 ; Ypos
-    ASC '     MAKE IT!"',00
+    ASC '         MAKE IT!"',00
 CUTSCENE11_TEXT5
     dw 10 ; Xpos
     dw 160 ; Ypos
-    ASC 'MISSION 2- AT THE HELIPORT.',00
+    ASC '   MISSION 2- AT THE HELIPORT.',00
 
-BROAK_X HEX 1600
-BROAK_Y HEX 7800
+BROAK_Y HEX 7800        ; at BROAK-4 — engine reads as height (120 rows)
+BROAK_X HEX 1600        ; at BROAK-2 — engine reads as width (22 bytes)
 BROAK
  HEX DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDB
  HEX DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDB

@@ -25,8 +25,8 @@
 level_header
  ds $12                          ; +$00..+$11 reserved
 spr_addr_off   dw spr_addr_tbl   ; +$12 offset to sprite address table
-loading_str_off dw loading_string_table ; +$14 offset to loading-string table
-                                          ;     (read by init_mission12)
+loading_str_off dw 0             ; +$14 unused — loading-strings table
+                                 ;     moved to mission1.s bank-$02 manifest
 
 *-------------------------------
 * Sprite pixel data address table (bank $06 addresses).
@@ -3052,16 +3052,5 @@ BKWALK3
  HEX 60F2220666666602F22206
  HEX 6600000666666600000006
 
-loading_string_table
-    dw lstr1
-    dw lstr2
-    dw lstr3
-    dw lstr4
-    dw lstr5
-    dw lstr6
-lstr1   asc '  Polishing Burnov suit ',00
-lstr2   asc '   Reticulating Splines ',00
-lstr3   asc '  Cleaning Mean Streets ',00
-lstr4   asc '    Installing ladders   ',00
-lstr5   asc '   Saluting Les Jeunes   ',00
-lstr6   asc '    Preparing to Play    ',00
+* loading_string_table moved to mission1.s (bank-$02 level data),
+* accessed via the manifest's loading_str_ptr field.

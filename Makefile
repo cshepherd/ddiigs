@@ -50,6 +50,13 @@ out/mission1: src/mission1.s src/mission1_strata.s
 	cd src && merlin32 mission1.s
 	mv src/mission1 out/mission1
 
+# Mission 2 level-data stub. Loaded into bank $02 at boot when
+# current_mission = 2. See src/mission2.s.
+out/mission2: src/mission2.s
+	mkdir -p out
+	cd src && merlin32 mission2.s
+	mv src/mission2 out/mission2
+
 out/mission12: src/mission12.s
 	mkdir -p out
 	cd src && merlin32 mission12.s
@@ -186,7 +193,7 @@ out/ddii: src/ddii.s
 	cd src && merlin32 ddii.s
 	mv src/ddii out/ddii
 
-$(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.shr assets/mission13.shr assets/mission14.shr assets/mission15.shr assets/mission16.shr assets/mission17.shr assets/mission18.shr assets/mission19.shr assets/mission110.shr assets/mission111.shr assets/mission112.shr assets/mission113.shr assets/mission114.shr assets/mission21.shr assets/mission22.shr assets/mission23.shr assets/mission24.shr assets/mission25.shr assets/mission26.shr assets/mission27.shr assets/mission28.shr assets/mission29.shr assets/mission210.shr assets/mission31.shr assets/CONCEPT3\#C10000 assets/INTRO\#C10000 assets/keycontrols\#C10000 assets/joycontrols\#C10000 assets/snescontrols\#C10000 assets/moves\#C10000 out/game out/title out/mission1 out/mission12 out/mission13 out/cutscene out/cutscene1 out/cutscene2 out/cutscene3 out/ddii out/mission14 out/engine out/mission1boss out/mission1jimmy out/mission13blit_30 out/mission13blit_31 out/mission1blit_32 out/mission1jimmyblit_33 out/mission12blit_34 out/mission12blit_35 out/mission12blit_36 out/mission12blit_37 out/mission12blit_38 out/mission14blit_39 out/mission14blit_3a
+$(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.shr assets/mission13.shr assets/mission14.shr assets/mission15.shr assets/mission16.shr assets/mission17.shr assets/mission18.shr assets/mission19.shr assets/mission110.shr assets/mission111.shr assets/mission112.shr assets/mission113.shr assets/mission114.shr assets/mission21.shr assets/mission22.shr assets/mission23.shr assets/mission24.shr assets/mission25.shr assets/mission26.shr assets/mission27.shr assets/mission28.shr assets/mission29.shr assets/mission210.shr assets/mission31.shr assets/CONCEPT3\#C10000 assets/INTRO\#C10000 assets/keycontrols\#C10000 assets/joycontrols\#C10000 assets/snescontrols\#C10000 assets/moves\#C10000 out/game out/title out/mission1 out/mission2 out/mission12 out/mission13 out/cutscene out/cutscene1 out/cutscene2 out/cutscene3 out/ddii out/mission14 out/engine out/mission1boss out/mission1jimmy out/mission13blit_30 out/mission13blit_31 out/mission1blit_32 out/mission1jimmyblit_33 out/mission12blit_34 out/mission12blit_35 out/mission12blit_36 out/mission12blit_37 out/mission12blit_38 out/mission14blit_39 out/mission14blit_3a
 	mkdir -p out
 	rm -f $(IMGFILE)
 	$(CADIUS) CREATEVOLUME $(IMGFILE) $(VOLNAME) 2880KB --quiet
@@ -284,6 +291,12 @@ $(IMGFILE): res/PRODOS res/BASIC.SYSTEM assets/mission11.shr assets/mission12.sh
 	cp out/mission1 out/MISSION1\#060000
 	$(CADIUS) ADDFILE $(IMGFILE) /$(VOLNAME)/MISSION1/ out/MISSION1\#060000 --quiet
 	rm out/MISSION1\#060000
+	# Mission 2 level-data stub (multi-mission boot — minimal
+	# scaffold; see src/mission2.s). Lives at /MISSION2/MISSION2
+	# alongside mission2's backgrounds + NTP.
+	cp out/mission2 out/MISSION2\#060000
+	$(CADIUS) ADDFILE $(IMGFILE) /$(VOLNAME)/MISSION2/ out/MISSION2\#060000 --quiet
+	rm out/MISSION2\#060000
 	cp out/mission12 out/MISSION12\#060000
 	$(CADIUS) ADDFILE $(IMGFILE) /$(VOLNAME)/MISSION1/ out/MISSION12\#060000 --quiet
 	rm out/MISSION12\#060000

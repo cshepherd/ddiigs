@@ -33,7 +33,7 @@ smax_slot = $306
 cutscene_number = $308
 myID = $30A
 starting_mission = $30C
-current_missiont = $30E
+current_mission = $30E
 
   lda $1100
   bne :already
@@ -2282,6 +2282,11 @@ do_start
   sep $20
   lda #1
   sta cutscene_number
+* Start a fresh playthrough at mission 1. game.s's level-complete
+* path does `inc current_mission; jmp $1002` to advance, so we need
+* the counter seeded here (also covers "quit-to-title-then-replay").
+  lda #1
+  sta current_mission
   jmp $1002 ; jump to cutscene
 
 p1_keyboard_clicked
