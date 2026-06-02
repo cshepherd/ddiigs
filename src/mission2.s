@@ -202,7 +202,7 @@ bounds_ptrs
  dw bounds_scr0
 
 *-------------------------------
-* Screen 0: a single navigable platform at y=77 spanning x=0..149.
+* Screen 0: a single navigable platform at y=77 spanning x=0..$44.
 * (Billy's sprite is 19 rows tall; row 77 places his feet at y=96
 * which is where the platform art sits.) All other rows are blocked
 * (bmax=0 = no walkable x for that row). Tools/gen_strata.py reads
@@ -213,7 +213,7 @@ bounds_scr0
  LUP 77
  dfb 0,0
  --^
- dfb 0,149       ; row 77 — the platform
+ dfb 0,$44       ; row 77 — the platform (x = 0..68)
  LUP 122
  dfb 0,0
  --^
@@ -232,9 +232,9 @@ ladders
 level_manifest
  dw lm_dir            ; +0  level directory
  dfb 10               ; +2  bg_count
- dfb 16               ; +3  load_count (NTP + jimmy + 3 compiled-sprite
-                      ;     files + 11 immediate-mode blit files,
-                      ;     shared with mission 1 by path)
+ dfb 17               ; +3  load_count (NTP + jimmy + 3 compiled-sprite
+                      ;     files + boss-code stub + 11 immediate-mode
+                      ;     blit files; all shared with mission 1)
  dw lm_loading_strs   ; +4  loading_str_ptr → table below
 * +6 bg_ptr[0..9]
  dw lm_bg0
@@ -247,10 +247,15 @@ level_manifest
  dw lm_bg7
  dw lm_bg8
  dw lm_bg9
-* +6+10*2 = +26: load_entries (16 entries × 4 bytes each)
-* The compiled-sprite, jimmy, and blit files live at /MISSION1/...
-* on disk; mission2 just references the same paths (no duplication).
-* Mission 2 does NOT load the boss code or boss NTP — no Burnov fight.
+* +6+10*2 = +26: load_entries (17 entries × 4 bytes each)
+* The compiled-sprite, jimmy, blit files, AND the boss-code stub
+* live at /MISSION1/... on disk; mission2 just references the same
+* paths (no duplication). The boss code (MISSION1/BOSS, bank $1E)
+* must be loaded because update_anims unconditionally calls
+* jsl bn_grab_end / bn_anim_ended / bn_try_grab — those routines
+* live in bank $1E and self-gate on the active anim, so they RTL
+* harmlessly when there's no Burnov on screen. Mission 2 still has
+* no boss NTP because no Burnov music ever triggers.
  dw lm_lntp
  dfb $13,2            ; bank $13, kind 2 (load_and_unpack @ $0000)
  dw lm_jimmy
@@ -261,6 +266,8 @@ level_manifest
  dfb $1B,0            ; bank $1B, kind 0
  dw lm_m14
  dfb $1C,0            ; bank $1C, kind 0
+ dw lm_boss
+ dfb $1E,0            ; bank $1E, kind 0 — boss-code stub for the hooks
  dw lm_m13blit30
  dfb $30,0
  dw lm_m13blit31
@@ -301,6 +308,7 @@ lm_jimmy     str 'MISSION1/MISSION1JIMMY'
 lm_m12       str 'MISSION1/MISSION12'
 lm_m13       str 'MISSION1/MISSION13'
 lm_m14       str 'MISSION1/MISSION14'
+lm_boss      str 'MISSION1/BOSS'
 lm_m13blit30 str 'MISSION1/MISSION13BLIT30'
 lm_m13blit31 str 'MISSION1/MISSION13BLIT31'
 lm_m1blit32  str 'MISSION1/MISSION1BLIT32'
@@ -329,7 +337,7 @@ lm_loading_strs
 lstr1   asc '    Fueling Helicopter  ',00
 lstr2   asc '     Polishing Ladders  ',00
 lstr3   asc 'Activating Street Lights ',00
-lstr4   asc '     Waking up Linda     ',00
+lstr4   asc '     Waking up Linda           ',00
 lstr5   asc ' Giga Smooth Scrolling   ',00
 lstr6   asc ' Now we become ZZTop Ah? ',00
 
