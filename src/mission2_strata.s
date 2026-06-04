@@ -104,11 +104,11 @@ stratum_ground
  dw $FFFF,$0000,$FFFF,$0000        ; y= 74  blocked
  dw $FFFF,$0000,$FFFF,$0000        ; y= 75  blocked
  dw $FFFF,$0000,$FFFF,$0000        ; y= 76  blocked
- dw $0000,$0044,$FFFF,$0000        ; y= 77  [0..68]
+ dw $FFFF,$0000,$FFFF,$0000        ; y= 77  blocked
  dw $FFFF,$0000,$FFFF,$0000        ; y= 78  blocked
  dw $FFFF,$0000,$FFFF,$0000        ; y= 79  blocked
  dw $FFFF,$0000,$FFFF,$0000        ; y= 80  blocked
- dw $FFFF,$0000,$FFFF,$0000        ; y= 81  blocked
+ dw $0000,$0044,$FFFF,$0000        ; y= 81  [0..68]
  dw $FFFF,$0000,$FFFF,$0000        ; y= 82  blocked
  dw $FFFF,$0000,$FFFF,$0000        ; y= 83  blocked
  dw $FFFF,$0000,$FFFF,$0000        ; y= 84  blocked
@@ -151,11 +151,11 @@ stratum_ground
  dw $FFFF,$0000,$FFFF,$0000        ; y=121  blocked
  dw $FFFF,$0000,$FFFF,$0000        ; y=122  blocked
  dw $FFFF,$0000,$FFFF,$0000        ; y=123  blocked
- dw $0058,$0095,$FFFF,$0000        ; y=124  [88..149]
+ dw $FFFF,$0000,$FFFF,$0000        ; y=124  blocked
  dw $FFFF,$0000,$FFFF,$0000        ; y=125  blocked
  dw $FFFF,$0000,$FFFF,$0000        ; y=126  blocked
  dw $FFFF,$0000,$FFFF,$0000        ; y=127  blocked
- dw $FFFF,$0000,$FFFF,$0000        ; y=128  blocked
+ dw $0058,$0095,$FFFF,$0000        ; y=128  [88..149]
  dw $FFFF,$0000,$FFFF,$0000        ; y=129  blocked
  dw $FFFF,$0000,$FFFF,$0000        ; y=130  blocked
  dw $FFFF,$0000,$FFFF,$0000        ; y=131  blocked

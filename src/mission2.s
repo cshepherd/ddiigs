@@ -25,7 +25,7 @@ level_header
 num_screens    dfb 10          ; 10 backgrounds packed in /MISSION2/
 initial_screen dfb 0
 player_spawn_x dfb $20         ; on the platform, near its left edge
-player_spawn_y dfb $4D         ; 77 — the platform row (see bounds_scr0)
+player_spawn_y dfb $51         ; 81 — upper-platform row (see bounds_scr0)
 manifest_off   dw level_manifest
 sprite_tbl_off dw sprite_table
 sprite_dat_off dw $0000
@@ -211,28 +211,28 @@ bounds_ptrs
 
 *-------------------------------
 * Screen 0:
-*   y=77   upper platform — walkable x=0..$44   (= 0..68)
-*   y=124  lower platform — walkable x=$58..$95 (= 88..149)
+*   y=81   upper platform — walkable x=0..$44   (= 0..68)
+*   y=128  lower platform — walkable x=$58..$95 (= 88..149)
 *
-* Billy's sprite (IMAGE01) is 40 rows tall and ypos is the sprite's
-* TOP row, so the platform's visible art line should sit at
-* ypos + frame_y. For the lower platform art at row 164, the
-* walkable bounds row is 164 - 40 = 124. Sprite at ypos=124 renders
-* rows 124..163, planting Billy's feet right on the platform line.
+* Bumped +4 vs the prior (77/124) layout to compensate for an art
+* fix that moved the visible platform lines 4 rows down. Billy's
+* sprite (IMAGE01) is 40 rows tall and ypos is sprite-top, so a
+* walkable row of N puts his feet at row N+40 (e.g. lower=128 →
+* feet at row 168, matching the art).
 *
 * All other rows are blocked (bmax=0). Tools/gen_strata.py reads
 * this to build stratum_ground's world-coord table.
 *-------------------------------
 bounds_scr0
- LUP 77
+ LUP 81
  dfb 0,0
  --^
- dfb 0,$44       ; row 77  — upper platform
+ dfb 0,$44       ; row 81  — upper platform
  LUP 46
  dfb 0,0
  --^
- dfb $58,$95     ; row 124 — lower platform (visible art at row 164)
- LUP 75
+ dfb $58,$95     ; row 128 — lower platform
+ LUP 71
  dfb 0,0
  --^
 
