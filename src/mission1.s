@@ -68,6 +68,9 @@ bounds_ptr_off dw bounds_ptrs   ; offset to per-screen bounds pointer table (leg
 ladder_ptr_off dw ladders       ; offset to global ladder list
 strata_idx_off dw strata_index  ; offset to per-stratum bounds table pointers
 s2s_off        dw screen_to_stratum ; offset to screen→stratum mapping
+level_flags    dfb $00         ; +$1C engine-mode flags (bit 0 = gravity).
+                                ; Mission 1 keeps the legacy jump-arc.
+ph_pad         dfb 0           ; +$1D pad — keeps subsequent fields word-aligned
 
 *-------------------------------
 * Sprite pixel data address table (bank $02 addresses)

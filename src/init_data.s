@@ -386,6 +386,11 @@ grab_target       dw 0    ; sprite info ptr of currently-grabbed enemy
 grab_punch_timer  dfb 0   ; > 0 while showing BGRAB1/xHELD2 sub-anim
 last_key          dfb 0   ; scratch: most recent keypress, used by
 bn_grab_active    dfb 0
+* Per-mission gate for the gravity / falling system. Set by
+* _init_level from the bank-$02 header at $02/001C (level_flags
+* bit 0). Mission 1 keeps it clear → legacy jump-arc. Mission 2+
+* sets it → player uses y_vel + per-frame gravity (apply_gravity_step).
+gravity_enabled   dfb 0
 BTN_WINDOW = 8            ; ~133 ms at 60 Hz
 btn_pending_key   dfb 0   ; 0 / 'j' / 'l'
 btn_pending_timer dfb 0
@@ -431,6 +436,8 @@ billy_save_climb_toggle       ds 1
 billy_save_punch_toggle       ds 1
 billy_save_y_off              ds 1
 billy_save_y_target           ds 1
+billy_save_airborne           ds 1
+billy_save_y_vel              ds 1
 billy_save_cur_x_off          ds 1
 billy_save_prev_x_off         ds 1
 billy_save_via_ladder         ds 1
@@ -471,6 +478,8 @@ jimmy_stash_climb_toggle      ds 1
 jimmy_stash_punch_toggle      ds 1
 jimmy_stash_y_off             ds 1
 jimmy_stash_y_target          ds 1
+jimmy_stash_airborne          ds 1
+jimmy_stash_y_vel             ds 1
 jimmy_stash_cur_x_off         ds 1
 jimmy_stash_prev_x_off        ds 1
 jimmy_stash_via_ladder        ds 1

@@ -282,6 +282,12 @@ DEBUG_HELPERS equ 0
  bra :bg_load_loop
 :bg_load_done
 
+* DIAGNOSTIC: print lstr5 ('Giga Smooth Scrolling') immediately after
+* bg load loop. If this string never appears, corruption is during
+* bg6..bg9 loading. If it appears and then crash, it's later (init_*).
+ ldx #4
+ jsr draw_loading_string
+
 * Initialize level data now that MISSION1/MISSION12 binaries
 * and the SHR backgrounds are all loaded. Moved here from the
 * top of the boot sequence so the LOADING splash can stay on
@@ -514,8 +520,13 @@ game_loop
  jsr run_script
  jsr update_npcs       ; runs behavior state machines
  jsr update_anims
- jsr update_billy_y_off ; ramp Billy's parabolic jump arc
- jsr update_jimmy_y_off ; same for Jimmy when he's active
+ jsr update_billy_y_off ; ramp Billy's parabolic jump arc (legacy)
+ jsr update_jimmy_y_off ; same for Jimmy when he's active   (legacy)
+* Gravity hook re-enabled (Billy-only, no Jimmy swap) for diagnosis.
+* apply_gravity_step has an immediate RTS at entry — the JSR/RTS
+* round-trip should be a pure no-op while we find the boot-
+* corruption source.
+ jsr apply_gravity_step
 * Invariant check: abs_x must equal world_offset + IMAGE01_XPOS.
 * Placed after every position-mutating pass (process_input walks
 * and scrolls; update_anims advances xpos per VBL for jumps).
@@ -737,6 +748,17 @@ run_script
  jsr clear_active_overlay
  ldx #SND_FINGER
  jsr sound_trigger
+* Skip the overlay entirely if the mission didn't supply a
+* spr_pointright sprite (spr_addr_tbl entry was 0). Without this
+* guard the renderer draws garbage from bank-$02/$0000 — the level
+* header bytes happen to visually resemble Billy's ladder-climb
+* sprite, so mission 2 boot shows a stray "BCLIMB" sprite at the
+* far right edge until the 180-frame timer expires.
+ lda spr_pointright
+ ora spr_pointright+1
+ bne :rt_have_pr_sprite
+ jmp :rt_overlay_skip
+:rt_have_pr_sprite
  lda #180
  sta overlay_timer
  lda #98               ; shifted 2 bytes left so 12-wide overlay
@@ -757,6 +779,7 @@ run_script
  sta overlay_mask
  lda spr_pointright_mask+1
  sta overlay_mask+1
+:rt_overlay_skip
  lda script_pc
  clc
  adc #2
@@ -9358,6 +9381,30 @@ btn_action_jump
  lda active_jump_anim
  ldx active_jump_anim+1
  jsr start_anim
+* Gravity mode: arm vertical velocity so apply_gravity_step lifts
+* Billy on the next frame. The legacy y_off ramp is dormant (gated
+* off in update_billy_y_off / set_billy_y_target). Also arm a
+* horizontal velocity from Billy's facing direction so the jump
+* carries forward without needing per-VBL keyboard repeats
+* ($C000 polling + default ADB autorepeat is too slow to drive
+* xpos across a 20+px gap during a sub-second airtime).
+ lda gravity_enabled
+ beq :baj_done
+ lda #1
+ sta billy_airborne
+ lda #JUMP_VEL_INIT
+ sta billy_y_vel
+ lda IMAGE01_MIRROR
+ bne :baj_face_left
+ lda #JUMP_X_VEL           ; facing right → x_vel = +N
+ bra :baj_set_xv
+:baj_face_left
+ lda #0                    ; facing left → x_vel = -N (2's complement)
+ sec
+ sbc #JUMP_X_VEL
+:baj_set_xv
+ sta billy_jump_x_vel
+:baj_done
  rts
 
 :has_key
@@ -10313,7 +10360,19 @@ btn_action_jump
  sec
  sbc #1                ; proposed new xpos
  jsr check_x_bounds_walk_left
- bcs :skip_left        ; bounds reject
+ bcc :lw_apply         ; bounds accepted → normal apply
+* Bounds rejected. In gravity mode, treat as walk-off-edge:
+* apply the move anyway and trigger airborne / fall.
+ lda gravity_enabled
+ beq :skip_left
+* If already airborne, don't stomp on y_vel — just allow the
+* horizontal mid-air control. Ground-to-air transition arms vel.
+ lda billy_airborne
+ bne :lw_apply
+ lda #1
+ sta billy_airborne
+ stz billy_y_vel
+:lw_apply
  dec IMAGE01_XPOS
  lda abs_x
  bne :dec_lo
@@ -10331,7 +10390,17 @@ btn_action_jump
  sec
  sbc #4                ; proposed new xpos
  jsr check_x_bounds_walk_left
- bcs :skip_left
+ bcc :lw_boost_apply
+ lda gravity_enabled
+ beq :skip_left
+* If already airborne, don't stomp on y_vel — just allow the
+* horizontal mid-air control. Ground-to-air transition arms vel.
+ lda billy_airborne
+ bne :lw_boost_apply
+ lda #1
+ sta billy_airborne
+ stz billy_y_vel
+:lw_boost_apply
  sec
  lda IMAGE01_XPOS
  sbc #4
@@ -10561,7 +10630,15 @@ btn_action_jump
  clc
  adc #1                ; proposed new xpos
  jsr check_x_bounds_walk_right
- bcs :clamp_right
+ bcc :wr_apply
+ lda gravity_enabled
+ beq :clamp_right
+ lda billy_airborne
+ bne :wr_apply
+ lda #1
+ sta billy_airborne
+ stz billy_y_vel
+:wr_apply
  inc IMAGE01_XPOS
  inc abs_x
  bne :finish_right
@@ -10576,7 +10653,15 @@ btn_action_jump
  cmp #PLAYER_MAX_X+1
  bcs :clamp_right      ; would overshoot the right edge
  jsr check_x_bounds_walk_right
- bcs :clamp_right
+ bcc :wr_boost_apply
+ lda gravity_enabled
+ beq :clamp_right
+ lda billy_airborne
+ bne :wr_boost_apply
+ lda #1
+ sta billy_airborne
+ stz billy_y_vel
+:wr_boost_apply
  lda IMAGE01_XPOS
  clc
  adc #4
@@ -11378,6 +11463,14 @@ swap_in_jimmy
  sta billy_save_y_target
  lda jimmy_stash_y_target
  sta billy_y_target
+ lda billy_airborne
+ sta billy_save_airborne
+ lda jimmy_stash_airborne
+ sta billy_airborne
+ lda billy_y_vel
+ sta billy_save_y_vel
+ lda jimmy_stash_y_vel
+ sta billy_y_vel
  lda billy_cur_x_off
  sta billy_save_cur_x_off
  lda jimmy_stash_cur_x_off
@@ -11622,6 +11715,14 @@ swap_out_jimmy
  sta jimmy_stash_y_target
  lda billy_save_y_target
  sta billy_y_target
+ lda billy_airborne
+ sta jimmy_stash_airborne
+ lda billy_save_airborne
+ sta billy_airborne
+ lda billy_y_vel
+ sta jimmy_stash_y_vel
+ lda billy_save_y_vel
+ sta billy_y_vel
  lda billy_cur_x_off
  sta jimmy_stash_cur_x_off
  lda billy_save_cur_x_off
@@ -12854,6 +12955,13 @@ JUMP_MIN_Y      = 5        ; minimum allowed peak ypos — prevents Billy
                            ; off elevated ground (rooftops, ladder tops)
 
 set_billy_y_target
+* Gravity-mode skips this entirely — the new system drives ypos
+* directly via billy_y_vel + apply_gravity_step; billy_y_target
+* and billy_y_off stay zeroed.
+ lda gravity_enabled
+ beq :sy_legacy
+ rts
+:sy_legacy
  ldy #22
  lda (info_ptr),y
  cmp #$01
@@ -12952,6 +13060,12 @@ set_billy_y_target
 * Called once per game-loop tick (after update_anims).
 *----------------------------------------------------------
 update_billy_y_off
+* Gravity-mode bypasses the legacy y_off ramp (apply_gravity_step
+* drives ypos directly via billy_y_vel).
+ lda gravity_enabled
+ beq :uby_legacy
+ rts
+:uby_legacy
 * SAFETY: billy_y_off is only ever meant to be 0 or in -20..-2
 * (= top bit set). A POSITIVE value (top bit clear AND non-zero)
 * would put descend mode into a runaway loop. Snap to 0.
@@ -13031,6 +13145,9 @@ update_billy_y_off
 * No-op while jimmy_active is 0.
 *----------------------------------------------------------
 update_jimmy_y_off
+* Gravity-mode bypass (see update_billy_y_off).
+ lda gravity_enabled
+ bne :ujy_done
  lda jimmy_active
  bne :ujy_check
  rts
@@ -13070,6 +13187,187 @@ update_jimmy_y_off
 :ujy_done
  rts
 
+*----------------------------------------------------------
+* apply_gravity_step — per-frame airborne update for the player
+* currently in the billy_* context. (For Jimmy, the game loop
+* swaps in via swap_in_jimmy and calls again.) Only runs when the
+* level has gravity_enabled = 1 (set per-mission from the bank-$02
+* header at $02/001C). Mission 1 leaves it 0 → this is a no-op
+* and the legacy update_*_y_off jump arc handles vertical motion.
+*
+* Each tick:
+*   ypos    += y_vel
+*   y_vel   += GRAVITY_PX (capped at TERMINAL_VEL)
+* then probes stratum_bounds at (xpos, new ypos). If walkable, the
+* player lands (y_vel=0, airborne=0, snap IMAGE01_YPOS to ypos).
+* Off-screen (ypos >= 200) → placeholder respawn at the level's
+* player_spawn_x/y from the bank-$02 header.
+*
+* Caller: game_loop. mx %11 (8-bit) on entry, same on exit.
+*----------------------------------------------------------
+apply_gravity_step
+ lda gravity_enabled
+ bne :ags_active
+ jmp :ags_done
+:ags_active
+ lda billy_airborne
+ bne :ags_check_vel
+ jmp :ags_done
+:ags_check_vel
+* Apply horizontal jump momentum (set by btn_action_jump from
+* Billy's facing direction). Signed: +N = right, -N = left,
+* 0 = pure vertical jump. Clamp into [1, PLAYER_MAX_X].
+* CRITICAL: read/write billy_sprite+2 directly, NOT IMAGE01_XPOS.
+* IMAGE01_XPOS is the GLOBAL last-loaded sprite's xpos — at this
+* point in game_loop, update_anims just finished iterating both
+* Billy AND Jimmy (or any later sprite), so IMAGE01_XPOS holds
+* the LAST sprite's xpos (= Jimmy's $1F at boot when Jimmy is
+* inactive but still in sprite_table). Using IMAGE01_XPOS as the
+* source clamps Billy to (jimmy_xpos + jump_x_vel) every frame.
+ lda billy_jump_x_vel
+ beq :ags_no_xvel
+ bmi :ags_xvel_left
+* Moving right: xpos += jump_x_vel. Cap at PLAYER_MAX_X.
+ clc
+ adc billy_sprite+2
+ cmp #PLAYER_MAX_X+1
+ bcc :ags_xvel_r_apply
+ lda #PLAYER_MAX_X
+:ags_xvel_r_apply
+ sta billy_sprite+2
+ sta IMAGE01_XPOS          ; keep IMAGE01_XPOS in sync for the
+                           ;   rest of apply_gravity_step (sweep
+                           ;   reads it via check_x_bounds_world).
+* abs_x += jump_x_vel
+ lda billy_jump_x_vel
+ clc
+ adc abs_x
+ sta abs_x
+ lda abs_x+1
+ adc #0
+ sta abs_x+1
+ bra :ags_no_xvel
+:ags_xvel_left
+* Moving left: xpos += jump_x_vel (negative). Clamp at 1.
+ clc
+ adc billy_sprite+2
+ bcs :ags_xvel_l_check     ; carry set = no underflow (still positive)
+ lda #1                    ; underflow → clamp to 1
+ bra :ags_xvel_l_apply
+:ags_xvel_l_check
+ cmp #1
+ bcs :ags_xvel_l_apply     ; >= 1, ok
+ lda #1
+:ags_xvel_l_apply
+ sta billy_sprite+2
+ sta IMAGE01_XPOS          ; sync as above.
+* abs_x += jump_x_vel (signed; -N as 2's complement)
+ lda billy_jump_x_vel
+ clc                       ; signed add via ADC with sign-extended hi
+ adc abs_x
+ sta abs_x
+ lda abs_x+1
+ adc #$FF                  ; sign-extend negative byte
+ sta abs_x+1
+:ags_no_xvel
+ lda billy_y_vel
+ bmi :ags_rising
+
+* === Falling (y_vel >= 0). Sweep one row at a time so a fast fall
+* can't tunnel through a thin platform between frames. ===
+ ldx billy_y_vel
+ beq :ags_apply_gravity     ; zero velocity this frame
+:ags_sweep
+ inc billy_sprite           ; ypos += 1
+ lda billy_sprite
+ sta IMAGE01_YPOS
+ phx                        ; save remaining-steps counter
+ lda billy_sprite+2         ; xpos
+ jsr check_x_bounds_world
+ plx
+ bcc :ags_land
+ dex
+ bne :ags_sweep
+ bra :ags_apply_gravity
+
+:ags_land
+ stz billy_y_vel
+ stz billy_airborne
+ stz billy_jump_x_vel
+ lda billy_sprite+30
+ ora #$03
+ sta billy_sprite+30
+ jmp :ags_done
+
+:ags_rising
+* y_vel < 0: ypos += y_vel (signed). No land check on the way up.
+* CEILING CLAMP: if the signed add would underflow ypos (= go above
+* row 0), pin ypos to 0 and zero y_vel so gravity takes over. Without
+* this, JUMP_VEL_INIT taller than (start_ypos / |steps_to_zero|)
+* lets ypos wrap to high unsigned values → instant respawn.
+ lda billy_y_vel
+ clc
+ adc billy_sprite
+ bcs :ags_rise_ok          ; no wrap (positive 8-bit result kept carry)
+ stz billy_sprite          ; wrap → clamp ypos = 0
+ stz IMAGE01_YPOS
+ stz billy_y_vel           ; stop rising, gravity will reverse on next frame
+ jmp :ags_apply_gravity
+:ags_rise_ok
+ sta billy_sprite
+ sta IMAGE01_YPOS
+
+:ags_apply_gravity
+* y_vel += GRAVITY (cap at TERMINAL_VEL when value would exceed it).
+* Cap is UNSIGNED CMP, so we must early-out for negative results
+* (rising phase: y_vel was -12..-1, +1 stays negative) — otherwise
+* $F5+1=$F6 reads as "245" > 9 and we'd clamp to +8 immediately,
+* turning the rising arc into one frame of rise then terminal-vel fall.
+ lda billy_y_vel
+ clc
+ adc #GRAVITY_PX
+ bmi :ags_no_cap         ; still rising (sign bit set) — keep as-is
+ cmp #TERMINAL_VEL+1
+ bcc :ags_no_cap
+ lda #TERMINAL_VEL
+:ags_no_cap
+ sta billy_y_vel
+
+* Off-screen check — respawn before sprite bottom (ypos + frame_y)
+* would render past SHR row 199 (i.e. into the SCB region at
+* bank-$01 $9D00+). frame_y lives at billy_sprite+12. We treat the
+* low byte only (8-bit) since rendering takes the same byte.
+ lda billy_sprite           ; ypos
+ clc
+ adc billy_sprite+12        ; + frame_y
+ bcs :ags_respawn            ; overflowed 8-bit → way off-screen
+ cmp #200
+ bcs :ags_respawn            ; ypos + frame_y >= 200 → respawn
+ jmp :ags_done
+ jmp :ags_done
+:ags_respawn
+ lda #$02
+ sta $F2
+ lda #$02
+ sta $F0
+ stz $F1
+ ldy #0
+ lda [$F0],y                ; player_spawn_x
+ sta billy_sprite+2
+ sta IMAGE01_XPOS
+ iny
+ lda [$F0],y                ; player_spawn_y
+ sta billy_sprite
+ sta IMAGE01_YPOS
+ stz billy_y_vel
+ stz billy_airborne
+ stz billy_jump_x_vel
+ lda billy_sprite+30
+ ora #$03
+ sta billy_sprite+30
+:ags_done
+ rts
+
 * Fallen-pose vertical offset. The frame 1 ("fallen") pose of
 * the enemy fall animations is much shorter than their standing
 * pose, so drawn at the same ypos the body appears up where the
@@ -13084,6 +13382,21 @@ FALL_Y_OFFSET = 24
 * at the body→helmet transition in :load_frame and reversed at
 * the helmet→body transition during recon.
 BDISS_HELMET_Y = 15
+
+* Player gravity / falling constants — consulted only when
+* gravity_enabled = 1 (set per-mission from the bank-$02 header).
+* JUMP_VEL_INIT is the launch velocity in px/frame; negative = up.
+* GRAVITY_PX is the acceleration applied each frame.
+* TERMINAL_VEL caps the downward speed so a long fall doesn't
+* tunnel through a thin platform between frames.
+JUMP_VEL_INIT = $F9       ; signed -7 — peak ~28px up (sum 1..7 = 28).
+                          ; Airtime ≈ 22 frames; with JUMP_X_VEL=1 that
+                          ; covers ~22px horizontal — just enough to clear
+                          ; the 20px gap when jumping from the upper
+                          ; platform's right edge (x=$44).
+JUMP_X_VEL    = 1         ; px/frame horizontal speed while airborne
+GRAVITY_PX    = 1
+TERMINAL_VEL  = 8
 
 * Fall trajectory (NES-style arc). Frame 0 of fall_anim plays for
 * FALL_ARC_FRAMES VBLs; on each VBL, ypos moves -2 while timer >
@@ -13160,6 +13473,20 @@ update_anims
  lda (info_ptr),y
  ldy #32
  sta (info_ptr),y     ; prev_ypos <- current ypos
+* Gravity-mode gate: for the human player (Billy = controller 1),
+* horizontal motion during anim_jump is owned by apply_gravity_step
+* via billy_jump_x_vel. Skip the legacy auto-advance so we don't
+* double-step xpos (legacy adds ±1 per pair of VBLs depending on
+* mirror; my x_vel adds ±N per VBL — they were fighting and Billy
+* was landing back on the upper platform near his start).
+ ldy #22
+ lda (info_ptr),y
+ cmp #1
+ bne :fa_legacy_xstep
+ lda gravity_enabled
+ beq :fa_legacy_xstep
+ jmp :adv_skip_x
+:fa_legacy_xstep
 * Halve the horizontal component of the jump: only step xpos on
 * every other VBL by toggling jump_x_toggle. The previous-rect
 * snapshots above still run unconditionally so erase_all unions
@@ -13476,15 +13803,23 @@ update_anims
  lda anim_ptr+1
  cmp #>anim_jjump
  bne :ad_not_jump
-* Jimmy's jump just ended.
+* Jimmy's jump just ended. landing_window opens the uppercut combo
+* regardless of gravity mode; the y_target reset is legacy-arc-only
+* (gravity_enabled keeps y_target at 0 always).
  lda #UPPERCUT_WINDOW
  sta jimmy_stash_landing_window
+ lda gravity_enabled
+ bne :ad_jjump_done
  stz jimmy_stash_y_target
+:ad_jjump_done
  bra :ad_not_jump
 :ad_is_billy_jump
  lda #UPPERCUT_WINDOW
  sta landing_window
+ lda gravity_enabled
+ bne :ad_bjump_done
  stz billy_y_target
+:ad_bjump_done
 :ad_not_jump
 * === Burnov boss-death state machine ===
 * Triggered for any sprite whose frame_bank == $19 (legacy
@@ -23209,6 +23544,16 @@ billy_y_target dfb 0       ; signed byte: target ypos offset. Set to
                            ; jump-arc anim loads OR any non-jump-arc
                            ; anim starts (e.g. punched mid-air) so
                            ; Billy descends and lands.
+* Gravity / falling state (only consulted when gravity_enabled = 1
+* — see init_data.s). billy_airborne = 1 while Billy is mid-jump or
+* mid-fall; billy_y_vel is the per-frame vertical delta applied to
+* billy_sprite.ypos by apply_gravity_step (signed; -ve rising,
+* +ve falling). billy_jump_x_vel is the per-frame horizontal delta
+* during airborne (signed; +1 = forward right, -1 = left, 0 = no
+* horizontal momentum). Set by btn_action_jump from Billy's facing.
+billy_airborne dfb 0
+billy_y_vel    dfb 0
+billy_jump_x_vel dfb 0
 
 *-------------------------------
 * Sprite state

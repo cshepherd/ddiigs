@@ -15,6 +15,7 @@
 
 ; Just enough opcodes for the trivial script.
 OP_WAITX EQU 2
+OP_RIGHT EQU 4         ; connect to right screen + enable right scroll
 OP_END   EQU 9
 
 *==========================================================
@@ -37,6 +38,8 @@ bounds_ptr_off dw bounds_ptrs
 ladder_ptr_off dw ladders
 strata_idx_off dw strata_index
 s2s_off        dw screen_to_stratum
+level_flags    dfb $01         ; +$1C — bit 0 = gravity enabled for platformer
+ph_pad         dfb 0           ; +$1D pad
 
 *-------------------------------
 * Sprite-address table — Billy slots point at the PUT'd shared
@@ -179,6 +182,11 @@ anim_descs
 * 400 (abs_x) is unreachable until level/screen scrolling exists.
 *-------------------------------
 level_script
+* OP_RIGHT,1 enables scroll into screen 1's BG art (MISSION22 at
+* bank $04). The earlier scroll crash to $00/04F8 was masked by
+* the ladder-count corruption (mission2 had `dw $FFFF` not `dfb 0`
+* — see empty_ladder_list_dfb0). With that fixed, retest scroll.
+ db OP_RIGHT,1
  db OP_WAITX
  dw 400
  db OP_END
@@ -202,27 +210,41 @@ bounds_ptrs
  dw bounds_scr0
 
 *-------------------------------
-* Screen 0: a single navigable platform at y=77 spanning x=0..$44.
-* (Billy's sprite is 19 rows tall; row 77 places his feet at y=96
-* which is where the platform art sits.) All other rows are blocked
-* (bmax=0 = no walkable x for that row). Tools/gen_strata.py reads
-* this to build stratum_ground's world-coord table; mission2_strata.s
-* is PUT at the bottom.
+* Screen 0:
+*   y=77   upper platform — walkable x=0..$44   (= 0..68)
+*   y=124  lower platform — walkable x=$58..$95 (= 88..149)
+*
+* Billy's sprite (IMAGE01) is 40 rows tall and ypos is the sprite's
+* TOP row, so the platform's visible art line should sit at
+* ypos + frame_y. For the lower platform art at row 164, the
+* walkable bounds row is 164 - 40 = 124. Sprite at ypos=124 renders
+* rows 124..163, planting Billy's feet right on the platform line.
+*
+* All other rows are blocked (bmax=0). Tools/gen_strata.py reads
+* this to build stratum_ground's world-coord table.
 *-------------------------------
 bounds_scr0
  LUP 77
  dfb 0,0
  --^
- dfb 0,$44       ; row 77 — the platform (x = 0..68)
- LUP 122
+ dfb 0,$44       ; row 77  — upper platform
+ LUP 46
+ dfb 0,0
+ --^
+ dfb $58,$95     ; row 124 — lower platform (visible art at row 164)
+ LUP 75
  dfb 0,0
  --^
 
 *-------------------------------
-* Global ladder list — none.
+* Global ladder list — none. CRITICAL: first byte is the count
+* (copy_ladders reads byte 0 as ladder_count and copies count*6
+* bytes into ladder_buf). $FFFF here = count=$FF = 255 ladders =
+* 1530 bytes copied over sync_current_screen et al → crash on
+* first scroll. Mirror mission1.s's `dfb 0` for empty lists.
 *-------------------------------
 ladders
- dw $FFFF
+ dfb 0
 
 *==========================================================
 * Level manifest — minimum viable: 10 backgrounds + mission2 NTP.

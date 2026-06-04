@@ -2650,6 +2650,19 @@ _init_level
  lda [$F0],y
  sta s2s_base          ; bank $02 address of screen_to_stratum
 
+* Read engine-mode flags from header field at $02/001C and extract
+* gravity bit (bit 0) into the bank-0 gravity_enabled gate.
+ lda #$001C
+ sta $F0
+ sep $20
+ mx %10
+ ldy #0
+ lda [$F0],y
+ and #$01
+ sta gravity_enabled
+ rep $20
+ mx %00
+
 * Read sprite address table offset from header field at $02/0012
  lda #$0012
  sta $F0

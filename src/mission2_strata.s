@@ -151,7 +151,7 @@ stratum_ground
  dw $FFFF,$0000,$FFFF,$0000        ; y=121  blocked
  dw $FFFF,$0000,$FFFF,$0000        ; y=122  blocked
  dw $FFFF,$0000,$FFFF,$0000        ; y=123  blocked
- dw $FFFF,$0000,$FFFF,$0000        ; y=124  blocked
+ dw $0058,$0095,$FFFF,$0000        ; y=124  [88..149]
  dw $FFFF,$0000,$FFFF,$0000        ; y=125  blocked
  dw $FFFF,$0000,$FFFF,$0000        ; y=126  blocked
  dw $FFFF,$0000,$FFFF,$0000        ; y=127  blocked
