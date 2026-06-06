@@ -33,6 +33,12 @@ pb_tmp                   ds 2
 up_src_start             ds 2
 up_dst_start             ds 2
 up_count                 ds 2
+* OP_DOWN scratch (mirror of up_* above). compute_down_align
+* populates these from world_offset + scroll_down_anchor.
+down_src_start           ds 2
+down_dst_start           ds 2
+down_count               ds 2
+dfill_top                ds 1
 push_ymin                dfb 0
 push_ymax                dfb 0
 

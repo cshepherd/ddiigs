@@ -65,6 +65,7 @@ info_ptr = $E2
          jml _init_mission13blit       ; $1F/0028
          jml _init_mission1blit        ; $1F/002C
          jml _init_mission1jimmyblit   ; $1F/0030
+         jml _scroll_down              ; $1F/0034
 
          PUT engine_externs.s
 
@@ -2329,6 +2330,313 @@ compute_up_align
  stz up_count
  rts
  mx %11                 ; restore default for following code
+
+*----------------------------------------------------------
+* compute_down_align — mirror of compute_up_align for OP_DOWN.
+* Same math: derive (down_src_start, down_dst_start, down_count)
+* from world_offset and scroll_down_anchor. For full-width below
+* targets (mission2's mission25+26 split, twidth=110), this
+* typically produces src_start=0, dst_start=0, count=110.
+*----------------------------------------------------------
+compute_down_align
+ mx %00
+ lda world_offset
+ sec
+ sbc scroll_down_anchor
+ sta down_src_start
+ bpl :cda_pos
+ eor #$FFFF
+ inc
+ sta down_dst_start
+ cmp #110
+ bcs :cda_no_overlap
+ stz down_src_start
+ lda #110
+ sec
+ sbc down_dst_start
+ cmp scroll_down_twidth
+ bcc :cda_neg_set
+ lda scroll_down_twidth
+:cda_neg_set
+ sta down_count
+ rts
+:cda_pos
+ cmp scroll_down_twidth
+ bcs :cda_no_overlap
+ stz down_dst_start
+ lda scroll_down_twidth
+ sec
+ sbc down_src_start
+ sta down_count
+ rts
+:cda_no_overlap
+ stz down_count
+ rts
+ mx %11
+
+*----------------------------------------------------------
+* _scroll_down — Phase 2 skeleton. Per-frame downward scroll.
+* Shifts all rows UP by 4 in bank $18, fills the BOTTOM 4 rows
+* (rows 179..182) with new content from scroll_down_bank starting
+* at row scroll_down_off, then increments scroll_down_off by 4.
+* When scroll_down_off reaches ~152, performs :snap_transition_down
+* to atomically finalize the descent and clear scroll_down_enabled.
+*
+* Phase 2 is single-bank only (scroll_down_bank); Phase 3 adds
+* split-bank composition using scroll_down_lbank/rbank with the
+* split column at scroll_down_split. Phase 4 wires :ai_do_down to
+* call jsl scroll_down each frame Billy is descending on a ladder.
+*
+* Driven for Phase 2 by :check_waitdown calling jsl scroll_down
+* (see game.s).
+*----------------------------------------------------------
+_scroll_down
+ jsl shadow_off_l
+
+ lda scroll_down_off
+ cmp #152
+ bcc :sd_normal
+ jmp :snap_transition_down
+
+:sd_normal
+ clc
+ xce                    ; native mode
+ rep $30
+ mx %00
+
+* Step 1: shift all rows UP by 4 in bank $18. Source row N maps to
+* dest row N-4 for N=4..182. Going LOW→HIGH row order (X increases
+* from 0 to $6F40) avoids the overwrite trap — each row's dest is
+* 4 rows ABOVE, so a row's source data is read before any later
+* iteration could clobber it.
+*
+* 55 word moves per row × 179 rows = 9845 moves. Same DBR/DP-safe
+* long-absolute,X pattern as the OP_UP and horizontal-scroll
+* shifts.
+ ldx #$0000             ; row 0 byte offset (target after subtracting $280)
+:dshift_row
+]src = $182280          ; row 4 = src + 4*$A0
+]dst = $182000          ; row 0
+ LUP 55
+ ldal ]src,x
+ stal ]dst,x
+]src = ]src+2
+]dst = ]dst+2
+ --^
+ txa
+ clc
+ adc #$00A0             ; advance one row
+ tax
+ cpx #$6FE0             ; 179*$A0 = $6FE0 — stop after row 178
+ bcs :dshift_done
+ jmp :dshift_row        ; inverted — LUP body (~440 bytes) is far
+                        ; outside any short-branch range.
+:dshift_done
+
+* Step 2: fill rows 179..182 from the descent target. dfill_top is
+* the source-bank row that will sit at playfield row 179 this
+* frame. Two-pass split-bank fill, world-aware:
+*   playfield_split = scroll_down_split - scroll_down_anchor
+*                     (clamped to [0..110]).
+*   Pass A (left half): playfield bytes [0..playfield_split-1] ←
+*                       lbank bytes [anchor..anchor+playfield_split-1].
+*   Pass B (right half): playfield bytes [playfield_split..109] ←
+*                        rbank bytes [max(0, anchor-split)..].
+* scroll_down_anchor was frozen at OP_DOWN fire time (= world_offset
+* at that moment), so the descent target stays stable even if the
+* horizontal camera shifts during descent.
+* If scroll_down_rbank == 0 → single-bank mode: Pass A fills the
+* entire 110-byte row from lbank starting at byte (anchor).
+ sep $20
+ mx %10
+ lda scroll_down_off
+ sta dfill_top
+ rep $20
+ mx %00
+
+* Compute base src offset = $2000 + dfill_top * $A0. Stored in utmp
+* so each pass can re-use it without recomputing.
+ lda dfill_top
+ and #$00FF
+ sta down_src_start     ; temp scratch (overwritten by next pass)
+ asl
+ asl                    ; *4
+ clc
+ adc down_src_start     ; *5
+ asl
+ asl
+ asl
+ asl
+ asl                    ; *160 = $A0
+ clc
+ adc #$2000
+ sta utmp               ; utmp = $2000 + dfill_top*$A0 (row base)
+
+* scroll_down_split = WORLD byte where lbank's content ends and
+* rbank's begins. mission25 is world-aligned (byte K = world K),
+* mission26 is content-origin-aligned (byte 0 = world byte split).
+* So the playfield seam is at byte (split - world_offset), and
+* mission26 always reads from byte 0 onward.
+ lda scroll_down_split
+ sec
+ sbc world_offset
+ bpl :sd_split_pos
+ lda #0                 ; camera past split → no left half
+ bra :sd_split_done
+:sd_split_pos
+ cmp #110
+ bcc :sd_split_done
+ lda #110               ; split past playfield right edge → all left
+:sd_split_done
+ sta down_dst_start     ; playfield_split (0..110)
+
+* Single-bank override: if rbank == 0, ignore split and fill the
+* whole 110-byte row from lbank.
+ lda scroll_down_rbank
+ and #$00FF
+ bne :sd_rbank_set
+ lda #110
+ sta down_dst_start
+:sd_rbank_set
+
+* ----- Pass A: LEFT HALF (lbank, playfield 0..split-1) -----
+ lda down_dst_start
+ sta down_count
+ beq :dfill_passA_skip
+
+ lda utmp
+ clc
+ adc world_offset       ; src = lbank/(row base + world_offset)
+ sta $F0                ;       — tracks horizontal camera each frame
+ lda #$8FE0             ; dst = $18/$8FE0 (row 179 byte 0)
+ sta $F3
+ sep $20
+ lda scroll_down_lbank
+ sta $F2
+ lda #$18
+ sta $F5
+ rep $20
+
+ ldx #4
+:dfill_rowA
+ ldy #0
+:dfill_wordA
+ lda [$F0],y
+ sta [$F3],y
+ iny
+ iny
+ cpy down_count
+ bcc :dfill_wordA
+ lda $F0
+ clc
+ adc #$00A0
+ sta $F0
+ lda $F3
+ clc
+ adc #$00A0
+ sta $F3
+ dex
+ bne :dfill_rowA
+:dfill_passA_skip
+
+* ----- Pass B: RIGHT HALF (rbank, playfield split..109) -----
+* Skipped when rbank == 0 (single-bank path) or when playfield_split
+* already == 110 (entire row taken by lbank).
+ lda scroll_down_rbank
+ and #$00FF
+ beq :dfill_passB_skip
+
+ lda #110
+ sec
+ sbc down_dst_start
+ sta down_count         ; right-half count = 110 - playfield_split
+ beq :dfill_passB_skip
+
+* rbank is content-origin-aligned: byte 0 = world byte split.
+* Pass B always reads from byte 0 onward; the dynamic playfield
+* seam (in down_dst_start) puts that byte 0 at the right column.
+ lda utmp
+ sta $F0                ; src = rbank/(row base + 0)
+ lda #$8FE0
+ clc
+ adc down_dst_start
+ sta $F3                ; dst = $18/($8FE0 + playfield_split)
+ sep $20
+ lda scroll_down_rbank
+ sta $F2
+ lda #$18
+ sta $F5
+ rep $20
+
+ ldx #4
+:dfill_rowB
+ ldy #0
+:dfill_wordB
+ lda [$F0],y
+ sta [$F3],y
+ iny
+ iny
+ cpy down_count
+ bcc :dfill_wordB
+ lda $F0
+ clc
+ adc #$00A0
+ sta $F0
+ lda $F3
+ clc
+ adc #$00A0
+ sta $F3
+ dex
+ bne :dfill_rowB
+:dfill_passB_skip
+:dfill_skip
+
+* Step 3: increment scroll_down_off by 4
+ sep $20
+ mx %10
+ lda scroll_down_off
+ clc
+ adc #4
+ sta scroll_down_off
+ rep $30
+ mx %00
+
+* Step 4: standard Phase 2 tail — fast_blit_18_01, draw sprites,
+* shadow on, push_band, RTL. Identical to scroll_up's tail.
+ jsr fast_blit_18_01
+ sec
+ xce                    ; back to emul briefly for draw_*_l JSL conventions
+ jsl draw_active_sprite_l
+ jsl draw_other_sprite_l
+ jsl draw_overlay_l
+ clc
+ xce                    ; back to native
+ rep $30
+ mx %00
+ jsl shadow_on_l
+ sep $20
+ lda #0
+ sta push_ymin
+ lda #182
+ sta push_ymax
+ rep $20
+ mx %00
+ jsr push_band
+ sec
+ xce                    ; back to emul before RTL
+ mx %11
+ rtl
+
+:snap_transition_down
+* Phase 2 stub: clear scroll_down_enabled so :check_waitdown
+* lets the script proceed. Phase 3 adds real snap logic (repaint
+* bank $18 from the new screen's banks, update current_screen,
+* etc.). For Phase 2, just bail cleanly.
+ stz scroll_down_enabled
+ stz descent_started
+ jsl shadow_on_l        ; restore shadow state (we turned it off at entry)
+ mx %11
+ rtl
 
 *----------------------------------------------------------
 * push_ymin / push_ymax - Inputs to push_band, naming the

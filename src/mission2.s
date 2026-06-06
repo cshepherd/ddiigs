@@ -16,6 +16,7 @@
 ; Just enough opcodes for the trivial script.
 OP_WAITX EQU 2
 OP_RIGHT EQU 4         ; connect to right screen + enable right scroll
+OP_DOWN  EQU 7         ; descend into below-screen content via ladder
 OP_END   EQU 9
 
 *==========================================================
@@ -183,12 +184,23 @@ anim_descs
 *-------------------------------
 level_script
 * OP_RIGHT,1 enables scroll into screen 1's BG art (MISSION22 at
-* bank $04). The earlier scroll crash to $00/04F8 was masked by
-* the ladder-count corruption (mission2 had `dw $FFFF` not `dfb 0`
-* — see empty_ladder_list_dfb0). With that fixed, retest scroll.
+* bank $04). After Billy walks/scrolls past abs_x=200 (somewhere
+* on the lower platform), OP_DOWN fires to descend into screen 4
+* (mission25). Phase 2 of the OP_DOWN implementation: single-bank
+* down scroll (no left/right split yet). When the engine routine
+* completes, scroll_down_enabled clears and the script resumes.
  db OP_RIGHT,1
  db OP_WAITX
- dw 400
+ dw 100                    ; lowered from 200 so OP_DOWN fires near
+                           ; the ladder column (world_x=107)
+ db OP_DOWN,4,5,110        ; Phase 3 split: lbank=scr4 (mission25),
+                           ; rbank=scr5 (mission26). Split = WORLD
+                           ; byte where mission25 ends and
+                           ; mission26 begins. mission25 is
+                           ; world-aligned (byte K = world K),
+                           ; mission26 byte 0 = world byte (split).
+ db OP_WAITX
+ dw 600                    ; placeholder hold after descent
  db OP_END
 
 *-------------------------------
@@ -237,14 +249,32 @@ bounds_scr0
  --^
 
 *-------------------------------
-* Global ladder list — none. CRITICAL: first byte is the count
-* (copy_ladders reads byte 0 as ladder_count and copies count*6
-* bytes into ladder_buf). $FFFF here = count=$FF = 255 ladders =
-* 1530 bytes copied over sync_current_screen et al → crash on
-* first scroll. Mirror mission1.s's `dfb 0` for empty lists.
+* Global ladder list. First byte is the count (read by copy_ladders).
+* Each entry: dw x_left, dw x_right, dfb y_top, dfb y_bottom.
+* x_left/x_right are world bytes; y_top/y_bottom are screen-local
+* rows. check_ladder requires proposed_y == y_bottom to start a
+* climb, so y_bottom = floor row (= player ypos when standing on
+* the floor the ladder rises FROM).
+*
+* TODO: ladder mechanics require scroll_up_enabled — which is only
+* set by OP_UP. Mission 2 ultimately wants OP_DOWN-style scrolling
+* into mission25/26 (left/right halves below) → mission28/29 →
+* final platform. That's a new engine feature. Until OP_DOWN lands,
+* the ladder is just a stub data entry — Billy can't actually
+* engage it because check_x_bounds_world's ladder-fallback is
+* gated on scroll_up_enabled.
 *-------------------------------
 ladders
- dfb 0
+ dfb 1                   ; one ladder
+* Ladder 1: at world_x=$6B=107 (mission22 art column). Spans rows
+* 129..199 (below the lower platform at y=128). Billy on the lower
+* platform pressing DOWN proposes y=129 = y_top → DOWN-engage gate
+* fires (see check_ladder). y_bottom=199 lets him descend through
+* the whole visible playfield; scroll_down then advances the camera
+* below that.
+ dw 104                  ; x_left  ($68)
+ dw 110                  ; x_right ($6E)
+ dfb 129,199             ; y_top=129 (= platform_row+1), y_bottom=199
 
 *==========================================================
 * Level manifest — minimum viable: 10 backgrounds + mission2 NTP.

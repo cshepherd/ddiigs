@@ -81,7 +81,12 @@ DEBUG_ERASE equ 0
 * the helpers AND every dev-only call site that references them must
 * be gated/stripped (see :do DEBUG_HELPERS gates around the V/space/g
 * key handlers, dbg_validate_stratum_bounds, dbg_golden_state etc.).
-DEBUG_HELPERS equ 0
+DEBUG_HELPERS equ 1     ; enable space-bar "X:xxxx W:wwww" readout for
+                        ; measuring ladder positions in mission2 art.
+                        ; Set back to 0 for real-hardware ship build —
+                        ; the dbg_print_* helpers call KEGS-only entry
+                        ; points ($D0FDDA / $D0FDED) that aren't on
+                        ; real IIgs ROMs.
 
 * Clear text screen so diagnostic prints start on a fresh page.
 * (80-col init via $C300 removed — debug output now streams via
@@ -582,7 +587,10 @@ run_script
 :nwn cmp #SCRIPT_WAITUP
  bne :nwu
  jmp :check_waitup
-:nwu cmp #SCRIPT_WAITXREV
+:nwu cmp #SCRIPT_WAITDOWN
+ bne :nwd
+ jmp :check_waitdown
+:nwd cmp #SCRIPT_WAITXREV
  bne :nwxr
  jmp :check_waitxrev
 :nwxr cmp #SCRIPT_WAIT
@@ -922,7 +930,7 @@ run_script
 :not_left
  cmp #OP_UP
  beq :do_op_up
- jmp :not_up_op        ; inverted — target moved out of branch range
+ jmp :chk_op_down      ; not OP_UP — test OP_DOWN next
 :do_op_up
 * DEBUG: 'UP WO=wwww AX=aaaa' — world_offset and abs_x at the
 * moment OP_UP fires. Narrow-target UP scroll compensation
@@ -1147,6 +1155,104 @@ run_script
  adc #0
  sta script_pc+1
  rts                   ; yield — wait for scroll to complete
+
+:chk_op_down
+ cmp #OP_DOWN
+ beq :do_op_down
+ jmp :not_up_op        ; not OP_DOWN either — continue dispatch chain
+:do_op_down
+* OP_DOWN: param1=target screen (= left-half bank for split target,
+*          or single bank if param2=$FF).
+*          param2=right-half screen index ($FF = single-target,
+*          full-width fill from scroll_down_bank only).
+*          param3=split point as a WORLD byte (0..255) where
+*          lbank's content ends and rbank's begins. Engine
+*          subtracts scroll_down_anchor (frozen world_offset at
+*          fire time) to get playfield-local split each frame.
+*          $FF = no split; ignored when rbank=$FF.
+* Phase 3: scroll_down_lbank + scroll_down_rbank + scroll_down_split
+* drive the two-pass fill in _scroll_down's Step 2.
+ ldy #1
+ lda [script_pc],y
+ sta scroll_down_screen
+ clc
+ adc #$03
+ sta scroll_down_bank
+ sta scroll_down_lbank       ; left half = target by default
+ ldy #2
+ lda [script_pc],y
+ cmp #$FF
+ beq :op_down_no_rhalf
+ clc
+ adc #$03
+ sta scroll_down_rbank
+ bra :op_down_rh_done
+:op_down_no_rhalf
+ stz scroll_down_rbank       ; sentinel: no split, single-bank target
+:op_down_rh_done
+* Anchor at current world_offset so compute_down_align produces
+* src_start=0, dst_start=0, count=110. With split-bank composition
+* (Phase 3), Step 2 in _scroll_down splits playfield bytes into
+* lbank (0..split-1) and rbank (split..109).
+ lda world_offset
+ sta scroll_down_anchor
+ lda world_offset+1
+ sta scroll_down_anchor+1
+* param3 = screen-local split (0..109). $FF = no split → use
+* twidth (= no rbank fill).
+ ldy #3
+ lda [script_pc],y
+ cmp #$FF
+ bne :op_down_have_split
+ lda #110                    ; no split → full lbank fill
+:op_down_have_split
+ and #$00FF
+ sta scroll_down_split
+ stz scroll_down_split+1
+ lda #110
+ sta scroll_down_twidth
+ stz scroll_down_twidth+1
+ lda #110
+ sta scroll_down_lwidth
+ stz scroll_down_lwidth+1
+ stz scroll_down_off          ; ascend from row 0
+ stz descent_started
+* Overlay: reuse POINT_UP sprite but render at bottom-center of the
+* playfield. Phase 4 may add a dedicated POINT_DOWN.
+ jsr clear_active_overlay
+ ldx #SND_FINGER
+ jsr sound_trigger
+ lda #180
+ sta overlay_timer
+ lda #51
+ sta overlay_x
+ lda #160                     ; bottom-center (OP_UP uses 0 for top)
+ sta overlay_y
+ lda #$08
+ sta overlay_w
+ lda #$18
+ sta overlay_h
+ stz overlay_mirror
+ lda spr_pointup
+ sta overlay_addr
+ lda spr_pointup+1
+ sta overlay_addr+1
+ lda spr_pointup_mask
+ sta overlay_mask
+ lda spr_pointup_mask+1
+ sta overlay_mask+1
+ lda #1
+ sta scroll_down_enabled
+ lda #SCRIPT_WAITDOWN
+ sta script_state
+ lda script_pc
+ clc
+ adc #4                       ; opcode + 3 params
+ sta script_pc
+ lda script_pc+1
+ adc #0
+ sta script_pc+1
+ rts                          ; yield — wait for descent to complete
 
 :not_up_op
  cmp #OP_SCRLOCK
@@ -1561,6 +1667,19 @@ run_script
  sta script_state
  jmp :exec_loop         ; scroll done, resume script
 :wu_rts rts
+
+:check_waitdown
+* Mirror of :check_waitup for OP_DOWN descent. Polls
+* scroll_down_enabled; resumes the script when :snap_transition_down
+* clears the flag. Phase 4: scroll_down is driven by :ai_do_down
+* (= Billy pressing down on the ladder near DOWN_SCROLL_THRESH),
+* not by this state-pumped loop.
+ lda scroll_down_enabled
+ bne :wd_rts                  ; still descending, wait
+ lda #SCRIPT_RUN
+ sta script_state
+ jmp :exec_loop
+:wd_rts rts
 
 *--- Script helper: set screen ---
 script_set_screen
@@ -2416,6 +2535,30 @@ snap_copy_rows       dw 183       ; row count for snap_transition copies
                                   ; narrow-height targets (scr11/12/13)
                                   ; set it to 113 so the bottom 70 rows
                                   ; keep their pre-scroll shifted content.
+
+* OP_DOWN parallel-to-OP_UP state vars. Same layout/naming as
+* scroll_up_*, but for downward descent (Billy on a ladder going
+* DOWN past DOWN_SCROLL_THRESH). lbank/rbank here describe the
+* split TARGET (mission2's mission25/26 left+right), not neighbors
+* of a single target like OP_UP. split_world holds the world-x byte
+* where the lbank's content ends and rbank's begins.
+scroll_down_enabled  dfb 0
+scroll_down_screen   dfb 0
+scroll_down_bank     dfb $03
+scroll_down_off      dfb 0        ; counts UP from 0 toward 152 (snap @ 152)
+scroll_down_lbank    dfb $03      ; left-half target bank
+                                  ; ($00 sentinel = no split, single bank)
+scroll_down_rbank    dfb $03      ; right-half target bank
+                                  ; ($00 sentinel = no split)
+scroll_down_anchor   dw 0         ; world byte: left edge of target content
+scroll_down_lwidth   dw 110       ; left-half content width (default full)
+scroll_down_twidth   dw 110       ; total target width (default 110)
+scroll_down_split    dw 0         ; world-x byte where lbank/rbank meet
+descent_started      dfb 0        ; first-call flag for scroll_down
+                                  ; (mirrors climb_started)
+did_descent_this_frame dfb 0      ; set after :ai_dn_on_ladder fires
+                                  ; scroll_down; prevents double-scroll
+                                  ; when both players descend the same frame
 npc_buf_next dw npc_buffers   ; next free NPC buffer address
 
 * Cheat: invincibility toggle
@@ -2534,10 +2677,15 @@ check_x_bounds_world
 * is currently active (scroll_up_enabled = 1) — same gate as the
 * legacy check_x_bounds path, to keep cross-screen ladder
 * bleedover blocked when no OP_UP is in effect.
+* Phase 4 OP_DOWN: also accept scroll_down_enabled so descending
+* ladders work without an OP_UP being active.
  sec
  xce                              ; back to emul 8-bit before check_ladder
  lda scroll_up_enabled
+ bne :cxw_ladder_ok
+ lda scroll_down_enabled
  beq :cxw_blocked
+:cxw_ladder_ok
 * Restore chk_xpos and Y for check_ladder.
  lda :cxw_world_x
  sec
@@ -3430,15 +3578,17 @@ check_ladder
  bcc :cl_next
 * On ladder per x + y range. Engage gate: if the player isn't
 * already mid-climb (is_climbing=0), require proposed_y to equal
-* y_bottom — i.e. the player must be at the ladder's floor row
-* (ypos = y_bottom + 1, proposed_y = y_bottom) to START a climb.
-* If they're already climbing (is_climbing=1), any proposed_y in
-* the y range is fine (continuation).
+* EITHER y_bottom (entering from the floor BELOW — UP climb) or
+* y_top (entering from a platform ABOVE — DOWN climb, Phase 4
+* OP_DOWN). If they're already climbing (is_climbing=1), any
+* proposed_y in the y range is fine (continuation).
  lda is_climbing
  bne :cl_on_ladder
  lda :prop_y
- cmp ladder_buf+5,x    ; y_bottom
- bne :cl_next          ; engage row mismatch — not at floor, reject
+ cmp ladder_buf+5,x    ; y_bottom (up-engage from below)
+ beq :cl_on_ladder
+ cmp ladder_buf+4,x    ; y_top (down-engage from above)
+ bne :cl_next          ; neither endpoint — reject
 :cl_on_ladder
  lda :prop_y
  clc
@@ -5022,6 +5172,11 @@ update_npcs
 SCROLL_THRESH = 80    ; player xpos at/over which walking scrolls right
 LEFT_SCROLL_THRESH = 30 ; player xpos at/under which walking scrolls left
 UP_SCROLL_THRESH = 90 ; player ypos at/under which walking-up scrolls
+DOWN_SCROLL_THRESH = 108 ; player ypos at/over which walking-down on a
+                       ; ladder scrolls (= mirror of UP_SCROLL_THRESH).
+                       ; Tuned for mission2's lower platform at y=128
+                       ; — Billy reaches DOWN_SCROLL_THRESH well after
+                       ; engaging the ladder but before hitting bottom.
 KICK_BACK_EXT = 8      ; bytes the back-kick hitbox extends opposite
                        ; Billy's facing. Hitbox is BEHIND Billy only
                        ; (NPC xpos < billy_xpos when mirror=0, NPC
@@ -8539,6 +8694,7 @@ SCRIPT_WAITNPC = 5    ; waiting for NPC count <= threshold
 SCRIPT_WAITUP  = 6    ; waiting for vertical scroll to complete
 SCRIPT_WAITXREV = 7   ; waiting for abs_x <= threshold
 SCRIPT_WAIT    = 8    ; waiting N frames (script_wait_val = countdown)
+SCRIPT_WAITDOWN = 9   ; waiting for vertical-down scroll to complete
 
 * NPC behaviors (must match mission1.s definitions)
 BEHAV_NONE     = 0
@@ -8740,6 +8896,7 @@ process_input
 * second mover's path then skips the actual scroll (but still
 * advances their own climb anim).
  stz did_climb_this_frame
+ stz did_descent_this_frame   ; Phase 4 OP_DOWN: parallel to climb
  stz billy_climb_pressed
  stz jimmy_climb_pressed
 * Snapshot last frame's kb_held → kb_held_prev so the action
@@ -10017,6 +10174,27 @@ btn_action_jump
 * throttle below.
  lda #$01
  sta is_climbing
+* Phase 4 OP_DOWN: when descending on a ladder past DOWN_SCROLL_
+* THRESH with an OP_DOWN active, fire scroll_down instead of
+* incrementing ypos. Mirror of :sn_done's scroll_up trigger.
+* Camera moves down by 4 px/frame while Billy stays anchored at
+* his current ypos visually.
+ lda scroll_down_enabled
+ beq :dn_climb_no_scroll
+ lda IMAGE01_YPOS
+ cmp #DOWN_SCROLL_THRESH
+ bcc :dn_climb_no_scroll
+ jsr advance_climb
+ jsr save_sprite
+ lda did_descent_this_frame
+ bne :dn_skip_scroll_jsl
+ jsl scroll_down
+ jsr load_sprite
+ lda #1
+ sta did_descent_this_frame
+:dn_skip_scroll_jsl
+ rts
+:dn_climb_no_scroll
  inc IMAGE01_YPOS
  inc IMAGE01_YPOS
  jsr advance_climb
@@ -18991,6 +19169,9 @@ init_mission1blit equ $1F002C
 * offsets table, and scratch locals live in
 * engine.s::_init_mission1jimmyblit.
 init_mission1jimmyblit equ $1F0030
+* scroll_down lives in engine.s ($1F/0034) — mirror of scroll_up
+* for descending into below-screen content via ladder.
+scroll_down    equ $1F0034
 
 *----------------------------------------------------------
 * init_mission12blit moved to engine.s ($1F/0020). EQU below
