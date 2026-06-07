@@ -20,6 +20,7 @@ OP_DOWN  EQU 7         ; descend into below-screen content via ladder
 OP_END   EQU 9
 OP_BOUNDS EQU 21       ; rewrite stratum bounds to one walkable row
 OP_SCROLLSRC EQU 22    ; set scroll_src_off directly (post-OP_RIGHT)
+OP_SCROLLSPLIT EQU 23  ; vertical-split right-scroll source (upper bank, split row)
 
 *==========================================================
 * Level header — same field layout as mission1.s.
@@ -209,8 +210,11 @@ level_script
 * row across the full currently-visible playfield (world bytes
 * 20..129) so he can walk left/right on the mission28/29 floor.
  db OP_BOUNDS,130
- dw 20                     ; world x_lo
- dw 129                    ; world x_hi
+ dw 20                     ; span1 x_lo
+ dw 155                    ; span1 x_hi (extended +2 bytes).
+ dw 167                    ; span2 x_lo (moved -2 bytes to narrow the
+                           ; gap; world 156..166 = 11-byte gap).
+ dw 218                    ; span2 x_hi.
                            ; y=130 = post-descent ypos. OP_BOUNDS also
                            ; sets billy_sprite ypos to this row and
                            ; clears billy_airborne.
@@ -223,6 +227,19 @@ level_script
 * = mission29 bytes 0..19). The next scroll-right should reveal
 * mission29 byte 20+ (= world byte 130+), not byte 0.
  db OP_SCROLLSRC,20
+* Vertical-split source for right-scroll: rows 0..142 fill from
+* mission26 (screen 5 = bank $08, the upper descent layer's rbank),
+* rows 143..182 from scroll_src_bank (mission29 = bank $0B, set
+* by OP_RIGHT,8 above). Both banks are world-aligned with the same
+* content origin (= world byte 110), so scroll_src_off advances
+* in lockstep for both halves.
+ db OP_SCROLLSPLIT,5,143,37
+                           ; p3=37 = mission26 row that's currently at
+                           ; playfield row 0 (= 179 - row_offset_after_
+                           ; descent = 179 - 142 = 37). Pass A starts
+                           ; reading mission26 from row 37 so the
+                           ; scrolling-in extends the existing on-
+                           ; screen art instead of restarting at row 0.
  db OP_WAITX
  dw 600                    ; placeholder hold after descent
  db OP_END

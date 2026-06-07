@@ -1509,18 +1509,13 @@ run_script
  jmp :not_bounds
 :do_bounds
 * OP_BOUNDS: rewrite stratum_bounds_tbl so only ONE y row is
-* walkable across the supplied world-x span. Params:
+* walkable across up to two world-x spans. Params:
 *   p1 = y row (0..199).
 *   p2..p3 = 16-bit world x_lo (= span1 bmin).
 *   p4..p5 = 16-bit world x_hi (= span1 bmax).
-* Use case: OP_DOWN's post-descent platform — the level script's
-* OP_DOWN ends with the ladder cleared and Billy on the descent
-* target's bottom; OP_BOUNDS pins his footing to one walkable row.
-* Total advance: 6 bytes (opcode + 5 params).
-*
-* Strategy: fill the entire stratum_bounds_tbl with the blocked
-* sentinel (span1/span2 = $FFFF, $0000), then overwrite the
-* selected row's span1 with (x_lo, x_hi). span2 stays blocked.
+*   p6..p7 = 16-bit world x_lo (= span2 bmin). $FFFF for no span2.
+*   p8..p9 = 16-bit world x_hi (= span2 bmax). $0000 for no span2.
+* Total advance: 10 bytes (opcode + 9 params).
  ldy #1
  lda [script_pc],y
  sta :ob_y
@@ -1536,6 +1531,18 @@ run_script
  ldy #5
  lda [script_pc],y
  sta :ob_xhi+1
+ ldy #6
+ lda [script_pc],y
+ sta :ob_xlo2
+ ldy #7
+ lda [script_pc],y
+ sta :ob_xlo2+1
+ ldy #8
+ lda [script_pc],y
+ sta :ob_xhi2
+ ldy #9
+ lda [script_pc],y
+ sta :ob_xhi2+1
 * Fill stratum_bounds_tbl with blocked sentinel for all 200 rows.
 * Each row: $FFFF, $0000, $FFFF, $0000 (= 8 bytes).
 * Counter must fit in 8-bit X (we're in emulation mode here), so
@@ -1587,14 +1594,18 @@ run_script
  sta stratum_bounds_tbl,x
  lda :ob_xhi            ; 16-bit word: span1 bmax
  sta stratum_bounds_tbl+2,x
+ lda :ob_xlo2           ; 16-bit word: span2 bmin
+ sta stratum_bounds_tbl+4,x
+ lda :ob_xhi2           ; 16-bit word: span2 bmax
+ sta stratum_bounds_tbl+6,x
 * Back to 8-bit emulation for the dispatch chain.
  sec
  xce
  mx %11
-* Advance script_pc by 6.
+* Advance script_pc by 10 (opcode + 9 params).
  lda script_pc
  clc
- adc #6
+ adc #10
  sta script_pc
  lda script_pc+1
  adc #0
@@ -1602,6 +1613,8 @@ run_script
  jmp :exec_loop
 :ob_y    dfb 0
 :ob_xlo  dw 0
+:ob_xlo2 dw 0
+:ob_xhi2 dw 0
 :ob_xhi  dw 0
 
 :not_bounds
@@ -1622,6 +1635,35 @@ run_script
  jmp :exec_loop
 
 :not_scrollsrc
+ cmp #OP_SCROLLSPLIT
+ bne :not_scrollsplit
+* OP_SCROLLSPLIT: configure vertical-split right-scroll.
+* p1 = upper screen index → upper bank = p1 + $03.
+* p2 = split row (0..182). 0 disables the split.
+* p3 = upper bank's source-row offset. = the row in upper_bank
+*      that corresponds to playfield row 0 at OP_SCROLLSPLIT time.
+* Advance 4 bytes (opcode + 3 params).
+ ldy #1
+ lda [script_pc],y
+ clc
+ adc #$03
+ sta scroll_src_upper_bank
+ ldy #2
+ lda [script_pc],y
+ sta scroll_src_split_row
+ ldy #3
+ lda [script_pc],y
+ sta scroll_src_upper_row_offset
+ lda script_pc
+ clc
+ adc #4
+ sta script_pc
+ lda script_pc+1
+ adc #0
+ sta script_pc+1
+ jmp :exec_loop
+
+:not_scrollsplit
 * OP_NONE — skip 1 byte and continue
  cmp #OP_NONE
  bne :unknown_op
@@ -8851,12 +8893,14 @@ OP_KILLOBJ  = 20      ; remove all non-player, non-NPC sprites (any
                       ; erase_all wipes them and removes them from
                       ; sprite_table. No params. Note: forward-only
                       ; npc_buffer slots are not reclaimed.
-OP_BOUNDS   = 21      ; rewrite stratum_bounds_tbl to a single
+OP_BOUNDS   = 21      ; rewrite stratum_bounds_tbl to a 2-span
                       ; walkable platform at one y row. Other rows
-                      ; become blocked. Params: 1b y, 2b x_world_lo,
-                      ; 2b x_world_hi (= world byte range). Used by
-                      ; OP_DOWN's post-descent platform setup (after
-                      ; the descent ends and snap clears the ladder).
+                      ; become blocked. Params:
+                      ;   1b y, 2b span1_x_lo, 2b span1_x_hi,
+                      ;   2b span2_x_lo, 2b span2_x_hi.
+                      ; Pass span2 = $FFFF, $0000 (blocked sentinel)
+                      ; for single-span platforms. Used by OP_DOWN's
+                      ; post-descent platform setup.
 OP_SCROLLSRC = 22     ; Set scroll_src_off directly. Param: 1 byte.
                       ; Use AFTER OP_RIGHT (which resets src_off to
                       ; 0) to pin the source bank's read position
@@ -8866,6 +8910,20 @@ OP_SCROLLSRC = 22     ; Set scroll_src_off directly. Param: 1 byte.
                       ; first right-scroll reveals new content
                       ; instead of re-showing the visible right
                       ; portion of the split.
+OP_SCROLLSPLIT = 23   ; Set up a vertical-split right-scroll source.
+                      ; Params:
+                      ;   p1 = upper bank's screen index (+$03 →
+                      ;        bank). Rows 0..split_row-1 fill from
+                      ;        this bank.
+                      ;   p2 = split row (0..182). Rows from split_row
+                      ;        onward fill from scroll_src_bank.
+                      ;   p3 = upper bank's source-row offset (= the
+                      ;        upper-bank row that's currently at
+                      ;        playfield row 0). Pass A's read starts
+                      ;        at this row instead of row 0.
+                      ; Set split_row=0 to disable the split (= revert
+                      ; to single-bank fill from scroll_src_bank for
+                      ; all 183 rows).
 
 * Script interpreter state
 SCRIPT_RUN  = 0       ; executing opcodes
@@ -23933,6 +23991,25 @@ scroll_lsrc_bank dfb $03   ; current source bank for left scroll (= $03 + curren
 scroll_lsrc_off dfb 0      ; offset (counts down from 109 toward 0)
 sprite_bank da $0002       ; bank where sprite pixel data lives (16-bit for REP $20 load)
 scroll_src_off HEX 0000   ; byte offset within source bank scanline
+* Vertical-split right-scroll source. When scroll_src_split_row != 0,
+* _scroll_right's fill_normal pulls rows [0..split_row-1] from
+* scroll_src_upper_bank instead of scroll_src_bank. Rows
+* [split_row..182] continue to use scroll_src_bank (= the "lower"
+* bank). Same scroll_src_off for both banks — they're assumed
+* world-aligned with the same content origin (e.g., mission2's
+* post-descent state where mission26 covers the upper half of the
+* playfield and mission29 covers the lower, both anchored at
+* world byte split=110).
+scroll_src_upper_bank  dfb 0
+scroll_src_split_row   dfb 0
+* Upper bank's source-row offset for the vertical-split fill. The
+* upper portion of the playfield (rows 0..split_row-1) at the
+* moment OP_SCROLLSPLIT runs shows source rows
+* [upper_row_offset..upper_row_offset+split_row-1] of the upper
+* bank. Fill_normal reads from that range so the scroll-in
+* extends the existing on-screen art instead of restarting at
+* the bank's row 0.
+scroll_src_upper_row_offset dfb 0
 MASKHI HEX 60
 MASKLO HEX 06
 MASK HEX 66

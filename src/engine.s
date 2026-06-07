@@ -183,22 +183,139 @@ _scroll_right
 :fsg_dispatch
  jmp :fill_split_general
 :fill_normal
+* On entry: M=8 (from earlier sep $20 before the dispatch branch).
+* We want M=16 throughout this routine except for the 1-byte bank
+* stores into $F2/$F5. Each mode transition needs both the CPU
+* (sep/rep) AND Merlin's tracker (mx %xx) updated — Merlin doesn't
+* follow sep/rep on its own, and a missing mx leaves operand sizes
+* out of sync with runtime M, producing 16-bit immediates the CPU
+* truncates to 8-bit + executes the high byte as the next opcode
+* (= $00 → BRK landing in the middle of the fill code).
+ rep $20
+ mx %00
+ lda #$206A            ; dst = $18/(2000 + 106) = row 0 byte 106
+ sta $F3
+ sep $20
+ mx %10
+ lda #$18
+ sta $F5
+* Vertical-split decision: split_row != 0 → upper bank for the
+* first split_row rows, then lower bank for the rest. split_row==0
+* keeps the legacy single-bank behavior (= scroll_src_bank for all
+* 183 rows).
+ lda scroll_src_split_row
+ bne :fn_split_jmp
+ jmp :fn_no_split
+:fn_split_jmp
+* Pass A setup. Switch to M=16 for the 16-bit arithmetic.
+ rep $20
+ mx %00
+ lda scroll_src_upper_row_offset
+ and #$00FF
+ sta utmp
+ asl
+ asl                          ; *4
+ clc
+ adc utmp                     ; *5
+ asl
+ asl
+ asl
+ asl
+ asl                          ; *160 = $A0
+ clc
+ adc #$2000
+ sta utmp                     ; utmp = $2000 + row_offset*$A0
+ lda scroll_src_off
+ and #$00FF
+ clc
+ adc utmp
+ sta $F0                      ; F0 = $2000 + row_offset*$A0 + scroll_src_off
+ sep $20
+ mx %10
+ lda scroll_src_upper_bank
+ sta $F2
+ rep $20
+ mx %00
+* Pass A: rows 0..(split_row-1) from upper bank.
+ ldy #0
+ lda scroll_src_split_row
+ and #$00FF
+ tax
+:fn_upper
+ lda [$F0],y
+ sta [$F3],y
+ iny
+ iny
+ lda [$F0],y
+ sta [$F3],y
+ ldy #0
+ lda $F0
+ clc
+ adc #$00A0
+ sta $F0
+ lda $F3
+ clc
+ adc #$00A0
+ sta $F3
+ dex
+ bne :fn_upper
+* Pass B setup. $F3 has advanced to playfield row split_row byte 106;
+* $F0 needs to be reset to lower_bank's row 0 byte scroll_src_off.
+ lda scroll_src_off
+ and #$00FF
+ clc
+ adc #$2000
+ sta $F0
+ sep $20
+ mx %10
+ lda scroll_src_bank
+ sta $F2
+ rep $20
+ mx %00
+* Pass B: rows split_row..182 from lower bank. count = 183 - split_row.
+ lda #183
+ sec
+ sbc scroll_src_split_row
+ and #$00FF
+ tax
+ beq :fn_split_done
+:fn_lower
+ lda [$F0],y
+ sta [$F3],y
+ iny
+ iny
+ lda [$F0],y
+ sta [$F3],y
+ ldy #0
+ lda $F0
+ clc
+ adc #$00A0
+ sta $F0
+ lda $F3
+ clc
+ adc #$00A0
+ sta $F3
+ dex
+ bne :fn_lower
+:fn_split_done
+ bra :fn_fill_done
+
+:fn_no_split
+* Legacy single-bank fill. On entry M=8 (from the dispatch branch's
+* sep). Switch to M=16 for the arithmetic and the indirect loop.
  rep $20
  mx %00
  lda scroll_src_off
  and #$00FF
  clc
  adc #$2000
- sta $F0               ; src = scroll_src_bank/(2000 + scroll_src_off)
- lda #$206A            ; dst = $18/(2000 + 106)
- sta $F3
+ sta $F0
  sep $20
+ mx %10
  lda scroll_src_bank
  sta $F2
- lda #$18
- sta $F5
  rep $20
-
+ mx %00
  ldy #0
  ldx #183
 :fill_4
@@ -219,6 +336,7 @@ _scroll_right
  sta $F3
  dex
  bne :fill_4
+:fn_fill_done
 
 * Advance scroll source offset by 4 bytes
  sep $20
