@@ -1161,17 +1161,24 @@ run_script
  beq :do_op_down
  jmp :not_up_op        ; not OP_DOWN either — continue dispatch chain
 :do_op_down
-* OP_DOWN: param1=target screen (= left-half bank for split target,
-*          or single bank if param2=$FF).
-*          param2=right-half screen index ($FF = single-target,
-*          full-width fill from scroll_down_bank only).
-*          param3=split point as a WORLD byte (0..255) where
-*          lbank's content ends and rbank's begins. Engine
-*          subtracts scroll_down_anchor (frozen world_offset at
-*          fire time) to get playfield-local split each frame.
-*          $FF = no split; ignored when rbank=$FF.
-* Phase 3: scroll_down_lbank + scroll_down_rbank + scroll_down_split
-* drive the two-pass fill in _scroll_down's Step 2.
+* OP_DOWN: 7 params.
+*   p1 = left-half target screen index.
+*   p2 = right-half target screen index ($FF = single-bank, no split).
+*   p3 = split point as a WORLD byte (0..255). mission25/26 layout:
+*        lbank is world-aligned (byte K = world K), rbank's byte 0
+*        = world byte (split). Playfield seam = split - world_offset.
+*   p4 = chain layer's lbank screen ($FF = no chain → clear enabled
+*        at snap; non-$FF = swap to (p4+3, p5+3) at snap and reset
+*        off=0 to keep descending into the next layer).
+*   p5 = chain layer's rbank screen ($FF if p4=$FF).
+*   p6 = snap_at for THIS layer (= floor(art_rows/4)*4, e.g. 180
+*        for a 183-row art bank). Caps the scroll so we don't keep
+*        filling past the art's last meaningful row into the SHR's
+*        SCB/padding tail.
+*   p7 = snap_at for chain layer (ignored if p4=$FF). Copied into
+*        scroll_down_snap_at at chain time alongside the lbank/rbank
+*        swap.
+* Advance script_pc by 8 (opcode + 7 params).
  ldy #1
  lda [script_pc],y
  sta scroll_down_screen
@@ -1198,8 +1205,7 @@ run_script
  sta scroll_down_anchor
  lda world_offset+1
  sta scroll_down_anchor+1
-* param3 = screen-local split (0..109). $FF = no split → use
-* twidth (= no rbank fill).
+* param3 = world byte split (0..255). $FF = no split → 110 = full lbank fill.
  ldy #3
  lda [script_pc],y
  cmp #$FF
@@ -1217,6 +1223,39 @@ run_script
  stz scroll_down_lwidth+1
  stz scroll_down_off          ; ascend from row 0
  stz descent_started
+* params 4..7 = chain + per-layer snap thresholds.
+*   p4 = chain target lbank ($FF = no chain).
+*   p5 = chain target rbank (only valid if p4 != $FF).
+*   p6 = current layer's snap_at (= source-row index where lbank
+*        runs out of valid art; floor(content_rows/4)*4).
+*   p7 = chain layer's snap_at (only valid if p4 != $FF).
+* Without per-layer snap_at, scroll continues filling blank source
+* rows past the art's bottom edge — visible as a vertical gap at
+* the layer transition (= mission25's 17-row padding past row 182).
+ ldy #4
+ lda [script_pc],y
+ cmp #$FF
+ beq :op_down_no_chain
+ clc
+ adc #$03
+ sta scroll_down_next_lbank
+ ldy #5
+ lda [script_pc],y
+ clc
+ adc #$03
+ sta scroll_down_next_rbank
+ ldy #7
+ lda [script_pc],y
+ sta scroll_down_next_snap_at
+ bra :op_down_chain_done
+:op_down_no_chain
+ stz scroll_down_next_lbank
+ stz scroll_down_next_rbank
+ stz scroll_down_next_snap_at
+:op_down_chain_done
+ ldy #6
+ lda [script_pc],y
+ sta scroll_down_snap_at
 * Overlay: reuse POINT_UP sprite but render at bottom-center of the
 * playfield. Phase 4 may add a dedicated POINT_DOWN.
  jsr clear_active_overlay
@@ -1247,7 +1286,8 @@ run_script
  sta script_state
  lda script_pc
  clc
- adc #4                       ; opcode + 3 params
+ adc #8                       ; opcode + 7 params
+                              ; (lbank, rbank, split, next_l, next_r, snap_at, next_snap_at)
  sta script_pc
  lda script_pc+1
  adc #0
@@ -1464,6 +1504,124 @@ run_script
  jmp :exec_loop
 
 :not_killobj
+ cmp #OP_BOUNDS
+ beq :do_bounds
+ jmp :not_bounds
+:do_bounds
+* OP_BOUNDS: rewrite stratum_bounds_tbl so only ONE y row is
+* walkable across the supplied world-x span. Params:
+*   p1 = y row (0..199).
+*   p2..p3 = 16-bit world x_lo (= span1 bmin).
+*   p4..p5 = 16-bit world x_hi (= span1 bmax).
+* Use case: OP_DOWN's post-descent platform — the level script's
+* OP_DOWN ends with the ladder cleared and Billy on the descent
+* target's bottom; OP_BOUNDS pins his footing to one walkable row.
+* Total advance: 6 bytes (opcode + 5 params).
+*
+* Strategy: fill the entire stratum_bounds_tbl with the blocked
+* sentinel (span1/span2 = $FFFF, $0000), then overwrite the
+* selected row's span1 with (x_lo, x_hi). span2 stays blocked.
+ ldy #1
+ lda [script_pc],y
+ sta :ob_y
+ ldy #2
+ lda [script_pc],y
+ sta :ob_xlo
+ ldy #3
+ lda [script_pc],y
+ sta :ob_xlo+1
+ ldy #4
+ lda [script_pc],y
+ sta :ob_xhi
+ ldy #5
+ lda [script_pc],y
+ sta :ob_xhi+1
+* Fill stratum_bounds_tbl with blocked sentinel for all 200 rows.
+* Each row: $FFFF, $0000, $FFFF, $0000 (= 8 bytes).
+* Counter must fit in 8-bit X (we're in emulation mode here), so
+* loop 200 times tracking row index, not the 1600-byte buffer
+* offset (which would overflow $FF). Use :ob_xoff (= row-base
+* byte offset, computed each iteration) to index stratum_bounds_tbl.
+* Snap Billy to the platform first (8-bit emulation mode is fine
+* for these single-byte stores). Clearing billy_airborne keeps
+* apply_gravity_step from triggering a fall.
+ lda :ob_y
+ sta billy_sprite+0
+ stz billy_airborne
+* Switch to native 16-bit for the 1600-byte bounds rewrite.
+* 8-bit X mode wrapped the offset past $FF and left rows 32..199
+* of stratum_bounds_tbl untouched (= old upper-platform bounds
+* leaked through and rejected y=130 → Billy fell off and respawned).
+ clc
+ xce
+ rep $30
+ mx %00
+* Fill stratum_bounds_tbl with blocked sentinel for all 200 rows.
+* Each row = 4 words: $FFFF, $0000, $FFFF, $0000.
+ ldx #0
+ lda #$FFFF
+:ob_fill
+ sta stratum_bounds_tbl,x
+ sta stratum_bounds_tbl+4,x
+ stz stratum_bounds_tbl+2,x
+ stz stratum_bounds_tbl+6,x
+ inx
+ inx
+ inx
+ inx
+ inx
+ inx
+ inx
+ inx
+ cpx #1600
+ bcc :ob_fill
+* Compute row offset = y * 8 in 16-bit so y=130 → 1040 doesn't
+* truncate to its low byte.
+ lda :ob_y
+ and #$00FF
+ asl
+ asl
+ asl
+ tax
+ lda :ob_xlo            ; 16-bit word: span1 bmin
+ sta stratum_bounds_tbl,x
+ lda :ob_xhi            ; 16-bit word: span1 bmax
+ sta stratum_bounds_tbl+2,x
+* Back to 8-bit emulation for the dispatch chain.
+ sec
+ xce
+ mx %11
+* Advance script_pc by 6.
+ lda script_pc
+ clc
+ adc #6
+ sta script_pc
+ lda script_pc+1
+ adc #0
+ sta script_pc+1
+ jmp :exec_loop
+:ob_y    dfb 0
+:ob_xlo  dw 0
+:ob_xhi  dw 0
+
+:not_bounds
+ cmp #OP_SCROLLSRC
+ bne :not_scrollsrc
+* OP_SCROLLSRC: set scroll_src_off to param. Advance 2 bytes
+* (opcode + 1 param).
+ ldy #1
+ lda [script_pc],y
+ sta scroll_src_off
+ lda script_pc
+ clc
+ adc #2
+ sta script_pc
+ lda script_pc+1
+ adc #0
+ sta script_pc+1
+ jmp :exec_loop
+
+:not_scrollsrc
 * OP_NONE — skip 1 byte and continue
  cmp #OP_NONE
  bne :unknown_op
@@ -2545,11 +2703,21 @@ snap_copy_rows       dw 183       ; row count for snap_transition copies
 scroll_down_enabled  dfb 0
 scroll_down_screen   dfb 0
 scroll_down_bank     dfb $03
-scroll_down_off      dfb 0        ; counts UP from 0 toward 152 (snap @ 152)
+scroll_down_off      dfb 0        ; counts UP from 0 toward 200 (snap @ 200)
 scroll_down_lbank    dfb $03      ; left-half target bank
                                   ; ($00 sentinel = no split, single bank)
 scroll_down_rbank    dfb $03      ; right-half target bank
                                   ; ($00 sentinel = no split)
+scroll_down_next_lbank dfb 0      ; chain layer's lbank ($00 = no chain).
+                                  ; Snap copies into scroll_down_lbank, then
+                                  ; resets scroll_down_off and continues
+                                  ; instead of clearing scroll_down_enabled.
+scroll_down_next_rbank dfb 0      ; chain layer's rbank
+scroll_down_snap_at  dfb 200      ; off threshold for snap (current layer)
+                                  ; Sized to floor(bank_content_rows / 4) * 4
+                                  ; so the last fill block has no blank
+                                  ; tail rows of art-padded source.
+scroll_down_next_snap_at dfb 0    ; chain layer's snap_at (copied at chain)
 scroll_down_anchor   dw 0         ; world byte: left edge of target content
 scroll_down_lwidth   dw 110       ; left-half content width (default full)
 scroll_down_twidth   dw 110       ; total target width (default 110)
@@ -8683,6 +8851,21 @@ OP_KILLOBJ  = 20      ; remove all non-player, non-NPC sprites (any
                       ; erase_all wipes them and removes them from
                       ; sprite_table. No params. Note: forward-only
                       ; npc_buffer slots are not reclaimed.
+OP_BOUNDS   = 21      ; rewrite stratum_bounds_tbl to a single
+                      ; walkable platform at one y row. Other rows
+                      ; become blocked. Params: 1b y, 2b x_world_lo,
+                      ; 2b x_world_hi (= world byte range). Used by
+                      ; OP_DOWN's post-descent platform setup (after
+                      ; the descent ends and snap clears the ladder).
+OP_SCROLLSRC = 22     ; Set scroll_src_off directly. Param: 1 byte.
+                      ; Use AFTER OP_RIGHT (which resets src_off to
+                      ; 0) to pin the source bank's read position
+                      ; to a specific byte. mission2 post-descent
+                      ; uses this to skip past mission29 bytes
+                      ; already visible in the playfield, so the
+                      ; first right-scroll reveals new content
+                      ; instead of re-showing the visible right
+                      ; portion of the split.
 
 * Script interpreter state
 SCRIPT_RUN  = 0       ; executing opcodes

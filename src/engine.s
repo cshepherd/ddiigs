@@ -2394,8 +2394,28 @@ _scroll_down
  jsl shadow_off_l
 
  lda scroll_down_off
- cmp #152
+ cmp scroll_down_snap_at
  bcc :sd_normal
+* Snap fired: source rows 0..(snap_at-1) of current banks have
+* been consumed (snap_at is per-layer = floor(art_rows/4)*4 so
+* the last fill block held no blank padding tail). If a chain
+* target is queued (next_lbank != 0), swap banks and reset off
+* so this frame's scroll continues with the new layer. Otherwise
+* hand off to :snap_transition_down to clear scroll_down_enabled
+* and end the descent.
+ lda scroll_down_next_lbank
+ beq :sd_no_chain
+ sta scroll_down_lbank
+ lda scroll_down_next_rbank
+ sta scroll_down_rbank
+ lda scroll_down_next_snap_at
+ sta scroll_down_snap_at
+ stz scroll_down_next_lbank
+ stz scroll_down_next_rbank
+ stz scroll_down_next_snap_at
+ stz scroll_down_off
+ bra :sd_normal               ; fall through to scroll with new banks
+:sd_no_chain
  jmp :snap_transition_down
 
 :sd_normal
@@ -2628,12 +2648,22 @@ _scroll_down
  rtl
 
 :snap_transition_down
-* Phase 2 stub: clear scroll_down_enabled so :check_waitdown
-* lets the script proceed. Phase 3 adds real snap logic (repaint
-* bank $18 from the new screen's banks, update current_screen,
-* etc.). For Phase 2, just bail cleanly.
+* End-of-descent cleanup (no chain queued). Beyond clearing
+* scroll_down_enabled (so SCRIPT_WAITDOWN advances), terminate
+* the ladder state so the level script's follow-up opcodes start
+* from a clean "Billy is standing" state — not stuck on a ladder
+* whose source rows have all scrolled past.
  stz scroll_down_enabled
  stz descent_started
+ stz is_climbing                ; Billy is on solid ground now
+ stz ladder_count               ; remove ladder so it can't re-engage
+* Reset horizontal scroll source so the next OP_RIGHT can install
+* a fresh target bank. Without this, OP_RIGHT's mid-scroll
+* preservation keeps the OLD scroll_src_bank (e.g. mission22 from
+* the pre-descent OP_RIGHT,1), and right-scroll after the descent
+* reveals upper-world art instead of the descent target's rbank.
+ stz scroll_src_off
+ stz scroll_src_off+1
  jsl shadow_on_l        ; restore shadow state (we turned it off at entry)
  mx %11
  rtl

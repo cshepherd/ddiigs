@@ -18,6 +18,8 @@ OP_WAITX EQU 2
 OP_RIGHT EQU 4         ; connect to right screen + enable right scroll
 OP_DOWN  EQU 7         ; descend into below-screen content via ladder
 OP_END   EQU 9
+OP_BOUNDS EQU 21       ; rewrite stratum bounds to one walkable row
+OP_SCROLLSRC EQU 22    ; set scroll_src_off directly (post-OP_RIGHT)
 
 *==========================================================
 * Level header — same field layout as mission1.s.
@@ -193,12 +195,34 @@ level_script
  db OP_WAITX
  dw 100                    ; lowered from 200 so OP_DOWN fires near
                            ; the ladder column (world_x=107)
- db OP_DOWN,4,5,110        ; Phase 3 split: lbank=scr4 (mission25),
-                           ; rbank=scr5 (mission26). Split = WORLD
-                           ; byte where mission25 ends and
-                           ; mission26 begins. mission25 is
-                           ; world-aligned (byte K = world K),
-                           ; mission26 byte 0 = world byte (split).
+ db OP_DOWN,4,5,110,7,8,180,40
+                           ; Layer 1: scr4/scr5 (mission25/26),
+                           ; split at world byte 110, snap_at=180.
+                           ; Layer 2 (chained): scr7/scr8
+                           ; (mission28/29), snap_at=40. The art's
+                           ; platform sits ~16px above mission28's
+                           ; bottom; stopping at 40 (= 56 - 16) lines
+                           ; that row up with Billy's feet at ypos=128.
+* Post-descent platform. OP_DOWN's snap (chain-less) cleared
+* scroll_down_enabled, is_climbing, and ladder_count. Billy is
+* now standing at ypos=128. Pin walkable bounds to that single
+* row across the full currently-visible playfield (world bytes
+* 20..129) so he can walk left/right on the mission28/29 floor.
+ db OP_BOUNDS,130
+ dw 20                     ; world x_lo
+ dw 129                    ; world x_hi
+                           ; y=130 = post-descent ypos. OP_BOUNDS also
+                           ; sets billy_sprite ypos to this row and
+                           ; clears billy_airborne.
+* Enable right-scroll into mission29 (screen 8 = bank $0B). After
+* the descent, the playfield shows mission28 left + mission29 right
+* (split at world byte 110). Walking right past the scroll
+* threshold should now reveal more of mission29's content.
+ db OP_RIGHT,8
+* Skip mission29 bytes already on-screen (= playfield bytes 90..109
+* = mission29 bytes 0..19). The next scroll-right should reveal
+* mission29 byte 20+ (= world byte 130+), not byte 0.
+ db OP_SCROLLSRC,20
  db OP_WAITX
  dw 600                    ; placeholder hold after descent
  db OP_END
