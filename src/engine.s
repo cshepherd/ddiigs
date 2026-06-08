@@ -3558,6 +3558,22 @@ _init_level
  lda [$F0],y
  sta spr_bspin3
 
+* POINT_DOWN (offsets +256..+262). Vertically-flipped POINT_UP for
+* the OP_DOWN descent overlay. Missions without OP_DOWN keep these
+* at $0000 (the overlay setup gates on the address being non-zero).
+ ldy #256
+ lda [$F0],y
+ sta spr_pointdown
+ ldy #258
+ lda [$F0],y
+ sta spr_pointdown_mask
+ ldy #260
+ lda [$F0],y
+ sta spr_pointdown_data_mirror
+ ldy #262
+ lda [$F0],y
+ sta spr_pointdown_mask_mirror
+
 * Now patch all DA references in animation descriptors
 * and sprite info blocks with bank $02 addresses.
 * Each anim frame has: dfb x,y,dur, DA addr (5 bytes per frame)
@@ -4982,6 +4998,7 @@ _init_mission13
  ldy #254
  lda [$F0],y
  sta spr_lclimb2c_mask_mir
+
  sec
  xce
  mx %11

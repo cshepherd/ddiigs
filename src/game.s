@@ -1256,30 +1256,38 @@ run_script
  ldy #6
  lda [script_pc],y
  sta scroll_down_snap_at
-* Overlay: reuse POINT_UP sprite but render at bottom-center of the
-* playfield. Phase 4 may add a dedicated POINT_DOWN.
+* Overlay: spr_pointdown holds the vertically-flipped POINT_UP
+* sprite (loaded from the mission's spr_addr_tbl at offset +256).
+* Place its top at row 159 so the 24-row sprite's bottom row
+* (= arrow tip) sits at playfield row 182, the last visible row.
+* If the mission didn't supply a POINT_DOWN sprite (= spr_pointdown
+* is 0), skip the overlay entirely.
  jsr clear_active_overlay
  ldx #SND_FINGER
  jsr sound_trigger
+ lda spr_pointdown
+ ora spr_pointdown+1
+ beq :op_down_no_overlay
  lda #180
  sta overlay_timer
  lda #51
  sta overlay_x
- lda #160                     ; bottom-center (OP_UP uses 0 for top)
+ lda #159
  sta overlay_y
  lda #$08
  sta overlay_w
  lda #$18
  sta overlay_h
  stz overlay_mirror
- lda spr_pointup
+ lda spr_pointdown
  sta overlay_addr
- lda spr_pointup+1
+ lda spr_pointdown+1
  sta overlay_addr+1
- lda spr_pointup_mask
+ lda spr_pointdown_mask
  sta overlay_mask
- lda spr_pointup_mask+1
+ lda spr_pointdown_mask+1
  sta overlay_mask+1
+:op_down_no_overlay
  lda #1
  sta scroll_down_enabled
  lda #SCRIPT_WAITDOWN
@@ -1664,6 +1672,45 @@ run_script
  jmp :exec_loop
 
 :not_scrollsplit
+ cmp #OP_LADDER
+ beq :do_ladder
+ jmp :not_ladder
+:do_ladder
+* OP_LADDER: write a single ladder into ladder_buf slot 0 and set
+* ladder_count = 1. Also sets scroll_up_enabled = 1 so the
+* lenient ladder fallback in check_y_bounds engages when the
+* player steps up off a platform onto the ladder column.
+ ldy #1
+ lda [script_pc],y
+ sta ladder_buf+0       ; x_left low
+ ldy #2
+ lda [script_pc],y
+ sta ladder_buf+1       ; x_left high
+ ldy #3
+ lda [script_pc],y
+ sta ladder_buf+2       ; x_right low
+ ldy #4
+ lda [script_pc],y
+ sta ladder_buf+3       ; x_right high
+ ldy #5
+ lda [script_pc],y
+ sta ladder_buf+4       ; y_top
+ ldy #6
+ lda [script_pc],y
+ sta ladder_buf+5       ; y_bottom
+ lda #1
+ sta ladder_count
+ sta scroll_up_enabled
+ lda script_pc
+ clc
+ adc #7
+ sta script_pc
+ lda script_pc+1
+ adc #0
+ sta script_pc+1
+ jmp :exec_loop
+
+:not_ladder
 * OP_NONE — skip 1 byte and continue
  cmp #OP_NONE
  bne :unknown_op
@@ -8910,6 +8957,19 @@ OP_SCROLLSRC = 22     ; Set scroll_src_off directly. Param: 1 byte.
                       ; first right-scroll reveals new content
                       ; instead of re-showing the visible right
                       ; portion of the split.
+OP_LADDER   = 24      ; Install a single ladder into ladder_buf
+                      ; (replacing any existing ones — ladder_count
+                      ; set to 1). Also sets scroll_up_enabled = 1
+                      ; so check_ladder's bounds-fallback engagement
+                      ; gate fires when the player tries to step up
+                      ; off the platform onto the ladder column.
+                      ; Params:
+                      ;   2b world x_left
+                      ;   2b world x_right
+                      ;   1b y_top
+                      ;   1b y_bottom
+                      ; Total advance: 7 bytes (opcode + 6 params).
+
 OP_SCROLLSPLIT = 23   ; Set up a vertical-split right-scroll source.
                       ; Params:
                       ;   p1 = upper bank's screen index (+$03 →

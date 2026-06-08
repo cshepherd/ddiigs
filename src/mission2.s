@@ -21,6 +21,7 @@ OP_END   EQU 9
 OP_BOUNDS EQU 21       ; rewrite stratum bounds to one walkable row
 OP_SCROLLSRC EQU 22    ; set scroll_src_off directly (post-OP_RIGHT)
 OP_SCROLLSPLIT EQU 23  ; vertical-split right-scroll source (upper bank, split row)
+OP_LADDER EQU 24       ; install a single ladder + enable scroll_up
 
 *==========================================================
 * Level header — same field layout as mission1.s.
@@ -90,7 +91,9 @@ spr_lpunched   dw 0
 spr_lfall1     dw 0
 spr_lfall2     dw 0
 spr_pointright dw 0       ; HUD overlay still in mission1.s — TBD share
-spr_pointup    dw 0
+spr_pointup    dw 0       ; mission 2 will need OP_UP eventually;
+                          ; leave the up-arrow slot clear so the
+                          ; future POINT_UP load doesn't collide.
 spr_bclimb1    dw BCLIMB1
 spr_bclimb2    dw BCLIMB2
 spr_lclimb1    dw 0
@@ -166,6 +169,15 @@ spr_bspin1    dw BSPIN1
 spr_bspin2    dw BSPIN2
 spr_bspin3    dw BSPIN3
 
+* POINT_DOWN (offsets +256..+262). Filled with the vertically-
+* flipped POINT_UP data defined below. OP_DOWN's overlay reads
+* spr_pointdown to know what sprite to render.
+              dw 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0      ; +222..+254 filler
+spr_pointdown          dw POINT_DOWN_DATA
+spr_pointdown_mask     dw POINT_DOWN_MASK
+spr_pointdown_data_mirror dw POINT_DOWN_DATA_MIRROR
+spr_pointdown_mask_mirror dw POINT_DOWN_MASK_MIRROR
+
 *-------------------------------
 * Sprite table — empty (just the null terminator the engine
 * iteration loops look for).
@@ -233,6 +245,16 @@ level_script
 * by OP_RIGHT,8 above). Both banks are world-aligned with the same
 * content origin (= world byte 110), so scroll_src_off advances
 * in lockstep for both halves.
+* Place a new ladder on the descent-end platform — goes UP 77px
+* from y=130 to y=53. Centered at world x=$AF=175 (3-byte wide on
+* each side of the column). scroll_up_enabled gets set so the
+* lenient ladder-fallback in check_y_bounds engages when Billy
+* steps up off the platform onto the ladder column.
+ db OP_LADDER
+ dw 172                    ; x_left  ($AC)
+ dw 178                    ; x_right ($B2)
+ db 53                     ; y_top   ($35) — 77 rows above platform
+ db 129                    ; y_bottom ($81) — platform_row - 1, engage row from above
  db OP_SCROLLSPLIT,5,143,37
                            ; p3=37 = mission26 row that's currently at
                            ; playfield row 0 (= 179 - row_offset_after_
@@ -439,6 +461,119 @@ lstr6   asc ' Now we become ZZTop Ah? ',00
 * mask & mirror variants). Shared with mission1.s via PUT — see
 * src/player_sprites.s. Labels referenced by spr_addr_tbl above.
  PUT player_sprites
+
+* POINT_DOWN — vertical mirror of mission1's POINT_UP. Used by
+* OP_DOWN's overlay to indicate "press down to descend". Mission 2
+* has no OP_UP, so the spr_pointup slot is repurposed to point at
+* POINT_DOWN_DATA (engine init_level patches spr_pointup from the
+* bank-$02 header entry; OP_DOWN's overlay reads spr_pointup).
+* Each row = 8 bytes (= 16 pixels wide), 24 rows tall. Rows are
+* listed in reverse order from POINT_UP_DATA in mission1.s so the
+* arrow tip ends up at the bottom of the sprite (pointing down)
+* instead of the top.
+POINT_DOWN_DATA
+ HEX 000008C000800600
+ HEX 0000009B111B9000
+ HEX 000000C655BB1900
+ HEX 00080A9999AAB196
+ HEX 000A9B11BB99ABBC
+ HEX 0CABB11BBBB9AA98
+ HEX 00B111B9C51BB000
+ HEX 09111B9A0911BAC6
+ HEX CB1BB9CC0CBBB9C0
+ HEX CB111BB980A999C0
+ HEX CB1111BB90C00800
+ HEX 0CB1111B90061BC0
+ HEX C9CC080099CB1BC0
+ HEX CB1B9CAB19511100
+ HEX CB11BA911A511BC0
+ HEX CB11BC9BB0AB1A00
+ HEX CB11BACAC0CA5000
+ HEX CBBBBA0000000000
+ HEX CBBBBA8000000000
+ HEX CB11BA0000000000
+ HEX C911BC8000000000
+ HEX 0099C00000000000
+ HEX 0000000000000000
+ HEX 0000000000000000
+
+POINT_DOWN_MASK
+ HEX FFFFF0000000F0FF
+ HEX FFFFF000000000FF
+ HEX FFFFF0000000000F
+ HEX FFF0000000000000
+ HEX FF00000000000000
+ HEX F000000000000000
+ HEX 0000000000000000
+ HEX 0000000000000000
+ HEX 000000000000000F
+ HEX 000000000000000F
+ HEX 000000000000F00F
+ HEX 000000000000000F
+ HEX 0000F0F00000000F
+ HEX 00000000000000FF
+ HEX 000000000000000F
+ HEX 000000000000000F
+ HEX 00000000000000FF
+ HEX 0000000FFFFFFFFF
+ HEX 0000000FFFFFFFFF
+ HEX 0000000FFFFFFFFF
+ HEX 0000000FFFFFFFFF
+ HEX 000000FFFFFFFFFF
+ HEX F0000FFFFFFFFFFF
+ HEX FFFFFFFFFFFFFFFF
+
+POINT_DOWN_DATA_MIRROR
+ HEX 006008000C800000
+ HEX 0009B111B9000000
+ HEX 0091BB556C000000
+ HEX 691BAA9999A08000
+ HEX CBBA99BB11B9A000
+ HEX 89AA9BBBB11BBAC0
+ HEX 000BB15C9B111B00
+ HEX 6CAB1190A9B11190
+ HEX 0C9BBBC0CC9BB1BC
+ HEX 0C999A089BB111BC
+ HEX 00800C09BB1111BC
+ HEX 0CB16009B1111BC0
+ HEX 0CB1BC990080CC9C
+ HEX 00111591BAC9B1BC
+ HEX 0CB115A119AB11BC
+ HEX 00A1BA0BB9CB11BC
+ HEX 0005AC0CACAB11BC
+ HEX 0000000000ABBBBC
+ HEX 0000000008ABBBBC
+ HEX 0000000000AB11BC
+ HEX 0000000008CB119C
+ HEX 00000000000C9900
+ HEX 0000000000000000
+ HEX 0000000000000000
+
+POINT_DOWN_MASK_MIRROR
+ HEX FF0F0000000FFFFF
+ HEX FF000000000FFFFF
+ HEX F0000000000FFFFF
+ HEX 0000000000000FFF
+ HEX 00000000000000FF
+ HEX 000000000000000F
+ HEX 0000000000000000
+ HEX 0000000000000000
+ HEX F000000000000000
+ HEX F000000000000000
+ HEX F00F000000000000
+ HEX F000000000000000
+ HEX F00000000F0F0000
+ HEX FF00000000000000
+ HEX F000000000000000
+ HEX F000000000000000
+ HEX FF00000000000000
+ HEX FFFFFFFFF0000000
+ HEX FFFFFFFFF0000000
+ HEX FFFFFFFFF0000000
+ HEX FFFFFFFFF0000000
+ HEX FFFFFFFFFF000000
+ HEX FFFFFFFFFFF0000F
+ HEX FFFFFFFFFFFFFFFF
 
 * Auto-generated strata tables (strata_index, screen_to_stratum,
 * stratum_ground). Built from tools/mission2_strata.txt +

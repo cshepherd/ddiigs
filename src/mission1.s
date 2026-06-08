@@ -213,6 +213,16 @@ spr_bspin1    dw BSPIN1
 spr_bspin2    dw BSPIN2
 spr_bspin3    dw BSPIN3
 
+; POINT_DOWN (offsets +256..+262). Mission 1 doesn't use OP_DOWN
+; so these stay at 0 — the OP_DOWN overlay gates on the address
+; being non-zero. Slots +222..+254 are left unused in this table
+; (engine reads them from a different bank in _init_mission13).
+              dw 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0      ; +222..+254 filler
+spr_pointdown          dw 0
+spr_pointdown_mask     dw 0
+spr_pointdown_data_mirror dw 0
+spr_pointdown_mask_mirror dw 0
+
 ; Level 1 script
 level_script
 ; screen 1

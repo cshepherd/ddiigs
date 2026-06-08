@@ -556,6 +556,13 @@ spr_pointright_mask_mirror ds 2
 spr_pointup_mask           ds 2
 spr_pointup_data_mirror    ds 2
 spr_pointup_mask_mirror    ds 2
+* POINT_DOWN — vertical mirror of POINT_UP, used by OP_DOWN's
+* descent overlay. Each mission populates these from a level-data
+* sprite address table entry; missions without OP_DOWN set them to 0.
+spr_pointdown              ds 2
+spr_pointdown_mask         ds 2
+spr_pointdown_data_mirror  ds 2
+spr_pointdown_mask_mirror  ds 2
 spr_image01_mask           ds 2
 spr_image01_data_mirror    ds 2
 spr_image01_mask_mirror    ds 2
