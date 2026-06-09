@@ -1145,6 +1145,7 @@ run_script
  sta overlay_mask+1
  lda #1
  sta scroll_up_enabled
+ stz local_ladder              ; OP_UP is scroll-driven, not local
  lda #SCRIPT_WAITUP
  sta script_state
  lda script_pc
@@ -1610,6 +1611,33 @@ run_script
  sec
  xce
  mx %11
+* Per-screen bounds_tbl_lo/hi update. The climb-lock at :do_left
+* and :ai_do_right reads bounds_tbl_hi[ypos] to decide whether
+* Billy is "at floor level" (= can walk on/off a ladder column)
+* vs "mid-climb" (= ladder lock). Without this, the bounds-blocked
+* y_platform row keeps the climb-lock engaged at the new platform
+* and the player can't walk away from the ladder.
+* Zero all 200 rows first, then write y_platform's row with the
+* outer envelope (span1's bmin low byte + span2's bmax low byte).
+* Note: per-screen bounds are 8-bit, so world values >255 truncate
+* — fine here since mission2's platform stays within byte range.
+* Forward iteration — dex/bpl from X=199 exited after 1 iter
+* because $C6 has bit 7 set (N=1) in 8-bit X mode, so only
+* row 199 was being cleared and the original mission2 bounds
+* (e.g. y=128 = $58..$95) leaked through. cpx #200 works in
+* 8-bit because 200 fits in a byte.
+ ldx #0
+:ob_clear_pertbl
+ stz bounds_tbl_lo,x
+ stz bounds_tbl_hi,x
+ inx
+ cpx #200
+ bcc :ob_clear_pertbl
+ ldx :ob_y
+ lda :ob_xlo            ; span1 bmin (low byte)
+ sta bounds_tbl_lo,x
+ lda :ob_xhi2           ; span2 bmax (low byte) — outer envelope max
+ sta bounds_tbl_hi,x
 * Advance script_pc by 10 (opcode + 9 params).
  lda script_pc
  clc
@@ -1701,6 +1729,7 @@ run_script
  lda #1
  sta ladder_count
  sta scroll_up_enabled
+ sta local_ladder           ; suppress scroll_up at the top of the ladder
  lda script_pc
  clc
  adc #7
@@ -1711,6 +1740,82 @@ run_script
  jmp :exec_loop
 
 :not_ladder
+ cmp #OP_PLATFORM
+ beq :do_platform
+ jmp :not_platform
+:do_platform
+* OP_PLATFORM: add ONE walkable row to the bounds tables without
+* clearing the rest. Mirrors OP_BOUNDS' row-write logic.
+ ldy #1
+ lda [script_pc],y
+ sta :pf_y
+ ldy #2
+ lda [script_pc],y
+ sta :pf_xlo
+ ldy #3
+ lda [script_pc],y
+ sta :pf_xlo+1
+ ldy #4
+ lda [script_pc],y
+ sta :pf_xhi
+ ldy #5
+ lda [script_pc],y
+ sta :pf_xhi+1
+ ldy #6
+ lda [script_pc],y
+ sta :pf_xlo2
+ ldy #7
+ lda [script_pc],y
+ sta :pf_xlo2+1
+ ldy #8
+ lda [script_pc],y
+ sta :pf_xhi2
+ ldy #9
+ lda [script_pc],y
+ sta :pf_xhi2+1
+* Native 16-bit for the stratum row write (y*8 may exceed 255).
+ clc
+ xce
+ rep $30
+ mx %00
+ lda :pf_y
+ and #$00FF
+ asl
+ asl
+ asl
+ tax
+ lda :pf_xlo
+ sta stratum_bounds_tbl,x
+ lda :pf_xhi
+ sta stratum_bounds_tbl+2,x
+ lda :pf_xlo2
+ sta stratum_bounds_tbl+4,x
+ lda :pf_xhi2
+ sta stratum_bounds_tbl+6,x
+ sec
+ xce
+ mx %11
+* Per-screen bounds row (outer-envelope low bytes).
+ ldx :pf_y
+ lda :pf_xlo
+ sta bounds_tbl_lo,x
+ lda :pf_xhi2
+ sta bounds_tbl_hi,x
+ lda script_pc
+ clc
+ adc #10                ; opcode + 9 params
+ sta script_pc
+ lda script_pc+1
+ adc #0
+ sta script_pc+1
+ jmp :exec_loop
+:pf_y    dfb 0
+:pf_xlo  dw 0
+:pf_xhi  dw 0
+:pf_xlo2 dw 0
+:pf_xhi2 dw 0
+
+:not_platform
 * OP_NONE — skip 1 byte and continue
  cmp #OP_NONE
  bne :unknown_op
@@ -3411,6 +3516,11 @@ ladder_base ds 2              ; bank $02 address of global ladder list
 * Each entry is 6 bytes: x_left(w), x_right(w), y_top(b), y_bottom(b)
 * x_left/x_right are world-absolute byte coordinates.
 ladder_count dfb 0
+local_ladder dfb 0   ; set by OP_LADDER for a "local" climb that
+                     ; should NOT trigger scroll_up at the top of
+                     ; the ladder. :sn_done checks this and skips
+                     ; the jsl scroll_up call when set. Cleared by
+                     ; OP_UP (which expects scroll-driven climb).
 ladder_buf   ds 24             ; 4 ladders × 6 bytes
 
 * World byte offset of the playfield's left edge.
@@ -8957,6 +9067,17 @@ OP_SCROLLSRC = 22     ; Set scroll_src_off directly. Param: 1 byte.
                       ; first right-scroll reveals new content
                       ; instead of re-showing the visible right
                       ; portion of the split.
+OP_PLATFORM = 25      ; Add ONE walkable row to stratum_bounds_tbl
+                      ; and per-screen bounds_tbl_lo/hi WITHOUT
+                      ; clearing the rest. Use after OP_BOUNDS to
+                      ; layer additional walkable rows (e.g., a
+                      ; platform at the top of a ladder). Params
+                      ; mirror OP_BOUNDS minus the clear + the
+                      ; billy_sprite ypos snap:
+                      ;   1b y, 2b span1_xlo, 2b span1_xhi,
+                      ;   2b span2_xlo, 2b span2_xhi.
+                      ; Total advance: 10 bytes (opcode + 9 params).
+
 OP_LADDER   = 24      ; Install a single ladder into ladder_buf
                       ; (replacing any existing ones — ladder_count
                       ; set to 1). Also sets scroll_up_enabled = 1
@@ -10300,9 +10421,23 @@ btn_action_jump
 :sn_no_hide
  lda did_climb_this_frame
  bne :sn_skip_scroll
+* OP_LADDER's local-climb path: no scroll target was set up, so
+* the scroll call would fall into :snap_transition with stale
+* state and repaint with mission 1's first screen. Instead, take
+* the same 2-px ypos dec that :up_walk's climb step does — the
+* world stays put and Billy visually moves up the ladder.
+ lda local_ladder
+ bne :sn_local_step
 * (Old SEI guard removed — see comment at first removal site.)
  jsl scroll_up
  jsr load_sprite
+ lda #1
+ sta did_climb_this_frame
+ rts
+:sn_local_step
+ dec IMAGE01_YPOS
+ dec IMAGE01_YPOS
+ jsr save_sprite
  lda #1
  sta did_climb_this_frame
  rts

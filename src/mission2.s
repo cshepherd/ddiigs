@@ -22,6 +22,7 @@ OP_BOUNDS EQU 21       ; rewrite stratum bounds to one walkable row
 OP_SCROLLSRC EQU 22    ; set scroll_src_off directly (post-OP_RIGHT)
 OP_SCROLLSPLIT EQU 23  ; vertical-split right-scroll source (upper bank, split row)
 OP_LADDER EQU 24       ; install a single ladder + enable scroll_up
+OP_PLATFORM EQU 25     ; add ONE walkable row to bounds (no clear)
 
 *==========================================================
 * Level header — same field layout as mission1.s.
@@ -253,8 +254,16 @@ level_script
  db OP_LADDER
  dw 172                    ; x_left  ($AC)
  dw 178                    ; x_right ($B2)
- db 53                     ; y_top   ($35) — 77 rows above platform
+ db 53                     ; y_top   ($35) — 92 - 39 = sprite top
+                           ; such that Billy's feet sit at row 92.
  db 129                    ; y_bottom ($81) — platform_row - 1, engage row from above
+* Upper platform at y=53, same x layout as the lower platform.
+* Billy lands here at the top of the ladder.
+ db OP_PLATFORM,53
+ dw 20                     ; span1 x_lo
+ dw 155                    ; span1 x_hi
+ dw 167                    ; span2 x_lo
+ dw 218                    ; span2 x_hi
  db OP_SCROLLSPLIT,5,143,37
                            ; p3=37 = mission26 row that's currently at
                            ; playfield row 0 (= 179 - row_offset_after_
