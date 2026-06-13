@@ -1638,6 +1638,10 @@ run_script
  sta bounds_tbl_lo,x
  lda :ob_xhi2           ; span2 bmax (low byte) — outer envelope max
  sta bounds_tbl_hi,x
+* Lock the bounds: this opcode just hand-authored the collision
+* map, so screen-transition reloads must not overwrite it.
+ lda #1
+ sta bounds_locked
 * Advance script_pc by 10 (opcode + 9 params).
  lda script_pc
  clc
@@ -2036,7 +2040,10 @@ run_script
 *--- Script helper: set screen ---
 script_set_screen
 * A = screen index. Update current screen and load its bounds.
+* An explicit OP_SCREEN means the script wants this screen's own
+* bounds, so release any prior OP_BOUNDS lock before reloading.
  sta current_screen
+ stz bounds_locked
  jsr load_screen_bounds
  rts
 
@@ -3069,6 +3076,63 @@ check_x_bounds_world
 :cxw_world_x ds 2
 
 *----------------------------------------------------------
+* check_x_bounds_world_strict — same span tests as
+* check_x_bounds_world but NO ladder fallback. Used by gravity
+* (ground check + landing sweep in apply_gravity_step): a ladder
+* column is climbable, not standable, so gravity must not treat
+* "on ladder" as support. Without this, a jump near a ladder
+* lands Billy ON the column at a non-platform row (the falling
+* sweep saw check_ladder C=0 once scroll_up_enabled went 1), and
+* the ground check then keeps him parked there → soft-lock where
+* only jump responds.
+* Input:  A = xpos (screen-local), IMAGE01_YPOS = row
+* Output: C=0 walkable platform, C=1 no support
+*----------------------------------------------------------
+check_x_bounds_world_strict
+ clc
+ adc world_offset
+ sta :cxs_world_x
+ lda #0
+ adc world_offset+1
+ sta :cxs_world_x+1
+ clc
+ xce
+ rep $30
+ mx %00
+ lda IMAGE01_YPOS
+ and #$00FF
+ asl
+ asl
+ asl
+ tax
+ lda :cxs_world_x
+ cmp stratum_bounds_tbl,x
+ bcc :cxs_try2
+ lda stratum_bounds_tbl+2,x
+ cmp :cxs_world_x
+ bcs :cxs_walk
+:cxs_try2
+ lda :cxs_world_x
+ cmp stratum_bounds_tbl+4,x
+ bcc :cxs_block
+ lda stratum_bounds_tbl+6,x
+ cmp :cxs_world_x
+ bcs :cxs_walk
+:cxs_block
+ sec
+ xce
+ mx %11
+ sec
+ rts
+:cxs_walk
+ sec
+ xce
+ mx %11
+ clc
+ rts
+:cxs_world_x ds 2
+
+*----------------------------------------------------------
 * check_x_bounds_world_outer — like check_x_bounds_world but
 * tests the OUTER envelope of the row's two spans, not strict
 * per-span membership. Used by the scroll-right/left gates so a
@@ -3516,6 +3580,16 @@ ladder_base ds 2              ; bank $02 address of global ladder list
 * Each entry is 6 bytes: x_left(w), x_right(w), y_top(b), y_bottom(b)
 * x_left/x_right are world-absolute byte coordinates.
 ladder_count dfb 0
+bounds_locked dfb 0  ; 1 = a script opcode (OP_BOUNDS) has taken
+                     ; manual control of the collision map; suppresses
+                     ; load_screen_bounds' reload so screen
+                     ; transitions don't wipe the custom spans.
+                     ; Set by OP_BOUNDS; cleared at init_level and
+                     ; OP_SCREEN (a new screen wants its own bounds).
+ladder_hit_idx dfb 0 ; byte index (entry*6) of the ladder matched by
+                     ; the most recent successful check_ladder; lets
+                     ; engage-time code read the ladder's geometry
+                     ; without re-scanning ladder_buf
 local_ladder dfb 0   ; set by OP_LADDER for a "local" climb that
                      ; should NOT trigger scroll_up at the top of
                      ; the ladder. :sn_done checks this and skips
@@ -3650,6 +3724,22 @@ sync_current_screen_left
 :scl_done rts
 
 load_screen_bounds
+* bounds_locked gate: once a script opcode (OP_BOUNDS) hand-authors
+* the collision map, a screen-transition reload here would copy the
+* level-data stratum table back over it, wiping the custom platform
+* spans. Symptom: after OP_DOWN's descent sets up the two-platform
+* layout, the first right-scroll that crosses a screen boundary
+* (transition_pending -> sync_current_screen -> load_screen_bounds)
+* reverted to the original single platform — the gap's far side lost
+* its landing bounds and rightward jumps just fell. Skip the reload
+* while locked. Entry is emulation 8-bit; preserve A (screen idx).
+ pha
+ lda bounds_locked
+ beq :lsb_proceed
+ pla
+ rts
+:lsb_proceed
+ pla
  sta :scr_idx
  clc
  xce                   ; native mode
@@ -3949,6 +4039,9 @@ check_ladder
 * y_top (entering from a platform ABOVE — DOWN climb, Phase 4
 * OP_DOWN). If they're already climbing (is_climbing=1), any
 * proposed_y in the y range is fine (continuation).
+* X (the matched entry's byte index) is exported via
+* ladder_hit_idx so engage-time logic (e.g. :ai_do_down's center
+* snap) can read the ladder's geometry without re-scanning.
  lda is_climbing
  bne :cl_on_ladder
  lda :prop_y
@@ -3957,6 +4050,8 @@ check_ladder
  cmp ladder_buf+4,x    ; y_top (down-engage from above)
  bne :cl_next          ; neither endpoint — reject
 :cl_on_ladder
+ stx ladder_hit_idx    ; export matched entry (byte index) for
+                       ; engage-time consumers
  lda :prop_y
  clc
  rts
@@ -10200,6 +10295,8 @@ btn_action_jump
 * reaches these data bytes.
 :up_as_propy dfb 0
 :dn_as_propy dfb 0
+:dn_ctr      ds 2     ; down-engage snap: ladder center scratch
+:dn_delta    dfb 0    ; down-engage snap: xpos delta for abs_x fixup
 :do_up
 * If scroll_up enabled AND on a ladder AND near top, scroll up.
 * Inverted branches + jmp because :up_walk moved out of 8-bit range
@@ -10587,7 +10684,9 @@ btn_action_jump
  fin
  rts
 :not_up cmp #'s'
- bne :not_down
+ beq :ai_do_down
+ jmp :not_down          ; inverted — :not_down out of branch range
+                        ; after the down-engage snap was added
 :ai_do_down
  lda IMAGE01_XPOS
  sta chk_xpos
@@ -10601,9 +10700,66 @@ btn_action_jump
 :dn_as_done
  lda :dn_as_propy
  jsr check_y_bounds
- bcs :skip_down       ; blocked
+ bcc :dn_bounds_ok    ; inverted — :skip_down out of branch range
+ jmp :skip_down       ; after the down-engage snap was added
+:dn_bounds_ok
  lda via_ladder
- beq :down_walkframe
+ bne :dn_via_ok       ; inverted — :down_walkframe out of branch
+ jmp :down_walkframe  ; range after the down-engage snap was added
+:dn_via_ok
+* Initial down-engage (is_climbing still 0): snap Billy's xpos to
+* the ladder's horizontal center, mirroring the up-climb's :sn_*
+* snap. Without this, the engage x-window can admit Billy up to
+* LADDER_TOL+width/2 bytes off-center and he descends visibly
+* beside the ladder art. ladder_hit_idx was exported by the
+* check_ladder call inside check_y_bounds just above.
+ lda is_climbing
+ bne :dn_no_snap
+ ldx ladder_hit_idx
+* center = (x_left + x_right) / 2 (16-bit)
+ clc
+ lda ladder_buf,x
+ adc ladder_buf+2,x
+ sta :dn_ctr
+ lda ladder_buf+1,x
+ adc ladder_buf+3,x
+ sta :dn_ctr+1
+ lsr :dn_ctr+1
+ ror :dn_ctr
+* new xpos = center - world_offset - 4 (climb frame is 8 wide)
+ sec
+ lda :dn_ctr
+ sbc world_offset
+ sta :dn_ctr
+ lda :dn_ctr+1
+ sbc world_offset+1
+ sta :dn_ctr+1        ; on-screen ladder → result fits in low byte
+ sec
+ lda :dn_ctr
+ sbc #4
+ sta :dn_ctr          ; = snapped xpos
+* abs_x += (new - old), sign-extended, so the wo+xpos invariant
+* survives the snap (same fixup the up-climb's snap performs).
+ sec
+ sbc IMAGE01_XPOS
+ sta :dn_delta
+ lda :dn_ctr
+ sta IMAGE01_XPOS
+ lda :dn_delta
+ clc
+ adc abs_x
+ sta abs_x
+ lda :dn_delta
+ bmi :dn_snap_neg
+ lda abs_x+1
+ adc #0
+ bra :dn_snap_sx
+:dn_snap_neg
+ lda abs_x+1
+ adc #$FF
+:dn_snap_sx
+ sta abs_x+1
+:dn_no_snap
 * Climb-down step. Mark is_climbing (mirrors :up_do_move) so
 * subsequent frames bypass the engage-row gate. Two incs per VBL
 * = 2 px/VBL ladder pace; not gated by the walk_toggle half-speed
@@ -13826,6 +13982,33 @@ apply_gravity_step
 :ags_active
  lda billy_airborne
  bne :ags_check_vel
+* GROUND CHECK: not airborne. If Billy is also not mid-climb and
+* his current (xpos, ypos) row isn't walkable, he's resting in
+* mid-air — e.g. parked at the ladder's engage row (y_bottom =
+* platform-1) after a jump cleared is_climbing. Without this he's
+* soft-locked: climb-lock blocks left/right (row bounds-blocked +
+* on ladder column), and up can't re-engage (proposed_y misses
+* both engage endpoints). Flag airborne with zero velocity;
+* gravity settles him onto the walkable row below next frame.
+ lda is_climbing
+ bne :ags_gc_done       ; hanging on a ladder is a legal rest state
+ lda billy_sprite
+ sta IMAGE01_YPOS       ; the strict check reads IMAGE01_YPOS;
+                        ; refresh it from Billy (update_anims may
+                        ; have left another sprite's value here)
+ lda billy_sprite+2
+ jsr check_x_bounds_world_strict
+                        ; STRICT: platforms only. The lenient
+                        ; variant's ladder fallback (open while
+                        ; scroll_up/down_enabled) would report the
+                        ; ladder column as "support" and keep Billy
+                        ; parked mid-air at the engage row.
+ bcc :ags_gc_done       ; walkable → properly grounded
+ lda #1
+ sta billy_airborne
+ stz billy_y_vel
+ stz billy_jump_x_vel
+:ags_gc_done
  jmp :ags_done
 :ags_check_vel
 * Apply horizontal jump momentum (set by btn_action_jump from
@@ -13897,7 +14080,10 @@ apply_gravity_step
  sta IMAGE01_YPOS
  phx                        ; save remaining-steps counter
  lda billy_sprite+2         ; xpos
- jsr check_x_bounds_world
+ jsr check_x_bounds_world_strict
+                            ; STRICT: land on platforms only — the
+                            ; ladder fallback would land Billy ON a
+                            ; ladder column at a non-platform row
  plx
  bcc :ags_land
  dex
@@ -13908,6 +14094,9 @@ apply_gravity_step
  stz billy_y_vel
  stz billy_airborne
  stz billy_jump_x_vel
+ stz is_climbing        ; landing on ground always ends a climb —
+                        ; a stale flag here would skip the ground
+                        ; check and freeze the climb-lock state
  lda billy_sprite+30
  ora #$03
  sta billy_sprite+30

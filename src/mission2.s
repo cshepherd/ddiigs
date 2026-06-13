@@ -263,7 +263,8 @@ level_script
  dw 20                     ; span1 x_lo
  dw 155                    ; span1 x_hi
  dw 167                    ; span2 x_lo
- dw 218                    ; span2 x_hi
+ dw 228                    ; span2 x_hi (+10 bytes / 20px right vs the
+                           ; y=130 platform below, per art)
  db OP_SCROLLSPLIT,5,143,37
                            ; p3=37 = mission26 row that's currently at
                            ; playfield row 0 (= 179 - row_offset_after_
@@ -344,8 +345,14 @@ ladders
 * fires (see check_ladder). y_bottom=199 lets him descend through
 * the whole visible playfield; scroll_down then advances the camera
 * below that.
- dw 104                  ; x_left  ($68)
- dw 110                  ; x_right ($6E)
+* Widened ±4 bytes beyond the art column (104..110) so the engage
+* window matches Billy's visual overlap — the strict window made
+* down-engage feel unreliable (press down on the ladder, nothing
+* happens). The down-engage snap in :ai_do_down re-centers Billy
+* onto the art column at engage time, so the wide window never
+* shows him climbing off-center.
+ dw 100                  ; x_left  ($64)
+ dw 114                  ; x_right ($72)
  dfb 129,199             ; y_top=129 (= platform_row+1), y_bottom=199
 
 *==========================================================

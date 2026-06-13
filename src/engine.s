@@ -3855,6 +3855,10 @@ _init_level
  sta script_pc+2       ; bank $02
  lda #SCRIPT_RUN
  sta script_state
+* Release any OP_BOUNDS lock from a prior run so a level restart
+* reloads the level-data stratum table normally.
+ sep $20
+ stz bounds_locked
  rep $20
 
  sec
