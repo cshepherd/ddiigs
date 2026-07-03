@@ -23,6 +23,7 @@ OP_SCROLLSRC EQU 22    ; set scroll_src_off directly (post-OP_RIGHT)
 OP_SCROLLSPLIT EQU 23  ; vertical-split right-scroll source (upper bank, split row)
 OP_LADDER EQU 24       ; install a single ladder + enable scroll_up
 OP_PLATFORM EQU 25     ; add ONE walkable row to bounds (no clear)
+OP_UPSPLIT EQU 26      ; add a scrolling up-ladder + split-bank up-target
 
 *==========================================================
 * Level header — same field layout as mission1.s.
@@ -272,6 +273,50 @@ level_script
                            ; reading mission26 from row 37 so the
                            ; scrolling-in extends the existing on-
                            ; screen art instead of restarting at row 0.
+* Scrolling up-ladder at world x=202 ($CA) on the upper platform.
+* Climbing it scrolls UP into mission21 (left strip) + mission22
+* (right / most of screen). Coexists with the local OP_LADDER above
+* (172..178) — the climb driver routes by ladder index.
+ db OP_UPSPLIT
+ dw 195                    ; x_left  (world, ~202-7)
+ dw 209                    ; x_right (world, ~202+7)
+ db 13                     ; y_top   (climb range top; any <= y_bottom)
+ db 53                     ; y_bottom = upper-platform row = engage row
+* Layer 1: finish scrolling the CURRENT screens (mission25/26) up to
+* their top before the new art. split=110 = same world seam as the
+* descent (world-consistent). snap_at=36 ≈ the 37-row top portion of
+* mission26 that OP_SCROLLSPLIT left unshown. hoff=4 corrects the
+* observed 4-byte rightward shift of the scrolled-in art. (TUNABLE)
+ db 4                      ; lbank screen 4 = mission25 (left)
+ db 5                      ; rbank screen 5 = mission26 (right/most)
+ db 110                    ; split (WORLD byte)
+ db 36                     ; snap_at (rows to top of mission25/26)
+ db 0                      ; hoff (0 = world-consistent; after the Pass B
+                           ; fix this lines up with the static rows)
+* Layer 2 (chained): the new art, mission21 (left strip) + mission22
+* (right/most). next_snap_at=180 so mission21/22's full height scrolls
+* in (bottom connects to mission25/26's top). next_hoff=10 corrects
+* the observed 10-byte rightward shift. split/snap_at/hoff TUNABLE.
+ db 0                      ; next_lbank screen 0 = mission21
+ db 1                      ; next_rbank screen 1 = mission22
+ db 128                    ; next_split (WORLD byte)
+ db 179                    ; next_snap_at. NOT 180: the first band reads
+                           ; source rows snap_at..snap_at+3, and art
+                           ; content ends at row 182 — snap_at=180 pulled
+                           ; in blank row 183 (the 1px black seam line).
+                           ; 179 → first band = rows 179..182.
+ db 17                     ; next_hoff (+17 = shift layer-2 art left; was
+                           ; 19, -2 for the residual 2-byte leftshift)
+* Climb-top platform. OP_UPSPLIT now parks the script in
+* SCRIPT_WAITUS until :snap_transition_up_split clears
+* scroll_us_enabled, so this runs the frame the up-scroll ends.
+* Billy rides the climb at ypos=53; platform at 53+4=57 (same
+* +4 feet-drop convention as the descent's OP_BOUNDS).
+ db OP_BOUNDS,57
+ dw 112                    ; span1 x_lo (world; visible = 112..221)
+ dw 221                    ; span1 x_hi
+ dw $FFFF                  ; span2 x_lo (no span2)
+ dw $0000                  ; span2 x_hi
  db OP_WAITX
  dw 600                    ; placeholder hold after descent
  db OP_END

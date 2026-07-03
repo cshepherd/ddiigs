@@ -39,6 +39,11 @@ down_src_start           ds 2
 down_dst_start           ds 2
 down_count               ds 2
 dfill_top                ds 1
+* _scroll_up_split scratch: effective world_offset for the current
+* layer = world_offset + sign-extended scroll_us_hoff (per-layer
+* horizontal calibration for art that isn't world-aligned to the
+* descent coordinate system).
+us_wo_eff                ds 2
 push_ymin                dfb 0
 push_ymax                dfb 0
 

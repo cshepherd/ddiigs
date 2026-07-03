@@ -569,7 +569,9 @@ game_loop
 run_script
  lda script_state
  cmp #SCRIPT_DONE
- beq :rs_rts           ; level ended, nothing to do
+ bne :rs_go            ; (inverted: :rs_rts drifted out of branch range)
+ rts                   ; level ended, nothing to do
+:rs_go
 
 * Check if we're waiting on a condition
  cmp #SCRIPT_WAITX
@@ -594,8 +596,11 @@ run_script
  bne :nwxr
  jmp :check_waitxrev
 :nwxr cmp #SCRIPT_WAIT
- bne :nww
+ bne :nwus
  jmp :check_wait
+:nwus cmp #SCRIPT_WAITUS
+ bne :nww
+ jmp :check_waitus
 :nww
 
 * SCRIPT_RUN — execute opcodes
@@ -1820,6 +1825,161 @@ run_script
 :pf_xhi2 dw 0
 
 :not_platform
+ cmp #OP_UPSPLIT
+ beq :do_upsplit
+ jmp :not_upsplit
+:do_upsplit
+* OP_UPSPLIT: ADD a scrolling up-ladder (coexists with any prior
+* OP_LADDER) + a split-bank up-target. Ladder geometry (params
+* 1..6) mirrors OP_LADDER; the split-bank target (params 7..10)
+* mirrors OP_DOWN. Climbing THIS ladder past UP_SCROLL_THRESH
+* fires _scroll_up_split (the :sn_no_hide driver routes by
+* ladder_hit_idx == upsplit_ladder_idx, so a coexisting local
+* ladder keeps its own behavior).
+* New slot byte offset = ladder_count * 6 → X.
+ lda ladder_count
+ sta :ups_base
+ asl
+ clc
+ adc :ups_base
+ asl
+ sta upsplit_ladder_idx ; record this ladder's index for the driver
+ tax                    ; X = byte offset of the new slot
+ ldy #1
+ lda [script_pc],y
+ sta ladder_buf,x       ; x_left low
+ inx
+ ldy #2
+ lda [script_pc],y
+ sta ladder_buf,x       ; x_left high
+ inx
+ ldy #3
+ lda [script_pc],y
+ sta ladder_buf,x       ; x_right low
+ inx
+ ldy #4
+ lda [script_pc],y
+ sta ladder_buf,x       ; x_right high
+ inx
+ ldy #5
+ lda [script_pc],y
+ sta ladder_buf,x       ; y_top
+ inx
+ ldy #6
+ lda [script_pc],y
+ sta ladder_buf,x       ; y_bottom
+ inc ladder_count       ; one more ladder in the buffer
+ lda #1
+ sta scroll_up_enabled  ; engage gate + climb-lock
+ sta scroll_us_enabled  ; arm split-bank up-scroll
+                        ; (local_ladder left as-is: a coexisting
+                        ;  OP_LADDER keeps its non-scroll behavior;
+                        ;  routing is by ladder index, not this flag)
+* Split-bank target: lbank (param7), rbank (param8, $FF=single).
+ ldy #7
+ lda [script_pc],y
+ clc
+ adc #$03
+ sta scroll_us_lbank
+ ldy #8
+ lda [script_pc],y
+ cmp #$FF
+ beq :ups_no_rbank
+ clc
+ adc #$03
+ sta scroll_us_rbank
+ bra :ups_rbank_done
+:ups_no_rbank
+ stz scroll_us_rbank
+:ups_rbank_done
+ ldy #9
+ lda [script_pc],y
+ sta scroll_us_split
+ stz scroll_us_split+1
+ ldy #10
+ lda [script_pc],y
+ sta scroll_us_snap_at
+ stz scroll_us_off
+* param 11: hoff (signed per-layer horizontal byte offset for layer 1).
+ ldy #11
+ lda [script_pc],y
+ sta scroll_us_hoff
+* Chain layer (params 12..16): next_lbank screen, next_rbank screen
+* ($FF = no chain → end after layer 1), next_split (world byte),
+* next_snap_at, next_hoff. Lets the climb finish the current
+* screens before scrolling in the new art.
+ ldy #12
+ lda [script_pc],y
+ cmp #$FF
+ beq :ups_no_chain
+ clc
+ adc #$03
+ sta scroll_us_next_lbank
+ ldy #13
+ lda [script_pc],y
+ clc
+ adc #$03
+ sta scroll_us_next_rbank
+ ldy #14
+ lda [script_pc],y
+ sta scroll_us_next_split
+ stz scroll_us_next_split+1
+ ldy #15
+ lda [script_pc],y
+ sta scroll_us_next_snap_at
+ ldy #16
+ lda [script_pc],y
+ sta scroll_us_next_hoff
+ bra :ups_chain_done
+:ups_no_chain
+ stz scroll_us_next_lbank
+ stz scroll_us_next_rbank
+:ups_chain_done
+* Overlay: POINT_UP arrow at top-center (mirror of OP_DOWN's
+* bottom POINT_DOWN). Skip if the mission supplied no sprite.
+ jsr clear_active_overlay
+ ldx #SND_FINGER
+ jsr sound_trigger
+ lda spr_pointup
+ ora spr_pointup+1
+ beq :ups_no_overlay
+ lda #180
+ sta overlay_timer
+ lda #51
+ sta overlay_x
+ lda #0
+ sta overlay_y
+ lda #$08
+ sta overlay_w
+ lda #$18
+ sta overlay_h
+ stz overlay_mirror
+ lda spr_pointup
+ sta overlay_addr
+ lda spr_pointup+1
+ sta overlay_addr+1
+ lda spr_pointup_mask
+ sta overlay_mask
+ lda spr_pointup_mask+1
+ sta overlay_mask+1
+:ups_no_overlay
+ lda script_pc
+ clc
+ adc #17                ; opcode + 16 params
+ sta script_pc
+ lda script_pc+1
+ adc #0
+ sta script_pc+1
+* Park the script until :snap_transition_up_split clears
+* scroll_us_enabled (mirror of OP_DOWN's SCRIPT_WAITDOWN), so the
+* op that follows in the level script (OP_BOUNDS climb-top
+* platform) runs the frame the up-scroll completes.
+ lda #SCRIPT_WAITUS
+ sta script_state
+ rts
+:ups_base dfb 0
+
+:not_upsplit
 * OP_NONE — skip 1 byte and continue
  cmp #OP_NONE
  bne :unknown_op
@@ -2036,6 +2196,18 @@ run_script
  sta script_state
  jmp :exec_loop
 :wd_rts rts
+
+:check_waitus
+* Mirror of :check_waitdown for OP_UPSPLIT. Polls scroll_us_enabled;
+* resumes the script the frame :snap_transition_up_split clears it,
+* so the next op (OP_BOUNDS) installs the climb-top platform before
+* gravity gets a look at Billy.
+ lda scroll_us_enabled
+ bne :wus_rts                 ; still climbing/scrolling, wait
+ lda #SCRIPT_RUN
+ sta script_state
+ jmp :exec_loop
+:wus_rts rts
 
 *--- Script helper: set screen ---
 script_set_screen
@@ -2928,6 +3100,32 @@ descent_started      dfb 0        ; first-call flag for scroll_down
 did_descent_this_frame dfb 0      ; set after :ai_dn_on_ladder fires
                                   ; scroll_down; prevents double-scroll
                                   ; when both players descend the same frame
+
+* --- Split-bank scroll-UP state (mirror of scroll_down_*). Drives
+* _scroll_up_split: the vertical mirror of the descent. Set by
+* OP_UPSPLIT; the climb driver fires jsl scroll_up_split when Billy
+* climbs this ladder past UP_SCROLL_THRESH. Same split-bank model:
+* lbank world-aligned, rbank content-origin-aligned at scroll_us_split.
+scroll_us_enabled    dfb 0        ; 1 while an OP_UPSPLIT climb is active
+scroll_us_lbank      dfb 0        ; left-half source bank ($00 = none)
+scroll_us_rbank      dfb 0        ; right-half source bank ($00 = single-bank)
+scroll_us_off        dfb 0        ; rows scrolled this layer (0..snap_at)
+scroll_us_snap_at    dfb 0        ; off threshold for snap (this layer)
+scroll_us_split      dw 0         ; world byte where lbank/rbank content meet
+scroll_us_hoff       dfb 0        ; signed per-layer horizontal byte offset
+                                  ; added to world_offset for this layer's
+                                  ; source reads (art-alignment calibration)
+scroll_us_next_hoff  dfb 0        ; chain layer's hoff
+* Chain layer (mirror of scroll_down_next_*). At snap, if next_lbank
+* != 0 the up-scroll swaps to this layer and resets off instead of
+* ending — lets the climb finish the current screens (mission25/26)
+* before scrolling in the new art (mission21/22).
+scroll_us_next_lbank dfb 0
+scroll_us_next_rbank dfb 0
+scroll_us_next_snap_at dfb 0
+scroll_us_next_split dw 0
+did_climb_us_this_frame dfb 0     ; co-op double-scroll guard for up-split
+
 npc_buf_next dw npc_buffers   ; next free NPC buffer address
 
 * Cheat: invincibility toggle
@@ -3590,6 +3788,12 @@ ladder_hit_idx dfb 0 ; byte index (entry*6) of the ladder matched by
                      ; the most recent successful check_ladder; lets
                      ; engage-time code read the ladder's geometry
                      ; without re-scanning ladder_buf
+upsplit_ladder_idx dfb $FF ; ladder_buf byte-index of the OP_UPSPLIT
+                     ; (scroll-up) ladder, or $FF if none. The climb
+                     ; driver fires _scroll_up_split only when the
+                     ; matched ladder (ladder_hit_idx) equals this, so
+                     ; a coexisting local OP_LADDER on the same screen
+                     ; keeps its own (non-scrolling) behavior.
 local_ladder dfb 0   ; set by OP_LADDER for a "local" climb that
                      ; should NOT trigger scroll_up at the top of
                      ; the ladder. :sn_done checks this and skips
@@ -9185,6 +9389,25 @@ OP_LADDER   = 24      ; Install a single ladder into ladder_buf
                       ;   1b y_top
                       ;   1b y_bottom
                       ; Total advance: 7 bytes (opcode + 6 params).
+OP_UPSPLIT  = 26      ; Install a SCROLLING up-ladder (split-bank,
+                      ; the vertical mirror of OP_DOWN). Adds a ladder
+                      ; (coexists with a local OP_LADDER) + arms the
+                      ; scroll_us_* split-bank state; climbing THIS
+                      ; ladder past UP_SCROLL_THRESH fires
+                      ; _scroll_up_split.
+                      ; Params:
+                      ;   2b world x_left, 2b world x_right,
+                      ;   1b y_top, 1b y_bottom        (ladder geometry)
+                      ;   1b lbank screen, 1b rbank screen ($FF=single)
+                      ;   1b split (WORLD byte where lbank/rbank meet)
+                      ;   1b snap_at (off threshold to end layer 1)
+                      ;   1b hoff (signed layer-1 horizontal byte offset)
+                      ;   1b next_lbank screen ($FF = no chain)
+                      ;   1b next_rbank screen
+                      ;   1b next_split (WORLD byte)
+                      ;   1b next_snap_at
+                      ;   1b next_hoff (signed chain-layer horizontal offset)
+                      ; Total advance: 17 bytes (opcode + 16 params).
 
 OP_SCROLLSPLIT = 23   ; Set up a vertical-split right-scroll source.
                       ; Params:
@@ -9212,6 +9435,7 @@ SCRIPT_WAITUP  = 6    ; waiting for vertical scroll to complete
 SCRIPT_WAITXREV = 7   ; waiting for abs_x <= threshold
 SCRIPT_WAIT    = 8    ; waiting N frames (script_wait_val = countdown)
 SCRIPT_WAITDOWN = 9   ; waiting for vertical-down scroll to complete
+SCRIPT_WAITUS = 10    ; waiting for split-bank up-scroll to complete
 
 * NPC behaviors (must match mission1.s definitions)
 BEHAV_NONE     = 0
@@ -10206,7 +10430,14 @@ btn_action_jump
 * entry/exit. Letting NTP fire freely here reclaims ~70K cycles
 * of IRQ-blocked time per scroll.)
  jsr save_sprite
+ clc
+ xce                    ; native across the JSL: an e-mode IRQ while
+                        ; PBR=$1F drops the program bank (RTI resumes
+                        ; at the same PC in bank $00 → BRK). Engine
+                        ; scroll routines now run native end-to-end.
  jsl scroll_right
+ sec
+ xce                    ; back to emulation (bank $00 — e-mode safe)
  jsr load_sprite
  jsr sync_current_screen
 * world_offset += 4 (4 bytes scrolled into the world)
@@ -10518,6 +10749,26 @@ btn_action_jump
 :sn_no_hide
  lda did_climb_this_frame
  bne :sn_skip_scroll
+* OP_UPSPLIT's split-bank scroll-up path: fire _scroll_up_split
+* only when the ladder Billy is actually on is the up-scroll
+* ladder (ladder_hit_idx == upsplit_ladder_idx) AND it's still
+* armed. This lets a local OP_LADDER on the same screen keep its
+* own non-scrolling behavior (it falls through to :sn_chk_local).
+ lda scroll_us_enabled
+ beq :sn_chk_local
+ lda ladder_hit_idx
+ cmp upsplit_ladder_idx
+ bne :sn_chk_local
+ clc
+ xce                    ; native across the JSL (see scroll_right site)
+ jsl scroll_up_split
+ sec
+ xce
+ jsr load_sprite
+ lda #1
+ sta did_climb_this_frame
+ rts
+:sn_chk_local
 * OP_LADDER's local-climb path: no scroll target was set up, so
 * the scroll call would fall into :snap_transition with stale
 * state and repaint with mission 1's first screen. Instead, take
@@ -10526,7 +10777,11 @@ btn_action_jump
  lda local_ladder
  bne :sn_local_step
 * (Old SEI guard removed — see comment at first removal site.)
+ clc
+ xce                    ; native across the JSL (see scroll_right site)
  jsl scroll_up
+ sec
+ xce
  jsr load_sprite
  lda #1
  sta did_climb_this_frame
@@ -10780,7 +11035,11 @@ btn_action_jump
  jsr save_sprite
  lda did_descent_this_frame
  bne :dn_skip_scroll_jsl
+ clc
+ xce                    ; native across the JSL (see scroll_right site)
  jsl scroll_down
+ sec
+ xce
  jsr load_sprite
  lda #1
  sta did_descent_this_frame
@@ -11039,7 +11298,11 @@ btn_action_jump
 * Scroll world LEFT by 4 bytes.
 * (Old SEI guard removed — see comment at first removal site.)
  jsr save_sprite
+ clc
+ xce                    ; native across the JSL (see scroll_right site)
  jsl scroll_left
+ sec
+ xce
  jsr load_sprite
  jsr sync_current_screen_left
 * abs_x retreats by 4 bytes — matches world_offset -= 4 so abs_x
@@ -11297,7 +11560,11 @@ btn_action_jump
 * The NTP IRQ leak that prompted this guard is addressed by the
 * PHP/PLP wrapper added to ninjatrackerp.s's interrupt_handler.)
  jsr save_sprite
+ clc
+ xce                    ; native across the JSL (see first scroll_right site)
  jsl scroll_right
+ sec
+ xce
  jsr load_sprite
  jsr sync_current_screen
 * world_offset += 4 (4 bytes scrolled into the world)
@@ -19797,6 +20064,9 @@ init_mission1jimmyblit equ $1F0030
 * scroll_down lives in engine.s ($1F/0034) — mirror of scroll_up
 * for descending into below-screen content via ladder.
 scroll_down    equ $1F0034
+* scroll_up_split lives in engine.s ($1F/0038) — split-bank
+* scroll-UP, the vertical mirror of scroll_down. Climb-driven.
+scroll_up_split equ $1F0038
 
 *----------------------------------------------------------
 * init_mission12blit moved to engine.s ($1F/0020). EQU below
@@ -19986,12 +20256,31 @@ shadow_off_l          jsr shadow_off
                       rtl
 shadow_on_l           jsr shadow_on
                       rtl
-draw_active_sprite_l  jsr draw_active_sprite
-                      rtl
-draw_other_sprite_l   jsr draw_other_sprite
-                      rtl
-draw_overlay_l        jsr draw_overlay
-                      rtl
+* The three draw wrappers own the native↔emulation switch: engine.s
+* calls them in NATIVE mode (bank $1F must never run in e-mode —
+* an e-mode IRQ doesn't save PBR, so RTI resumes in bank $00 and
+* crashes). E-mode here in bank $00 is safe.
+draw_active_sprite_l
+ sec
+ xce                   ; e-mode for the draw internals (as before)
+ jsr draw_active_sprite
+ clc
+ xce                   ; return to engine.s in native mode
+ rtl
+draw_other_sprite_l
+ sec
+ xce
+ jsr draw_other_sprite
+ clc
+ xce
+ rtl
+draw_overlay_l
+ sec
+ xce
+ jsr draw_overlay
+ clc
+ xce
+ rtl
 inc_border_l          jsr inc_border
                       rtl
 load_screen_bounds_l  jsr load_screen_bounds

@@ -66,6 +66,7 @@ info_ptr = $E2
          jml _init_mission1blit        ; $1F/002C
          jml _init_mission1jimmyblit   ; $1F/0030
          jml _scroll_down              ; $1F/0034
+         jml _scroll_up_split          ; $1F/0038
 
          PUT engine_externs.s
 
@@ -684,11 +685,10 @@ _scroll_right
 * writes don't propagate to $E1 yet.
  jsr fast_blit_18_01
 
- sec
- xce                   ; back to emulation mode
-
 * Step 4: Composite sprite + overlay directly on $01 (shadow off,
-* no per-write tax).
+* no per-write tax). The draw_*_l wrappers switch to e-mode
+* internally in bank $00 — this bank must stay NATIVE (e-mode IRQ
+* while PBR=$1F loses the program bank).
  jsl draw_active_sprite_l
  jsl draw_other_sprite_l       ; 2-player: also draw non-active sprite
  jsl draw_overlay_l
@@ -697,8 +697,6 @@ _scroll_right
 * via push_band over the full playfield (rows 0..182). Shadow
 * stays ON after we return so game_loop's erase/draw operations
 * propagate to $E1 in the normal way.
- clc
- xce                   ; native mode
  rep $30
  jsl shadow_on_l
  lda #0
@@ -709,9 +707,8 @@ _scroll_right
  rep $20
  jsr push_band
 
- sec
- xce                   ; back to emulation mode
- rtl
+ rtl                   ; native — bank-$00 caller restores e-mode
+ mx %11
 
 
 *----------------------------------------------------------
@@ -980,15 +977,12 @@ _scroll_left
  rep $30
  mx %00
 
-* Steps 3-5: Phase 2 pipeline — same as scroll_right.
+* Steps 3-5: Phase 2 pipeline — same as scroll_right. Stays native
+* (draw_*_l wrappers handle the e-mode switch in bank $00).
  jsr fast_blit_18_01
- sec
- xce
  jsl draw_active_sprite_l
  jsl draw_other_sprite_l       ; 2-player: also draw non-active sprite
  jsl draw_overlay_l
- clc
- xce
  rep $30
  jsl shadow_on_l
  lda #0
@@ -998,9 +992,8 @@ _scroll_left
  sta push_ymax
  rep $20
  jsr push_band
- sec
- xce
- rtl
+ rtl                   ; native — bank-$00 caller restores e-mode
+ mx %11
 
 * scroll_left scratch
 
@@ -1494,15 +1487,12 @@ _scroll_up
  rep $30
  mx %00
 
-* Phase 2 pipeline: blit, composite on $01, push to $E1.
+* Phase 2 pipeline: blit, composite on $01, push to $E1. Stays
+* native (draw_*_l wrappers handle the e-mode switch in bank $00).
  jsr fast_blit_18_01
- sec
- xce
  jsl draw_active_sprite_l
  jsl draw_other_sprite_l       ; 2-player: also draw non-active sprite
  jsl draw_overlay_l
- clc
- xce
  rep $30
  jsl shadow_on_l
  lda #0
@@ -1512,9 +1502,8 @@ _scroll_up
  sta push_ymax
  rep $20
  jsr push_band
- sec
- xce
- rtl
+ rtl                   ; native — bank-$00 caller restores e-mode
+ mx %11
 
 *----------------------------------------------------------
 * :snap_transition - End of vertical scroll: copy source
@@ -1930,8 +1919,9 @@ _scroll_up
  stz scr8_src_off+1
 :snap_lower_done
 
- sec
- xce
+ sep $30                ; 8-bit A/X — but stay NATIVE: e-mode in
+                        ; bank $1F + IRQ loses the program bank
+ mx %11
 * Update current_screen and bank state.
 * scroll_src must reflect what's NEXT to bring in on right-scroll:
 *
@@ -2360,19 +2350,16 @@ _scroll_up
 * climb-snap is skipped above, so no post-climb adjustment is
 * needed. Any nudge here would be a visible teleport.
 
-* Phase 2 pipeline: blit, composite on $01, push to $E1.
+* Phase 2 pipeline: blit, composite on $01, push to $E1. Stays
+* native (draw_*_l wrappers handle the e-mode switch in bank $00).
  clc
- xce
+ xce                    ; no-op when already native
  rep $30
  mx %00
  jsr fast_blit_18_01
- sec
- xce
  jsl draw_active_sprite_l
  jsl draw_other_sprite_l       ; 2-player: also draw non-active sprite
  jsl draw_overlay_l
- clc
- xce
  rep $30
  jsl shadow_on_l
  lda #0
@@ -2382,9 +2369,8 @@ _scroll_up
  sta push_ymax
  rep $20
  jsr push_band
- sec
- xce
- rtl
+ rtl                   ; native — bank-$00 caller restores e-mode
+ mx %11
 
 * scroll_up scratch — must be 2 bytes since 16-bit stores
 * land here.
@@ -2740,15 +2726,12 @@ _scroll_down
  mx %00
 
 * Step 4: standard Phase 2 tail — fast_blit_18_01, draw sprites,
-* shadow on, push_band, RTL. Identical to scroll_up's tail.
+* shadow on, push_band, RTL. Identical to scroll_up's tail. Stays
+* native (draw_*_l wrappers handle the e-mode switch in bank $00).
  jsr fast_blit_18_01
- sec
- xce                    ; back to emul briefly for draw_*_l JSL conventions
  jsl draw_active_sprite_l
  jsl draw_other_sprite_l
  jsl draw_overlay_l
- clc
- xce                    ; back to native
  rep $30
  mx %00
  jsl shadow_on_l
@@ -2760,10 +2743,8 @@ _scroll_down
  rep $20
  mx %00
  jsr push_band
- sec
- xce                    ; back to emul before RTL
+ rtl                    ; native — bank-$00 caller restores e-mode
  mx %11
- rtl
 
 :snap_transition_down
 * End-of-descent cleanup (no chain queued). Beyond clearing
@@ -2783,6 +2764,298 @@ _scroll_down
  stz scroll_src_off
  stz scroll_src_off+1
  jsl shadow_on_l        ; restore shadow state (we turned it off at entry)
+ mx %11
+ rtl
+
+*----------------------------------------------------------
+* _scroll_up_split — vertical mirror of _scroll_down. Per-frame
+* upward scroll: shift all rows DOWN by 4 in bank $18, then fill
+* the TOP 4 rows (0..3) from the split-bank up-target. Reveals
+* progressively HIGHER source rows as the climb proceeds.
+*
+* Source-row mapping: ufill_top = snap_at - off. At off=0 (start)
+* the top band shows source row snap_at; as off climbs toward
+* snap_at the band walks up to source row 0 (top of the target).
+* So the first content revealed at the top is the source's BOTTOM
+* (adjacent to where Billy climbs from) and the last is its top.
+*
+* Split-bank composition is identical to _scroll_down:
+*   playfield_split = scroll_us_split - world_offset (clamp 0..110)
+*   Pass A (left):  playfield[0..split-1] ← lbank[world_offset..]
+*   Pass B (right): playfield[split..109] ← rbank[0..]   (origin-aligned)
+* Single-bank when scroll_us_rbank == 0.
+*
+* Driven by the climb handler in game.s (jsl scroll_up_split when
+* Billy climbs an OP_UPSPLIT ladder past UP_SCROLL_THRESH).
+*----------------------------------------------------------
+_scroll_up_split
+ jsl shadow_off_l
+
+ lda scroll_us_off
+ cmp scroll_us_snap_at
+ bcc :sus_normal
+* Reached the top of the current layer. If a chain layer is queued
+* (next_lbank != 0), swap to it and reset off so this frame keeps
+* scrolling into the new art (e.g. mission25/26 done → mission21/22).
+* Otherwise end the climb.
+ lda scroll_us_next_lbank
+ bne :sus_chain
+ jmp :snap_transition_up_split
+:sus_chain
+ sta scroll_us_lbank
+ lda scroll_us_next_rbank
+ sta scroll_us_rbank
+ lda scroll_us_next_snap_at
+ sta scroll_us_snap_at
+ lda scroll_us_next_split
+ sta scroll_us_split
+ lda scroll_us_next_split+1
+ sta scroll_us_split+1
+ lda scroll_us_next_hoff
+ sta scroll_us_hoff
+ stz scroll_us_next_lbank
+ stz scroll_us_next_rbank
+ stz scroll_us_next_snap_at
+ stz scroll_us_off
+
+:sus_normal
+ clc
+ xce                    ; native mode
+ rep $30
+ mx %00
+
+* Step 1: shift all rows DOWN by 4 in bank $18. Source row N maps
+* to dest row N+4 for N=0..178. Going HIGH→LOW row order (X from
+* row 178 down to 0) avoids the overwrite trap — each row's dest
+* is 4 rows BELOW, so the row is read before any earlier-indexed
+* iteration could clobber it.
+ ldx #$6F40             ; 178*$A0 = row 178
+:ushift_row
+]src = $182000          ; row N
+]dst = $182280          ; row N+4 = src + 4*$A0
+ LUP 55
+ ldal ]src,x
+ stal ]dst,x
+]src = ]src+2
+]dst = ]dst+2
+ --^
+ txa
+ sec
+ sbc #$00A0             ; back up one row
+ bcc :ushift_done       ; passed row 0 → done
+ tax
+ jmp :ushift_row        ; inverted — LUP body is far out of branch range
+:ushift_done
+
+* Step 2: fill rows 0..3 from the up-target. ufill_top = snap_at
+* - off is the source-bank row that sits at playfield row 0.
+ sep $20
+ mx %10
+ lda scroll_us_snap_at
+ sec
+ sbc scroll_us_off
+ sta dfill_top          ; reuse down scratch (up/down never co-run)
+ rep $20
+ mx %00
+
+* row base = $2000 + ufill_top * $A0
+ lda dfill_top
+ and #$00FF
+ sta down_src_start
+ asl
+ asl                    ; *4
+ clc
+ adc down_src_start     ; *5
+ asl
+ asl
+ asl
+ asl
+ asl                    ; *160 = $A0
+ clc
+ adc #$2000
+ sta utmp               ; utmp = $2000 + ufill_top*$A0 (row base)
+
+* us_wo_eff = world_offset + sign-extended scroll_us_hoff. Per-layer
+* horizontal calibration: layer-1 (mission25/26) and layer-2
+* (mission21/22) need different shifts because their art isn't
+* world-aligned to the same origin. Used in place of world_offset
+* for both the lbank read AND the seam, so the whole layer shifts
+* consistently (halves + seam) without splitting the content.
+ lda scroll_us_hoff
+ and #$00FF
+ cmp #$0080
+ bcc :sus_hoff_pos
+ ora #$FF00             ; sign-extend negative hoff
+:sus_hoff_pos
+ clc
+ adc world_offset
+ sta us_wo_eff
+
+* playfield_split = scroll_us_split - us_wo_eff (clamp 0..110)
+ lda scroll_us_split
+ sec
+ sbc us_wo_eff
+ bpl :sus_split_pos
+ lda #0
+ bra :sus_split_done
+:sus_split_pos
+ cmp #110
+ bcc :sus_split_done
+ lda #110
+:sus_split_done
+ sta down_dst_start     ; playfield_split (0..110)
+
+* single-bank override: rbank == 0 → whole row from lbank
+ lda scroll_us_rbank
+ and #$00FF
+ bne :sus_rbank_set
+ lda #110
+ sta down_dst_start
+:sus_rbank_set
+
+* ----- Pass A: LEFT HALF (lbank, playfield 0..split-1) -----
+ lda down_dst_start
+ sta down_count
+ beq :ufill_passA_skip
+
+ lda utmp
+ clc
+ adc us_wo_eff          ; src = lbank/(row base + us_wo_eff)
+ sta $F0
+ lda #$2000             ; dst = $18/$2000 (row 0 byte 0)
+ sta $F3
+ sep $20
+ lda scroll_us_lbank
+ sta $F2
+ lda #$18
+ sta $F5
+ rep $20
+
+ ldx #4
+:ufill_rowA
+ ldy #0
+:ufill_wordA
+ lda [$F0],y
+ sta [$F3],y
+ iny
+ iny
+ cpy down_count
+ bcc :ufill_wordA
+ lda $F0
+ clc
+ adc #$00A0
+ sta $F0
+ lda $F3
+ clc
+ adc #$00A0
+ sta $F3
+ dex
+ bne :ufill_rowA
+:ufill_passA_skip
+
+* ----- Pass B: RIGHT HALF (rbank, playfield split..109) -----
+ lda scroll_us_rbank
+ and #$00FF
+ beq :ufill_passB_skip
+
+ lda #110
+ sec
+ sbc down_dst_start
+ sta down_count
+ beq :ufill_passB_skip
+
+* rbank content-origin: byte 0 = world byte `split`. Pass B's
+* leftmost visible world byte is max(us_wo_eff, split), so the
+* source offset = max(0, us_wo_eff - split). When the seam is on
+* screen (us_wo_eff < split) this is 0 (byte 0 = world split at the
+* seam). When hoff/scroll pushes the seam off the left edge
+* (us_wo_eff >= split, playfield_split clamped to 0), Pass B must
+* read deeper into rbank so its left columns aren't duplicated where
+* the (skipped) lbank half belonged — that duplication was the
+* "doubled left-hand-side art".
+ lda us_wo_eff
+ sec
+ sbc scroll_us_split
+ bpl :sus_pb_off_pos
+ lda #0
+:sus_pb_off_pos
+ clc
+ adc utmp
+ sta $F0                ; src = rbank/(row base + max(0, us_wo_eff-split))
+ lda #$2000
+ clc
+ adc down_dst_start
+ sta $F3                ; dst = $18/($2000 + playfield_split)
+ sep $20
+ lda scroll_us_rbank
+ sta $F2
+ lda #$18
+ sta $F5
+ rep $20
+
+ ldx #4
+:ufill_rowB
+ ldy #0
+:ufill_wordB
+ lda [$F0],y
+ sta [$F3],y
+ iny
+ iny
+ cpy down_count
+ bcc :ufill_wordB
+ lda $F0
+ clc
+ adc #$00A0
+ sta $F0
+ lda $F3
+ clc
+ adc #$00A0
+ sta $F3
+ dex
+ bne :ufill_rowB
+:ufill_passB_skip
+
+* Step 3: increment scroll_us_off by 4
+ sep $20
+ mx %10
+ lda scroll_us_off
+ clc
+ adc #4
+ sta scroll_us_off
+ rep $30
+ mx %00
+
+* Step 4: standard tail — fast_blit, draw sprites, push_band, RTL.
+* Stays native (draw_*_l wrappers handle the e-mode switch in $00).
+ jsr fast_blit_18_01
+ jsl draw_active_sprite_l
+ jsl draw_other_sprite_l
+ jsl draw_overlay_l
+ rep $30
+ mx %00
+ jsl shadow_on_l
+ sep $20
+ lda #0
+ sta push_ymin
+ lda #182
+ sta push_ymax
+ rep $20
+ mx %00
+ jsr push_band
+ rtl                    ; native — bank-$00 caller restores e-mode
+ mx %11
+
+:snap_transition_up_split
+* End-of-climb cleanup (mirror of :snap_transition_down). Clears
+* scroll_us_enabled so the climb driver stops firing, drops the
+* ladder + climb state, and leaves the destination platform to the
+* level script's OP_BOUNDS/OP_PLATFORM. Does NOT reload bounds.
+ stz scroll_us_enabled
+ stz is_climbing
+ stz ladder_count
+ stz scroll_src_off
+ stz scroll_src_off+1
+ jsl shadow_on_l
  mx %11
  rtl
 
