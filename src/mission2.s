@@ -291,8 +291,9 @@ level_script
  db 5                      ; rbank screen 5 = mission26 (right/most)
  db 110                    ; split (WORLD byte)
  db 36                     ; snap_at (rows to top of mission25/26)
- db 0                      ; hoff (0 = world-consistent; after the Pass B
-                           ; fix this lines up with the static rows)
+ db 0                      ; hoff (base is now scroll_src_off — the same
+                           ; origin the static rows were painted with —
+                           ; so 0 = continue the on-screen art exactly)
 * Layer 2 (chained): the new art, mission21 (left strip) + mission22
 * (right/most). next_snap_at=180 so mission21/22's full height scrolls
 * in (bottom connects to mission25/26's top). next_hoff=10 corrects
@@ -305,8 +306,12 @@ level_script
                            ; content ends at row 182 — snap_at=180 pulled
                            ; in blank row 183 (the 1px black seam line).
                            ; 179 → first band = rows 179..182.
- db 17                     ; next_hoff (+17 = shift layer-2 art left; was
-                           ; 19, -2 for the residual 2-byte leftshift)
+ db 5                      ; next_hoff (+5 = shift layer-2 art left of the
+                           ; src_off base). Old wo-based values (19/17)
+                           ; embedded that run's wo-vs-src_off skew; with
+                           ; the deterministic base this is a stable art
+                           ; constant. Estimated from the observed 8-byte
+                           ; leftshift at base skew -4: 17-8-4 = 5. TUNABLE
 * Climb-top platform. OP_UPSPLIT now parks the script in
 * SCRIPT_WAITUS until :snap_transition_up_split clears
 * scroll_us_enabled, so this runs the frame the up-scroll ends.

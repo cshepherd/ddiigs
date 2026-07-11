@@ -10306,12 +10306,13 @@ btn_action_jump
  rts
 
 :has_key
- lda $c010
+ lda $c010              ; consume strobe; bits 0-6 = key code
  and #$7f
 * M (or m) → toggle background music. NTPplay/NTPstop must run
 * in native 16-bit mode (same protocol as title.s / OP_END /
-* game_over). Autorepeat is disabled in kbd_init so the $C000
-* strobe is one-shot per press — no edge-detect needed.
+* game_over). (Note: kbd_init is NOT called at boot — the system
+* default ADB autorepeat applies: one strobe on keydown, ~1s
+* delay, then ~11-15/sec repeats.)
  cmp #'m'
  beq :pi_m_toggle
  cmp #'M'
@@ -10839,9 +10840,13 @@ btn_action_jump
 * and the partner walks up in walk anim instead of climbing.
  lda scroll_up_enabled
  beq :up_walk_step
- lda #0
+ lda #0                ; mission-1 style (y_top=0): engage regardless of Y
  jsr check_ladder
- bcs :up_walk_step
+ bcc :up_ovr_set
+ lda :up_as_propy      ; mission-2 style (y_top>0): retry with the REAL
+ jsr check_ladder      ; proposed Y — endpoint row, or any in-range row
+ bcs :up_walk_step     ; once is_climbing is latched (continuation)
+:up_ovr_set
  lda #1
  sta via_ladder
 :up_walk_step
@@ -10896,14 +10901,20 @@ btn_action_jump
  jsr advance_climb
  bra :up_after_anim
 :up_walkframe
-* Regular up-walk (no ladder). Clear is_climbing — player has
-* left the ladder (or never started a climb). Position steps
-* every VBL; the frame cycle stays throttled inside advance_walk
-* (joystick only). Decoupling fixes the "stall on middle frame"
-* perception that the gated step caused — during scroll the world
-* moves every VBL regardless of the toggle, so the player looks
-* smooth; doing the same here makes non-scroll walking match.
+* Regular up-walk (no ladder this frame). Only drop is_climbing
+* if Billy has actually LEFT the ladder — clearing it on a single
+* missed frame downgraded the rest of the climb to walk anim,
+* because re-engage needs an exact endpoint row (check_ladder's
+* gate) while the latch allows any in-range continuation.
+* Position steps every VBL; the frame cycle stays throttled
+* inside advance_walk (joystick only).
+ lda is_climbing
+ beq :up_wf_step
+ lda :up_as_propy
+ jsr check_ladder
+ bcc :up_wf_step        ; still within ladder x/y range — keep latch
  stz is_climbing
+:up_wf_step
  dec IMAGE01_YPOS
  jsr advance_walk        ; vertical walk — cycle walk frames
 :up_after_anim
@@ -10959,8 +10970,26 @@ btn_action_jump
  jmp :skip_down       ; after the down-engage snap was added
 :dn_bounds_ok
  lda via_ladder
- bne :dn_via_ok       ; inverted — :down_walkframe out of branch
- jmp :down_walkframe  ; range after the down-engage snap was added
+ bne :dn_via_ok
+* Ladder-column override (mirror of :up_walk's): check_y_bounds
+* only sets via_ladder on its blocked-row fallback, so a bounds-
+* WALKABLE row crossing the ladder (platform spans, lenient
+* fallback rows) left via_ladder=0 and the descent stepped in
+* walk anim beside the rungs. Uses the REAL proposed Y (not the
+* mission-1 y=0 hack) so mission-2 ladders with y_top>0 match;
+* check_ladder's engage gate still applies (endpoint row, or any
+* in-range row once is_climbing is latched).
+ lda scroll_up_enabled
+ ora scroll_down_enabled
+ beq :dn_no_ladder
+ lda :dn_as_propy
+ jsr check_ladder
+ bcc :dn_ovr_set
+:dn_no_ladder
+ jmp :down_walkframe  ; far — out of branch range
+:dn_ovr_set
+ lda #1
+ sta via_ladder
 :dn_via_ok
 * Initial down-engage (is_climbing still 0): snap Billy's xpos to
 * the ladder's horizontal center, mirroring the up-climb's :sn_*
@@ -11051,10 +11080,16 @@ btn_action_jump
  jsr advance_climb
  bra :down_after_anim
 :down_walkframe
-* Regular down-walk (no ladder). Clear is_climbing. Position
-* steps every VBL; frame throttle lives inside advance_walk
-* (joystick only). See :up_walkframe for the rationale.
+* Regular down-walk (no ladder this frame). Keep is_climbing
+* while Billy is still within the ladder's x/y range — see
+* :up_walkframe for the rationale.
+ lda is_climbing
+ beq :dn_wf_step
+ lda :dn_as_propy
+ jsr check_ladder
+ bcc :dn_wf_step        ; still within ladder x/y range — keep latch
  stz is_climbing
+:dn_wf_step
  inc IMAGE01_YPOS
  jsr advance_walk       ; vertical walk — cycle walk frames
 :down_after_anim

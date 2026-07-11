@@ -2875,12 +2875,18 @@ _scroll_up_split
  adc #$2000
  sta utmp               ; utmp = $2000 + ufill_top*$A0 (row base)
 
-* us_wo_eff = world_offset + sign-extended scroll_us_hoff. Per-layer
-* horizontal calibration: layer-1 (mission25/26) and layer-2
-* (mission21/22) need different shifts because their art isn't
-* world-aligned to the same origin. Used in place of world_offset
-* for both the lbank read AND the seam, so the whole layer shifts
-* consistently (halves + seam) without splitting the content.
+* us_wo_eff = scroll_src_off + sign-extended scroll_us_hoff.
+* Base is scroll_src_off, NOT world_offset: the static screen the
+* up-scroll must extend was painted by the right-scroll fills,
+* whose content placement tracks scroll_src_off (seeded by
+* OP_SCROLLSRC at a fixed value). world_offset at that moment
+* depends on where the player happened to engage the descent, so
+* it can differ from scroll_src_off by a run-varying amount —
+* basing on wo made the scrolled-in rows land a different number
+* of bytes off the static art every run, and no constant hoff
+* could fix it. hoff remains the per-layer art calibration on
+* top of the (now deterministic) base; used for both the lbank
+* read AND the seam so the whole layer shifts consistently.
  lda scroll_us_hoff
  and #$00FF
  cmp #$0080
@@ -2888,7 +2894,7 @@ _scroll_up_split
  ora #$FF00             ; sign-extend negative hoff
 :sus_hoff_pos
  clc
- adc world_offset
+ adc scroll_src_off
  sta us_wo_eff
 
 * playfield_split = scroll_us_split - us_wo_eff (clamp 0..110)
