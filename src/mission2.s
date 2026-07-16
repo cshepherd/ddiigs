@@ -17,6 +17,7 @@
 OP_WAITX EQU 2
 OP_RIGHT EQU 4         ; connect to right screen + enable right scroll
 OP_DOWN  EQU 7         ; descend into below-screen content via ladder
+OP_SCRLOCK EQU 8       ; lock all scrolling in the current view
 OP_END   EQU 9
 OP_BOUNDS EQU 21       ; rewrite stratum bounds to one walkable row
 OP_SCROLLSRC EQU 22    ; set scroll_src_off directly (post-OP_RIGHT)
@@ -24,6 +25,10 @@ OP_SCROLLSPLIT EQU 23  ; vertical-split right-scroll source (upper bank, split r
 OP_LADDER EQU 24       ; install a single ladder + enable scroll_up
 OP_PLATFORM EQU 25     ; add ONE walkable row to bounds (no clear)
 OP_UPSPLIT EQU 26      ; add a scrolling up-ladder + split-bank up-target
+OP_ALADDER EQU 27      ; append an extra scroll-segment ladder (zig-zag
+                       ; climbs; must precede the OP_UPSPLIT)
+OP_SRCWO   EQU 28      ; scroll_src_off = world_offset (run-invariant
+                       ; art placement; see game.s opcode table)
 
 *==========================================================
 * Level header — same field layout as mission1.s.
@@ -237,10 +242,15 @@ level_script
 * (split at world byte 110). Walking right past the scroll
 * threshold should now reveal more of mission29's content.
  db OP_RIGHT,8
-* Skip mission29 bytes already on-screen (= playfield bytes 90..109
-* = mission29 bytes 0..19). The next scroll-right should reveal
-* mission29 byte 20+ (= world byte 130+), not byte 0.
- db OP_SCROLLSRC,20
+* Sync the scroll source offset to the live world_offset so the
+* next scroll-right reveals mission29's next unseen byte. The old
+* fixed OP_SCROLLSRC,20 assumed the descent ended at wo=20 — but
+* wo after OP_DOWN is wherever the player engaged the down-ladder
+* (varies a few bytes run to run), and the baked-in 20 shifted ALL
+* later fill art right by (wo-20) bytes ("mission21/22 art 16px
+* right" when engaging 8 bytes late). src_off = wo is the
+* invariant every fill path assumes.
+ db OP_SRCWO
 * Vertical-split source for right-scroll: rows 0..142 fill from
 * mission26 (screen 5 = bank $08, the upper descent layer's rbank),
 * rows 143..182 from scroll_src_bank (mission29 = bank $0B, set
@@ -273,6 +283,24 @@ level_script
                            ; reading mission26 from row 37 so the
                            ; scrolling-in extends the existing on-
                            ; screen art instead of restarting at row 0.
+* Second climb segment (zig-zag): mission22's art ladder at world
+* x=181..185 (art bytes 71..75, world = art+110), rising from the
+* mid-climb platform to the lower building's roof at art row 89 —
+* 79 rows above the mid platform's surface at art row 168. The
+* player rides the scrolling climb below, steps off onto the mid
+* platform (the OP_PLATFORM y=53 row) when it arrives, walks left
+* from the 195..209 ladder to this column, and pressing up resumes
+* the SAME scroll_up_split (the driver routes any ladder slot >=
+* upsplit_ladder_idx to the scroll; OP_ALADDER claims that index).
+* MUST come after OP_LADDER (locals take lower slots) and before
+* OP_UPSPLIT (which parks the script until the climb snaps).
+ db OP_ALADDER
+ dw 176                    ; x_left  (world; engage zone 174..192
+                           ; covers Billy's measured stand-point,
+                           ; world_x 179, center 183 on the art)
+ dw 190                    ; x_right
+ db 13                     ; y_top   (climb range top; any <= y_bottom)
+ db 53                     ; y_bottom = mid-platform row = engage row
 * Scrolling up-ladder at world x=202 ($CA) on the upper platform.
 * Climbing it scrolls UP into mission21 (left strip) + mission22
 * (right / most of screen). Coexists with the local OP_LADDER above
@@ -296,32 +324,63 @@ level_script
                            ; so 0 = continue the on-screen art exactly)
 * Layer 2 (chained): the new art, mission21 (left strip) + mission22
 * (right/most). next_snap_at=180 so mission21/22's full height scrolls
-* in (bottom connects to mission25/26's top). next_hoff=10 corrects
-* the observed 10-byte rightward shift. split/snap_at/hoff TUNABLE.
+* in (bottom connects to mission25/26's top). next_hoff calibrates the
+* art's horizontal placement (see inline note). split/snap_at/hoff
+* TUNABLE.
  db 0                      ; next_lbank screen 0 = mission21
  db 1                      ; next_rbank screen 1 = mission22
- db 128                    ; next_split (WORLD byte)
+ db 110                    ; next_split (WORLD byte). mission22 byte 0
+                           ; = world 110, the standard 110-byte screen
+                           ; seam (same convention as mission25/26 and
+                           ; every mission1 pair). The old 128/hoff=18
+                           ; pair encoded the same fill math (Pass B
+                           ; offset = src_off - 110 either way) with
+                           ; two magic numbers that had to cancel.
  db 179                    ; next_snap_at. NOT 180: the first band reads
                            ; source rows snap_at..snap_at+3, and art
                            ; content ends at row 182 — snap_at=180 pulled
                            ; in blank row 183 (the 1px black seam line).
                            ; 179 → first band = rows 179..182.
- db 5                      ; next_hoff (+5 = shift layer-2 art left of the
-                           ; src_off base). Old wo-based values (19/17)
-                           ; embedded that run's wo-vs-src_off skew; with
-                           ; the deterministic base this is a stable art
-                           ; constant. Estimated from the observed 8-byte
-                           ; leftshift at base skew -4: 17-8-4 = 5. TUNABLE
+ db 0                      ; next_hoff. 0 now that next_split encodes the
+                           ; true world seam (110): the src_off base alone
+                           ; places mission22 byte B at world B+110. The
+                           ; playtested "13 bytes right" fix (hoff 5→18)
+                           ; and this split/hoff rewrite are the same
+                           ; correction expressed two ways.
+ db 108                    ; next_stop_at: END the climb at off=108 —
+                           ; the ROOFTOP floor (mission22 art rows
+                           ; ~165..182) arrives at Billy's feet with
+                           ; source row 179-104=75 left at the top of
+                           ; the view. Scrolling the full 179 rows
+                           ; overshot the rooftop by ~80 rows and
+                           ; parked Billy on the HELICOPTER SKID (art
+                           ; rows 60..62). The helicopter/upper art
+                           ; (rows 0..74) stays above the view for a
+                           ; later leg. TUNABLE ±4.
 * Climb-top platform. OP_UPSPLIT now parks the script in
 * SCRIPT_WAITUS until :snap_transition_up_split clears
 * scroll_us_enabled, so this runs the frame the up-scroll ends.
-* Billy rides the climb at ypos=53; platform at 53+4=57 (same
-* +4 feet-drop convention as the descent's OP_BOUNDS).
+* With stop_at=108 the climb ends with the ROOFTOP floor
+* (mission22 art rows ~165..182, screen rows ~90..107 at the
+* stopped view) under Billy: he rides at ypos=53 and drops the
+* same +4 the descent's OP_BOUNDS applies (feet 97 = art row
+* ~172, inside the floor strip). Span = the visible rooftop;
+* TUNABLE against the art's walkable extent.
  db OP_BOUNDS,57
- dw 112                    ; span1 x_lo (world; visible = 112..221)
- dw 221                    ; span1 x_hi
+ dw 112                    ; span1 x_lo (world)
+ dw 221                    ; span1 x_hi (world)
  dw $FFFF                  ; span2 x_lo (no span2)
  dw $0000                  ; span2 x_hi
+* Freeze scrolling on the roof. The pre-climb right-scroll config
+* (OP_RIGHT,8 + OP_SCROLLSPLIT: mission26 rows 0..142 over
+* mission29) is still armed and belongs to the level BELOW —
+* walking right past the scroll threshold up here painted stale
+* mission26/29 columns in from the right edge while sliding the
+* just-scrolled-in mission21/22 art off to the left (the "very
+* jumbled screen" after the long climb). The roof span 168..220
+* fits entirely in the wo=112 view, so nothing needs to scroll
+* until the next leg re-arms its own sources.
+ db OP_SCRLOCK
  db OP_WAITX
  dw 600                    ; placeholder hold after descent
  db OP_END

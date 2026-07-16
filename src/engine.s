@@ -2791,8 +2791,12 @@ _scroll_down
 _scroll_up_split
  jsl shadow_off_l
 
+* stop_at ends/chains the layer; snap_at stays the FILL ORIGIN
+* (ufill = snap_at - off below). Distinct so a layer can stop
+* mid-art (mission2's rooftop) instead of always scrolling the
+* source art's full height to row 0.
  lda scroll_us_off
- cmp scroll_us_snap_at
+ cmp scroll_us_stop_at
  bcc :sus_normal
 * Reached the top of the current layer. If a chain layer is queued
 * (next_lbank != 0), swap to it and reset off so this frame keeps
@@ -2807,6 +2811,8 @@ _scroll_up_split
  sta scroll_us_rbank
  lda scroll_us_next_snap_at
  sta scroll_us_snap_at
+ lda scroll_us_next_stop_at
+ sta scroll_us_stop_at
  lda scroll_us_next_split
  sta scroll_us_split
  lda scroll_us_next_split+1
@@ -2816,6 +2822,7 @@ _scroll_up_split
  stz scroll_us_next_lbank
  stz scroll_us_next_rbank
  stz scroll_us_next_snap_at
+ stz scroll_us_next_stop_at
  stz scroll_us_off
 
 :sus_normal
@@ -2875,18 +2882,24 @@ _scroll_up_split
  adc #$2000
  sta utmp               ; utmp = $2000 + ufill_top*$A0 (row base)
 
-* us_wo_eff = scroll_src_off + sign-extended scroll_us_hoff.
-* Base is scroll_src_off, NOT world_offset: the static screen the
-* up-scroll must extend was painted by the right-scroll fills,
-* whose content placement tracks scroll_src_off (seeded by
-* OP_SCROLLSRC at a fixed value). world_offset at that moment
-* depends on where the player happened to engage the descent, so
-* it can differ from scroll_src_off by a run-varying amount —
-* basing on wo made the scrolled-in rows land a different number
-* of bytes off the static art every run, and no constant hoff
-* could fix it. hoff remains the per-layer art calibration on
-* top of the (now deterministic) base; used for both the lbank
-* read AND the seam so the whole layer shifts consistently.
+* us_wo_eff = world_offset + sign-extended scroll_us_hoff.
+* Base is world_offset: the static screen the up-scroll extends is
+* world-true — the descent is anchored at its fire-time wo and the
+* right-scroll streams world-true content via its (bank, cursor)
+* pair — so a wo-based fill lines up with it for ANY run.
+* scroll_src_off is NOT usable as the base: it is the right-scroll's
+* per-bank streaming cursor and WRAPS to 0 when it crosses 110
+* (switching source banks). A climb engaged past the wrap (e.g.
+* mission2 at wo=112 with the cursor seeded at 20 → cursor 2) fed
+* the fill a mod-110 value, collapsing playfield_split to ~108 and
+* painting the LBANK's low bytes across the whole view — mission21
+* art where mission22 belonged, seen as a "16px right" shift
+* because the two banks' content overlaps 110 bytes apart. The old
+* run-varying-wo complaint predates OP_SRCWO (a fixed OP_SCROLLSRC
+* seed vs the descent's variable end wo); with world-true static
+* art, wo IS the deterministic base. hoff remains a per-layer art
+* calibration; used for both the lbank read AND the seam so the
+* whole layer shifts consistently.
  lda scroll_us_hoff
  and #$00FF
  cmp #$0080
@@ -2894,7 +2907,7 @@ _scroll_up_split
  ora #$FF00             ; sign-extend negative hoff
 :sus_hoff_pos
  clc
- adc scroll_src_off
+ adc world_offset
  sta us_wo_eff
 
 * playfield_split = scroll_us_split - us_wo_eff (clamp 0..110)

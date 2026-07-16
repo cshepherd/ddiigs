@@ -1833,9 +1833,10 @@ run_script
 * OP_LADDER) + a split-bank up-target. Ladder geometry (params
 * 1..6) mirrors OP_LADDER; the split-bank target (params 7..10)
 * mirrors OP_DOWN. Climbing THIS ladder past UP_SCROLL_THRESH
-* fires _scroll_up_split (the :sn_no_hide driver routes by
-* ladder_hit_idx == upsplit_ladder_idx, so a coexisting local
-* ladder keeps its own behavior).
+* fires _scroll_up_split (the :sn_no_hide driver routes any
+* ladder_hit_idx >= upsplit_ladder_idx to the split scroll, so a
+* coexisting local ladder in a LOWER slot keeps its own behavior
+* and OP_ALADDER segments in higher slots share the scroll).
 * New slot byte offset = ladder_count * 6 → X.
  lda ladder_count
  sta :ups_base
@@ -1843,8 +1844,16 @@ run_script
  clc
  adc :ups_base
  asl
- sta upsplit_ladder_idx ; record this ladder's index for the driver
  tax                    ; X = byte offset of the new slot
+* Record the FIRST scroll-segment slot only. If an OP_ALADDER
+* already claimed upsplit_ladder_idx (multi-segment climb), keep
+* it — the >= routing then covers that segment AND this one.
+ lda upsplit_ladder_idx
+ cmp #$FF
+ bne :ups_idx_have
+ txa
+ sta upsplit_ladder_idx ; record this ladder's index for the driver
+:ups_idx_have
  ldy #1
  lda [script_pc],y
  sta ladder_buf,x       ; x_left low
@@ -1899,6 +1908,8 @@ run_script
  ldy #10
  lda [script_pc],y
  sta scroll_us_snap_at
+ sta scroll_us_stop_at  ; layer 1 always scrolls its full range:
+                        ; stop threshold == fill origin
  stz scroll_us_off
 * param 11: hoff (signed per-layer horizontal byte offset for layer 1).
  ldy #11
@@ -1930,10 +1941,20 @@ run_script
  ldy #16
  lda [script_pc],y
  sta scroll_us_next_hoff
+* p17 = chain layer's stop_at: the off value that ENDS the climb
+* (fills keep reading from next_snap_at - off, so the scroll can
+* stop mid-art — e.g. mission2 layer 2 stops at 108 with the
+* rooftop under Billy's feet instead of scrolling all 179 rows of
+* mission21/22 to the art top). Pass == next_snap_at for a
+* full-height chain layer.
+ ldy #17
+ lda [script_pc],y
+ sta scroll_us_next_stop_at
  bra :ups_chain_done
 :ups_no_chain
  stz scroll_us_next_lbank
  stz scroll_us_next_rbank
+ stz scroll_us_next_stop_at
 :ups_chain_done
 * Overlay: POINT_UP arrow at top-center (mirror of OP_DOWN's
 * bottom POINT_DOWN). Skip if the mission supplied no sprite.
@@ -1965,7 +1986,7 @@ run_script
 :ups_no_overlay
  lda script_pc
  clc
- adc #17                ; opcode + 16 params
+ adc #18                ; opcode + 17 params
  sta script_pc
  lda script_pc+1
  adc #0
@@ -1980,6 +2001,85 @@ run_script
 :ups_base dfb 0
 
 :not_upsplit
+ cmp #OP_ALADDER
+ beq :do_aladder
+ jmp :not_aladder
+:do_aladder
+* OP_ALADDER: append ONE ladder to ladder_buf as an extra scroll
+* segment (see the opcode table comment). Claims
+* upsplit_ladder_idx if no earlier OP_ALADDER/OP_UPSPLIT has, so
+* the >= routing in the climb driver covers this slot.
+ lda ladder_count
+ sta :al_base
+ asl
+ clc
+ adc :al_base
+ asl                    ; A = ladder_count * 6
+ tax                    ; X = byte offset of the new slot
+ lda upsplit_ladder_idx
+ cmp #$FF
+ bne :al_idx_have
+ txa
+ sta upsplit_ladder_idx ; first scroll segment = this slot
+:al_idx_have
+ ldy #1
+ lda [script_pc],y
+ sta ladder_buf,x       ; x_left low
+ inx
+ ldy #2
+ lda [script_pc],y
+ sta ladder_buf,x       ; x_left high
+ inx
+ ldy #3
+ lda [script_pc],y
+ sta ladder_buf,x       ; x_right low
+ inx
+ ldy #4
+ lda [script_pc],y
+ sta ladder_buf,x       ; x_right high
+ inx
+ ldy #5
+ lda [script_pc],y
+ sta ladder_buf,x       ; y_top
+ inx
+ ldy #6
+ lda [script_pc],y
+ sta ladder_buf,x       ; y_bottom
+ inc ladder_count
+ lda script_pc
+ clc
+ adc #7                 ; opcode + 6 params
+ sta script_pc
+ lda script_pc+1
+ adc #0
+ sta script_pc+1
+ jmp :exec_loop
+:al_base dfb 0
+
+:not_aladder
+ cmp #OP_SRCWO
+ bne :not_srcwo
+* OP_SRCWO: scroll_src_off = world_offset. The scroll fills place
+* content at world = art_origin + src_off-based offsets, which is
+* only correct when src_off equals wo. OP_SCROLLSRC's fixed param
+* baked in ONE run's wo (the descent leaves wo wherever the player
+* engaged the down-ladder, so it varies a few bytes run to run and
+* every later fill landed that many bytes off — mission2's "art 16px
+* right" bug). No params; advance 1.
+ lda world_offset
+ sta scroll_src_off
+ lda world_offset+1
+ sta scroll_src_off+1
+ lda script_pc
+ clc
+ adc #1
+ sta script_pc
+ lda script_pc+1
+ adc #0
+ sta script_pc+1
+ jmp :exec_loop
+
+:not_srcwo
 * OP_NONE — skip 1 byte and continue
  cmp #OP_NONE
  bne :unknown_op
@@ -2204,6 +2304,12 @@ run_script
 * gravity gets a look at Billy.
  lda scroll_us_enabled
  bne :wus_rts                 ; still climbing/scrolling, wait
+ lda #$FF
+ sta upsplit_ladder_idx       ; climb over — retire the segment
+                              ; routing so later ladders (a fresh
+                              ; OP_LADDER's slot 0, next level's
+                              ; buffers) don't alias into the
+                              ; >= scroll route
  lda #SCRIPT_RUN
  sta script_state
  jmp :exec_loop
@@ -3109,8 +3215,18 @@ did_descent_this_frame dfb 0      ; set after :ai_dn_on_ladder fires
 scroll_us_enabled    dfb 0        ; 1 while an OP_UPSPLIT climb is active
 scroll_us_lbank      dfb 0        ; left-half source bank ($00 = none)
 scroll_us_rbank      dfb 0        ; right-half source bank ($00 = single-bank)
-scroll_us_off        dfb 0        ; rows scrolled this layer (0..snap_at)
-scroll_us_snap_at    dfb 0        ; off threshold for snap (this layer)
+scroll_us_off        dfb 0        ; rows scrolled this layer (0..stop_at)
+scroll_us_snap_at    dfb 0        ; FILL ORIGIN: source art row shown at the
+                                  ; top on this layer's first fill
+                                  ; (ufill = snap_at - off). Historically
+                                  ; also the stop threshold; that role
+                                  ; moved to scroll_us_stop_at so a climb
+                                  ; can end mid-art (e.g. mission2's
+                                  ; rooftop at layer-2 off=108 instead of
+                                  ; scrolling the full art to the top).
+scroll_us_stop_at    dfb 0        ; off threshold that ends/chains the
+                                  ; layer (snap fires at off >= stop_at).
+                                  ; == snap_at for full-height layers.
 scroll_us_split      dw 0         ; world byte where lbank/rbank content meet
 scroll_us_hoff       dfb 0        ; signed per-layer horizontal byte offset
                                   ; added to world_offset for this layer's
@@ -3123,6 +3239,7 @@ scroll_us_next_hoff  dfb 0        ; chain layer's hoff
 scroll_us_next_lbank dfb 0
 scroll_us_next_rbank dfb 0
 scroll_us_next_snap_at dfb 0
+scroll_us_next_stop_at dfb 0
 scroll_us_next_split dw 0
 did_climb_us_this_frame dfb 0     ; co-op double-scroll guard for up-split
 
@@ -4174,6 +4291,8 @@ load_ladders
 *----------------------------------------------------------
 check_ladder
  sta :prop_y
+ lda #$FF
+ sta :cl_pend           ; no pending top-engage yet
  lda ladder_count
  bne :cl_have
  jmp :cl_no
@@ -4253,6 +4372,17 @@ check_ladder
  beq :cl_on_ladder
  cmp ladder_buf+4,x    ; y_top (down-engage from above)
  bne :cl_next          ; neither endpoint — reject
+* Top-engage candidate. Don't take it yet: when two ladders share
+* a row — a spent segment TOPPING OUT at the platform row and the
+* next segment RISING from it (mission2's stacked climb) — the
+* y_bottom match must win or the dead lower ladder shadows the
+* live upper one. Remember the first top-hit, keep scanning, and
+* fall back to it at :cl_no only if no bottom-engage matched.
+ lda :cl_pend
+ cmp #$FF
+ bne :cl_next          ; already have a pending top-hit
+ stx :cl_pend
+ bra :cl_next
 :cl_on_ladder
  stx ladder_hit_idx    ; export matched entry (byte index) for
                        ; engage-time consumers
@@ -4275,11 +4405,20 @@ check_ladder
  beq :cl_no
  bcs :cl_scan
 :cl_no
+ ldx :cl_pend
+ cpx #$FF
+ beq :cl_really_no
+ stx ladder_hit_idx    ; fall back to the pending top-engage
+ lda :prop_y
+ clc
+ rts
+:cl_really_no
  lda :prop_y
  sec
  rts
 :prop_y dfb 0
 :cl_idx dfb 0
+:cl_pend dfb 0
 :swx    ds 2
 :swx_l  ds 2         ; swx + LADDER_TOL (lenient left bound)
 :swx_r  ds 2         ; swx - LADDER_TOL (lenient right bound)
@@ -9405,9 +9544,40 @@ OP_UPSPLIT  = 26      ; Install a SCROLLING up-ladder (split-bank,
                       ;   1b next_lbank screen ($FF = no chain)
                       ;   1b next_rbank screen
                       ;   1b next_split (WORLD byte)
-                      ;   1b next_snap_at
+                      ;   1b next_snap_at (chain layer's FILL ORIGIN:
+                      ;      first fill shows this source art row)
                       ;   1b next_hoff (signed chain-layer horizontal offset)
-                      ; Total advance: 17 bytes (opcode + 16 params).
+                      ;   1b next_stop_at (off threshold that ENDS the
+                      ;      climb; == next_snap_at scrolls the full
+                      ;      art, smaller stops mid-art with source row
+                      ;      (next_snap_at - stop_at) left at the top)
+                      ; Total advance: 18 bytes (opcode + 17 params).
+OP_SRCWO    = 28      ; scroll_src_off = world_offset. Replaces a fixed
+                      ; OP_SCROLLSRC where the intended value is "the
+                      ; current wo" (wo after a descent depends on where
+                      ; the player engaged the ladder). Seeds the
+                      ; RIGHT-SCROLL's per-bank streaming cursor, which
+                      ; wraps at 110 — valid only while wo < 110 (true
+                      ; post-descent). The up-split fills base on
+                      ; world_offset directly and don't read this.
+                      ; No params.
+OP_ALADDER  = 27      ; APPEND one ladder to ladder_buf as an extra
+                      ; scroll-up-split climb SEGMENT (mission2's
+                      ; zig-zag tower: climb, step off onto a mid
+                      ; platform, walk to the next column, resume the
+                      ; same scroll). Records the first appended slot
+                      ; in upsplit_ladder_idx so the climb driver's
+                      ; >= routing treats it (and every later slot)
+                      ; as a scroll segment. Touches nothing else —
+                      ; no count reset, no flags, no overlay.
+                      ; ORDER: must come AFTER any OP_LADDER (local
+                      ; ladders take lower slots and route local) and
+                      ; BEFORE the OP_UPSPLIT (which parks the
+                      ; script, so no ops can run mid-climb).
+                      ; Params mirror OP_LADDER:
+                      ;   2b world x_left, 2b world x_right,
+                      ;   1b y_top, 1b y_bottom
+                      ; Total advance: 7 bytes (opcode + 6 params).
 
 OP_SCROLLSPLIT = 23   ; Set up a vertical-split right-scroll source.
                       ; Params:
@@ -10529,6 +10699,8 @@ btn_action_jump
 :dn_as_propy dfb 0
 :dn_ctr      ds 2     ; down-engage snap: ladder center scratch
 :dn_delta    dfb 0    ; down-engage snap: xpos delta for abs_x fixup
+:up_ctr      ds 2     ; up-engage snap: ladder center scratch
+:up_delta    dfb 0    ; up-engage snap: xpos delta for abs_x fixup
 :do_up
 * If scroll_up enabled AND on a ladder AND near top, scroll up.
 * Inverted branches + jmp because :up_walk moved out of 8-bit range
@@ -10751,15 +10923,19 @@ btn_action_jump
  lda did_climb_this_frame
  bne :sn_skip_scroll
 * OP_UPSPLIT's split-bank scroll-up path: fire _scroll_up_split
-* only when the ladder Billy is actually on is the up-scroll
-* ladder (ladder_hit_idx == upsplit_ladder_idx) AND it's still
-* armed. This lets a local OP_LADDER on the same screen keep its
-* own non-scrolling behavior (it falls through to :sn_chk_local).
+* when the ladder Billy is on is ANY scroll segment — slot index
+* >= upsplit_ladder_idx (the first OP_ALADDER/OP_UPSPLIT slot) —
+* AND it's still armed. Local OP_LADDER slots sit BELOW that
+* index and fall through to :sn_chk_local, keeping their
+* non-scrolling behavior. Multi-segment climbs (mission2's
+* zig-zag tower) list every segment via OP_ALADDER before the
+* OP_UPSPLIT, so stepping off mid-scroll onto a platform and
+* re-engaging on the next segment resumes the same scroll.
  lda scroll_us_enabled
  beq :sn_chk_local
  lda ladder_hit_idx
  cmp upsplit_ladder_idx
- bne :sn_chk_local
+ bcc :sn_chk_local      ; below first segment slot → local ladder
  clc
  xce                    ; native across the JSL (see scroll_right site)
  jsl scroll_up_split
@@ -10825,10 +11001,14 @@ btn_action_jump
 * which sits above y_bottom for follow-up scenarios. (mission1
 * ladders have y_top=0, so prop_y=0 is always within range.)
  lda scroll_up_enabled
- beq :up_blocked_bounds
+ bne :up_lenient_try   ; inverted — :up_blocked_bounds moved out of
+ jmp :up_blocked_bounds ; 8-bit range by the up-engage snap block
+:up_lenient_try
  lda #0
  jsr check_ladder
- bcs :up_blocked_bounds
+ bcc :up_lenient_ok
+ jmp :up_blocked_bounds
+:up_lenient_ok
  lda #1
  sta via_ladder
  jmp :up_do_move
@@ -10863,7 +11043,8 @@ btn_action_jump
  lda via_ladder
  beq :up_do_move
  lda scroll_up_enabled
- beq :up_blocked_ladder
+ bne :up_do_move        ; inverted — :up_blocked_ladder moved out of
+ jmp :up_blocked_ladder ; 8-bit range by the up-engage snap block
 :up_do_move
 * DEBUG: 'UC' = via-ladder climb allowed; 'UW' = normal walk up
  do DEBUG_PRINT
@@ -10890,6 +11071,62 @@ btn_action_jump
  fin
  lda via_ladder
  beq :up_walkframe
+* Initial up-engage (is_climbing still 0): snap Billy's xpos to
+* the ladder's horizontal center, mirroring :ai_do_down's engage
+* snap. Without this the engage window admits Billy up to
+* LADDER_TOL+width/2 bytes off-center and he climbs there until
+* ypos crosses UP_SCROLL_THRESH, where :do_up's per-frame :sn_
+* snap finally centers him — a visible mid-ladder teleport.
+* ladder_hit_idx was exported by the check_ladder call that set
+* via_ladder above. Uses -3 (:sn_'s offset, not :dn_'s -4) so the
+* later :sn_ snap resolves to the same byte — no second nudge.
+ lda is_climbing
+ bne :up_no_snap        ; continuation — already centered
+ ldx ladder_hit_idx
+* center = (x_left + x_right) / 2 (16-bit)
+ clc
+ lda ladder_buf,x
+ adc ladder_buf+2,x
+ sta :up_ctr
+ lda ladder_buf+1,x
+ adc ladder_buf+3,x
+ sta :up_ctr+1
+ lsr :up_ctr+1
+ ror :up_ctr
+* new xpos = center - world_offset - 3
+ sec
+ lda :up_ctr
+ sbc world_offset
+ sta :up_ctr
+ lda :up_ctr+1
+ sbc world_offset+1
+ sta :up_ctr+1          ; on-screen ladder → result fits in low byte
+ sec
+ lda :up_ctr
+ sbc #3
+ sta :up_ctr            ; = snapped xpos
+* abs_x += (new - old), sign-extended, so the wo+xpos invariant
+* survives the snap (same fixup as the down-engage snap).
+ sec
+ sbc IMAGE01_XPOS
+ sta :up_delta
+ lda :up_ctr
+ sta IMAGE01_XPOS
+ lda :up_delta
+ clc
+ adc abs_x
+ sta abs_x
+ lda :up_delta
+ bmi :up_snap_neg
+ lda abs_x+1
+ adc #0
+ bra :up_snap_sx
+:up_snap_neg
+ lda abs_x+1
+ adc #$FF
+:up_snap_sx
+ sta abs_x+1
+:up_no_snap
 * Climb step (via_ladder=1). Mark is_climbing so subsequent
 * frames bypass check_ladder's engage-row gate. Two decs per VBL =
 * 2 px/VBL ladder pace (NES feel); not gated by the walk_toggle
