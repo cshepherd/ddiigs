@@ -18,6 +18,7 @@ OP_WAITX EQU 2
 OP_RIGHT EQU 4         ; connect to right screen + enable right scroll
 OP_DOWN  EQU 7         ; descend into below-screen content via ladder
 OP_SCRLOCK EQU 8       ; lock all scrolling in the current view
+OP_SCRMAX  EQU 15      ; set maximum world_offset (right-scroll clamp)
 OP_END   EQU 9
 OP_BOUNDS EQU 21       ; rewrite stratum bounds to one walkable row
 OP_SCROLLSRC EQU 22    ; set scroll_src_off directly (post-OP_RIGHT)
@@ -362,12 +363,13 @@ level_script
 * scroll_us_enabled, so this runs the frame the up-scroll ends.
 * With stop_at=108 the climb ends with the ROOFTOP floor
 * (mission22 art rows ~165..182, screen rows ~90..107 at the
-* stopped view) under Billy: he rides at ypos=53 and drops the
-* same +4 the descent's OP_BOUNDS applies (feet 97 = art row
-* ~172, inside the floor strip). Span = the visible rooftop;
-* TUNABLE against the art's walkable extent.
- db OP_BOUNDS,57
- dw 112                    ; span1 x_lo (world)
+* stopped view) under Billy. y=54 puts his feet (ypos+40 = 94)
+* on the floor's surface line (art row ~168 = screen row ~93);
+* the earlier 57 sank him 3px into the platform art.
+ db OP_BOUNDS,54
+ dw 162                    ; span1 x_lo (world) — the rooftop platform
+                           ; is ~30 bytes wide with the leg-2 ladder
+                           ; (176..190) about halfway along it
  dw 221                    ; span1 x_hi (world)
  dw $FFFF                  ; span2 x_lo (no span2)
  dw $0000                  ; span2 x_hi
@@ -381,8 +383,78 @@ level_script
 * fits entirely in the wo=112 view, so nothing needs to scroll
 * until the next leg re-arms its own sources.
  db OP_SCRLOCK
+* Next leg: the 79px ladder from the rooftop up to the lower
+* building's roofline. The art column is mission22 bytes 71..75
+* (world 181..185, center 183), spanning art rows ~89 (roofline)
+* to ~168 (rooftop floor) — visible on screen at the stopped
+* view. The first climb's snap cleared ladder_buf, so this
+* OP_UPSPLIT installs the climbable ladder fresh (slot 0;
+* check_waitus reset upsplit_ladder_idx so it re-claims routing).
+* Fill origin 71 continues the art exactly where leg 1 stopped
+* (top of view = art row 75; first fill here shows 71..74).
+* stop == snap (71): scrolls the remaining art to its top
+* (final view top = art row 3) — the roofline (art 89) lands at
+* screen row 86 = Billy's feet at the OP_BOUNDS y=46 below.
+ db OP_UPSPLIT
+ dw 176                    ; x_left  (world; engage zone 174..192)
+ dw 190                    ; x_right
+ db 13                     ; y_top   (climb range top)
+ db 54                     ; y_bottom = rooftop standing row = engage row
+ db 0                      ; lbank screen 0 = mission21
+ db 1                      ; rbank screen 1 = mission22
+ db 110                    ; split (world seam)
+ db 71                     ; snap_at = fill origin (continues from 75)
+ db 0                      ; hoff
+ db $FF                    ; no chain layer
+ db 0                      ; next_rbank (unused)
+ db 0                      ; next_split (unused)
+ db 0                      ; next_snap_at (unused)
+ db 0                      ; next_hoff (unused)
+ db 0                      ; next_stop_at (unused)
+* Roofline platform. Feet (ypos+40 = 86) on the art-89 roofline
+* (top of view = art 3 after the full remaining scroll → art 89
+* at screen 86). Span: blue-building roof, west edge at world
+* 168. Note the roof-edge ART continues west to ~world 118
+* (mission22 row 89 is solid from art col ~8) — extend span1_lo
+* when that stretch becomes walkable in the design. TUNABLE.
+ db OP_BOUNDS,46
+ dw 168                    ; span1 x_lo (world)
+ dw 249                    ; span1 x_hi (world) — the roofline art
+                           ; (m22/m23 trim rows 90..94) runs east to
+                           ; world ~251; left-edge support to 249 puts
+                           ; the walk-off/drop right at the building's
+                           ; east face
+ dw $FFFF                  ; span2 x_lo (no span2)
+ dw $0000                  ; span2 x_hi
+* Eastward into mission23/24: the heliport deck. Re-enable right
+* scrolling with mission22 (screen 1, world origin 110) as the
+* source; the 110-byte cursor wrap cascades linearly through
+* mission23 (origin 220) and mission24 (origin 330).
+ db OP_RIGHT,1
+ db OP_SRCWO               ; cursor = wo (m22 is world-aligned at 110)
+* Single-bank fill with source rows offset +3: the view's top has
+* shown art row 3 since the up-split climbs (screen = art - 3), so
+* incoming columns must pull rows 3..185 to line up.
+ db OP_SCROLLSPLIT,0,0,3
+* The deck: mission23's runway platform. Surface at art row 154
+* (screen 151) → standing ypos 111 (feet 151). West edge just
+* under the roof's drop point so a walk-off at 249/250 lands;
+* east end under the parked RS-11 helicopter in mission24
+* (boarding comes in a later leg). The player FALLS from the
+* roofline (feet 86) ~65px onto this row — gravity's landing
+* sweep handles it.
+ db OP_PLATFORM,111
+ dw 250                    ; span1 x_lo (world)
+ dw 458                    ; span1 x_hi (world; TUNABLE vs chopper)
+ dw $FFFF                  ; span2 x_lo (no span2)
+ dw $0000                  ; span2 x_hi
+* Cap the scroll at mission24's east edge (art ends at world 489;
+* wo 380 shows 380..489). Prevents the cursor wrap from cascading
+* into bank 7 (mission25 — the level below) past the loaded art.
+ db OP_SCRMAX
+ dw 380
  db OP_WAITX
- dw 600                    ; placeholder hold after descent
+ dw 600                    ; placeholder hold
  db OP_END
 
 *-------------------------------

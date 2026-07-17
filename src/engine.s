@@ -304,12 +304,33 @@ _scroll_right
 :fn_no_split
 * Legacy single-bank fill. On entry M=8 (from the dispatch branch's
 * sep). Switch to M=16 for the arithmetic and the indirect loop.
+* scroll_src_upper_row_offset applies here too (OP_SCROLLSPLIT
+* p2=0, p3=N = single cascading bank with source rows N..N+182):
+* a view whose top shows source row N — mission2's tower views sit
+* at art-row-3-at-top after an up-split climb — must pull incoming
+* columns from the same rows or the art seams 2Npx vertically.
+* Defaults to 0 = the historic behavior.
  rep $20
  mx %00
+ lda scroll_src_upper_row_offset
+ and #$00FF
+ sta utmp
+ asl
+ asl                          ; *4
+ clc
+ adc utmp                     ; *5
+ asl
+ asl
+ asl
+ asl
+ asl                          ; *160
+ clc
+ adc #$2000
+ sta utmp                     ; utmp = $2000 + row_offset*160
  lda scroll_src_off
  and #$00FF
  clc
- adc #$2000
+ adc utmp
  sta $F0
  sep $20
  mx %10
@@ -397,8 +418,28 @@ _scroll_right
 :fill_split
  rep $20
  mx %00
+* Row-offset base — same as :fn_no_split (this path fires at the
+* 110-byte bank seam whenever the cursor is even-aligned, so it
+* must honor the offset too or the seam columns paint 2Npx off).
+ lda scroll_src_upper_row_offset
+ and #$00FF
+ sta utmp
+ asl
+ asl                          ; *4
+ clc
+ adc utmp                     ; *5
+ asl
+ asl
+ asl
+ asl
+ asl                          ; *160
+ clc
+ adc #$2000
+ sta utmp                     ; utmp = $2000 + row_offset*160
 * First pass: fill bytes 106-107 from current bank offset 108
- lda #$2000+108
+ lda utmp
+ clc
+ adc #108
  sta $F0
  lda #$206A            ; dst = $18/(2000+106)
  sta $F3
@@ -427,7 +468,7 @@ _scroll_right
 * Same conditional as :fn_wrap — if scroll_src was on the
 * current screen, transition to scroll_right_screen's bank;
 * otherwise linear inc to the next screen.
- lda #$2000
+ lda utmp                     ; row-offset base (byte 0 of the new bank)
  sta $F0
  lda #$206C            ; dst = $18/(2000+108)
  sta $F3
@@ -7601,6 +7642,20 @@ _init_mission1blit
  lda #$02
  sta $F2
  rep $20
+* Base the key reads on the mission's spr_addr_tbl via the header
+* pointer at +$12, NOT on absolute bank-$02 file offsets. The old
+* absolute :im1b_offsets baked in mission1's 28-byte header; any
+* mission whose header differs (mission2's is 30 bytes) shifted
+* every key read — most keys then missed immediate dispatch
+* (invisible: AND/ORA fallback renders fine), but a few aliased
+* into NEIGHBORING entries' keys. Concretely: mission2's BCLIMB2
+* blit got keyed with spr_bclimb1's address, so BCLIMB1 drew the
+* BCLIMB2 blob while real BCLIMB2 fell back to AND/ORA — both
+* climb poses rendered the same picture and the climb animation
+* looked dead ("player slides up the ladder").
+ ldy #$12
+ lda [$F0],y
+ sta $F0                ; $F0 = bank-2 spr_addr_tbl base
 
 * LDAL (long absolute) is required here: :im1b_offsets lives in bank $1F
 * (engine.s) but DBR=$00 at init time (per [[engine_dbr_trap]] memory we
@@ -7679,22 +7734,26 @@ _init_mission1blit
  mx %11
  rtl
 
+* Offsets are RELATIVE TO spr_addr_tbl (read via the header's +$12
+* pointer above) — identical across missions because the table
+* layouts mirror; the old absolute values included mission1's
+* 28-byte header and broke on mission2's 30-byte header.
 :im1b_offsets
- dfb $1C,$80      ; IMAGE01
- dfb $1E,$86      ; IMAGE02
- dfb $20,$8C      ; IMAGE03
- dfb $22,$C2      ; JUMP1
- dfb $24,$C8      ; JUMP2
- dfb $26,$CE      ; JUMP3
- dfb $28,$B6      ; KICK1
- dfb $2A,$BC      ; KICK2
- dfb $2C,$9E      ; PUNCH11
- dfb $2E,$A4      ; PUNCH12
- dfb $30,$AA      ; PUNCH21
- dfb $32,$B0      ; PUNCH22
- dfb $34,$D4      ; BPUNCHED
- dfb $6A,$92      ; BCLIMB1
- dfb $6C,$98      ; BCLIMB2
+ dfb $00,$64      ; IMAGE01  (data, data_mirror)
+ dfb $02,$6A      ; IMAGE02
+ dfb $04,$70      ; IMAGE03
+ dfb $06,$A6      ; JUMP1
+ dfb $08,$AC      ; JUMP2
+ dfb $0A,$B2      ; JUMP3
+ dfb $0C,$9A      ; KICK1
+ dfb $0E,$A0      ; KICK2
+ dfb $10,$82      ; PUNCH11
+ dfb $12,$88      ; PUNCH12
+ dfb $14,$8E      ; PUNCH21
+ dfb $16,$94      ; PUNCH22
+ dfb $18,$B8      ; BPUNCHED
+ dfb $4E,$76      ; BCLIMB1
+ dfb $50,$7C      ; BCLIMB2
 :im1b_offsets_end
 
 * Scratch locals moved to bank-$00 RAM hole — see imb_* comment.

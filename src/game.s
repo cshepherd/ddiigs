@@ -1641,7 +1641,20 @@ run_script
  ldx :ob_y
  lda :ob_xlo            ; span1 bmin (low byte)
  sta bounds_tbl_lo,x
- lda :ob_xhi2           ; span2 bmax (low byte) — outer envelope max
+* Outer envelope max: span2's bmax — UNLESS span2 is the "absent"
+* sentinel ($FFFF/$0000), which would write 0 and falsely arm the
+* climb-lock (:do_left/:ai_do_right treat bounds_tbl_hi[y]==0 as
+* "mid-climb row") for any on-ladder column at this row. Symptom:
+* Billy freezes at the ladder window's edge and can't walk onto
+* or past the ladder on a single-span platform (mission2 rooftop).
+ lda :ob_xhi2
+ ora :ob_xhi2+1
+ beq :ob_env_span1
+ lda :ob_xhi2           ; span2 present — its bmax is the envelope
+ bra :ob_env_store
+:ob_env_span1
+ lda :ob_xhi            ; single span — span1's bmax
+:ob_env_store
  sta bounds_tbl_hi,x
 * Lock the bounds: this opcode just hand-authored the collision
 * map, so screen-transition reloads must not overwrite it.
@@ -1804,11 +1817,20 @@ run_script
  sec
  xce
  mx %11
-* Per-screen bounds row (outer-envelope low bytes).
+* Per-screen bounds row (outer-envelope low bytes). Same span2-
+* sentinel guard as OP_BOUNDS: an absent span2 must not zero the
+* envelope (climb-lock false-arm).
  ldx :pf_y
  lda :pf_xlo
  sta bounds_tbl_lo,x
  lda :pf_xhi2
+ ora :pf_xhi2+1
+ beq :pf_env_span1
+ lda :pf_xhi2
+ bra :pf_env_store
+:pf_env_span1
+ lda :pf_xhi
+:pf_env_store
  sta bounds_tbl_hi,x
  lda script_pc
  clc
@@ -13441,13 +13463,17 @@ walk_boost_right dfb 0
 walk_boost_left  dfb 0
 
 *----------------------------------------------------------
-* advance_climb - Set climbing frame (BCLIMB1/BCLIMB2),
-* alternating each call. Sets FRAME_X/Y/ADDR globals.
+* advance_climb - Set climbing frame (BCLIMB1/BCLIMB2).
+* climb_toggle is a free-running climb-step counter; the pose is
+* bit 2 (changes every 4th call). Climb steps are 2px and arrive
+* at up to 60/sec (joystick holds, scroll frames) — the old
+* every-call EOR alternated the poses at 20-30Hz, faster than the
+* eye resolves, so the climb read as a shimmer / frozen pose
+* ("animation doesn't engage"). Every 4th step = one pose per 8px
+* of travel ≈ the NES ladder cadence. Sets FRAME_X/Y/ADDR globals.
 *----------------------------------------------------------
 advance_climb
- lda climb_toggle
- eor #$01
- sta climb_toggle
+ inc climb_toggle
  lda #$08              ; BCLIMB1/2 width — same for Jimmy
  sta FRAME_X
  lda #$28              ; height
@@ -13475,6 +13501,7 @@ advance_climb
  jmp :ac_billy_path
 :ac_jimmy_path
  lda climb_toggle
+ and #$04              ; pose = counter bit 2 (flip every 4 steps)
  beq :ac_j_use_1
 * JCLIMB2 branch
  lda IMAGE01_MIRROR
@@ -13526,6 +13553,7 @@ advance_climb
 * and mask pointers must be set in lockstep so dispatch in draw_all
 * routes to draw_sprite_compiled with matching arrays.
  lda climb_toggle
+ and #$04              ; pose = counter bit 2 (flip every 4 steps)
  beq :use_b1
 * BCLIMB2 branch
  lda IMAGE01_MIRROR
